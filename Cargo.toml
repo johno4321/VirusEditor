@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/virus-syx",
     "crates/virus-midi",
+    "crates/virus-db",
 ]
 
 [workspace.package]

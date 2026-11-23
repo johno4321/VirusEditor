@@ -52,6 +52,12 @@ D:\VirusEditor\
     │   │   └── engine.rs       # MidiService background thread & non-blocking UI bridge
     │   └── Cargo.toml
     ├── virus-db/               # Librarian DB: SQLite schema, full-text search, categories, bank imports
+    │   ├── src/
+    │   │   ├── lib.rs          # Public crate API
+    │   │   ├── schema.rs       # DDL definitions (banks, patches, indexes)
+    │   │   ├── models.rs       # 17 Sound Categories, BankRecord, PatchRecord, PatchFilter
+    │   │   └── db.rs           # PatchDatabase connection, CRUD, queries, SysEx bank import/export
+    │   └── Cargo.toml
     └── virus-app/              # UI layer: egui/eframe desktop app with rotary knobs, curves & matrix
 ```
 
@@ -127,10 +133,13 @@ F0 00 20 33 01 <dd> 10 <bb> <ss> [256 data bytes] <cs> F7
   - [x] Asynchronous command & event channels (`crossbeam-channel`)
   - [x] Page A (MIDI CC) and Page B (PolyPressure) incoming message decoding
   - [x] Thread-isolated background worker loop (`engine.rs`)
-- [ ] **Phase 4: Database & Librarian (`virus-db`)**
-  - [ ] SQLite schema for presets, banks, author, tags, and raw syx BLOBs
-  - [ ] Full-text search and category filtering
-  - [ ] Standard `.syx` and `.mid` file import/export
+- [x] **Phase 4: Database & Librarian (`virus-db`)**
+  - [x] Embedded zero-dependency SQLite storage (`rusqlite` bundled)
+  - [x] Schema DDL for banks and patches with CASCADE deletes and NOCASE indexes
+  - [x] 17 official sound categories from manual p. 84
+  - [x] Dynamic filter and query engine (category matching, text search, favorites, bank ID)
+  - [x] SysEx `.syx` bank import parser & multi-patch dump exporter
+  - [x] In-memory database support and unit tests for seed, queries, and SysEx roundtrip
 - [ ] **Phase 5: GUI Frontend (`virus-app`)**
   - [ ] `eframe` / `egui` app skeleton
   - [ ] Custom rotary knob widget (with bipolar center detent)
@@ -148,3 +157,5 @@ F0 00 20 33 01 <dd> 10 <bb> <ss> [256 data bytes] <cs> F7
   * Reorganized `virus-syx` with dedicated `domain` module (`src/domain/`) and top-level `src/lib.rs`.
   * Linked remote repository to GitHub (`johno4321/VirusEditor`).
   * Implemented `virus-midi` crate: robust SysEx stream assembler, port scanner, and threaded background event loop.
+  * Verified SQLite requirements: confirmed Windows `winsqlite3.dll` presence and configured `rusqlite` with `features = ["bundled"]` for zero-dependency native compilation.
+  * Implemented `virus-db` crate: DDL schema, 17 official Access sound categories, bank/patch CRUD, parameterized queries, and `.syx` bank bulk import/export.

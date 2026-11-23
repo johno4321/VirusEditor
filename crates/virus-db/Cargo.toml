@@ -1,0 +1,13 @@
+[package]
+name = "virus-db"
+version.workspace = true
+edition.workspace = true
+description = "Embedded SQLite patch librarian, category indexing, and bank storage for Access Virus"
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+virus-syx = { path = "../virus-syx" }
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[dev-dependencies]
