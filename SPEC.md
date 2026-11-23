@@ -16,7 +16,7 @@ A native, zero-GC hardware synthesizer editor, patch librarian, and real-time co
 * **Core Architecture:**
   * Multi-crate Cargo workspace
   * Pure domain crate (`virus-syx`) structured cleanly with a `domain` module
-  * Dedicated MIDI I/O thread (`midir`) communicating via lock-free channels
+  * Dedicated MIDI I/O thread (`midir` in `virus-midi`) communicating via lock-free channels
   * Local patch database & indexing (`rusqlite`)
   * Native immediate-mode GUI (`egui` / `eframe`)
 
@@ -44,6 +44,13 @@ D:\VirusEditor\
     │   │       └── patch.rs    # 256-byte container combining Page A + B with syx export/import
     │   └── Cargo.toml
     ├── virus-midi/             # Hardware I/O: midir callbacks, port handling, SysEx stream buffering
+    │   ├── src/
+    │   │   ├── lib.rs          # Public MIDI crate API
+    │   │   ├── stream.rs       # SysExStreamAssembler (filters real-time 0xF8..FF, reconstructs dumps)
+    │   │   ├── events.rs       # MidiCommand and MidiEvent channel definitions
+    │   │   ├── ports.rs        # Device scanner & "Virus" port auto-detection
+    │   │   └── engine.rs       # MidiService background thread & non-blocking UI bridge
+    │   └── Cargo.toml
     ├── virus-db/               # Librarian DB: SQLite schema, full-text search, categories, bank imports
     └── virus-app/              # UI layer: egui/eframe desktop app with rotary knobs, curves & matrix
 ```
@@ -113,11 +120,13 @@ F0 00 20 33 01 <dd> 10 <bb> <ss> [256 data bytes] <cs> F7
   - [x] Git repository initialized in `D:\VirusEditor`
   - [x] Linked to [https://github.com/johno4321/VirusEditor](https://github.com/johno4321/VirusEditor)
   - [x] Initial commits pushed to `main` branch
-- [ ] **Phase 3: MIDI Engine (`virus-midi`)**
-  - [ ] Workspace member `crates/virus-midi`
-  - [ ] `midir` wrapper and continuous port polling/reconnection
-  - [ ] SysEx stream assembler (handling chunked USB-MIDI packets)
-  - [ ] Asynchronous command channels (`crossbeam-channel`)
+- [x] **Phase 3: MIDI Engine (`virus-midi`)**
+  - [x] Workspace member `crates/virus-midi`
+  - [x] `midir` wrapper and continuous port polling/reconnection
+  - [x] SysEx stream assembler (`stream.rs`) filtering real-time bytes (`0xF8..=0xFF`) and handling chunked packets
+  - [x] Asynchronous command & event channels (`crossbeam-channel`)
+  - [x] Page A (MIDI CC) and Page B (PolyPressure) incoming message decoding
+  - [x] Thread-isolated background worker loop (`engine.rs`)
 - [ ] **Phase 4: Database & Librarian (`virus-db`)**
   - [ ] SQLite schema for presets, banks, author, tags, and raw syx BLOBs
   - [ ] Full-text search and category filtering
@@ -138,3 +147,4 @@ F0 00 20 33 01 <dd> 10 <bb> <ss> [256 data bytes] <cs> F7
   * Verified SysEx implementation against official Access Virus Rack manual (`OSR1_Manual_International.pdf`).
   * Reorganized `virus-syx` with dedicated `domain` module (`src/domain/`) and top-level `src/lib.rs`.
   * Linked remote repository to GitHub (`johno4321/VirusEditor`).
+  * Implemented `virus-midi` crate: robust SysEx stream assembler, port scanner, and threaded background event loop.

@@ -1,0 +1,14 @@
+[package]
+name = "virus-midi"
+version.workspace = true
+edition.workspace = true
+description = "Low-latency MIDI I/O, SysEx packet assembly, and threaded event loop for Access Virus"
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+virus-syx = { path = "../virus-syx" }
+midir = "0.9"
+crossbeam-channel = "0.5"
+
+[dev-dependencies]
