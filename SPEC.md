@@ -4,6 +4,7 @@
 A native, zero-GC hardware synthesizer editor, patch librarian, and real-time controller for the **Access Virus B / Access Virus Rack / Classic / Indigo** series written in Rust.
 
 * **Repository Location:** `D:\VirusEditor`
+* **GitHub Repository:** [https://github.com/johno4321/VirusEditor](https://github.com/johno4321/VirusEditor)
 * **Reference Documentation:** `OSR1_Manual_International.pdf` (Access Virus Rack User Manual, Chapters 16–20)
 * **Target Hardware Architecture:**
   * Access Virus Rack (OSR1: 16 voices, 16-part multi-timbral)
@@ -14,7 +15,7 @@ A native, zero-GC hardware synthesizer editor, patch librarian, and real-time co
   * **MIDI Polyphonic Pressure:** Real-time automation of Page B parameters
 * **Core Architecture:**
   * Multi-crate Cargo workspace
-  * Pure domain crate (`virus-syx`) with zero external UI or I/O dependencies
+  * Pure domain crate (`virus-syx`) structured cleanly with a `domain` module
   * Dedicated MIDI I/O thread (`midir`) communicating via lock-free channels
   * Local patch database & indexing (`rusqlite`)
   * Native immediate-mode GUI (`egui` / `eframe`)
@@ -32,13 +33,15 @@ D:\VirusEditor\
 └── crates/
     ├── virus-syx/              # Core Domain: SysEx, 256-byte Patch, Checksums, Enums, Bipolar types
     │   ├── src/
-    │   │   ├── checksum.rs     # 7-bit checksum calculator & validator
-    │   │   ├── types.rs        # Bipolar7 (-64..+63), Unipolar7, Osc/Filter/LFO/Matrix enums
-    │   │   ├── sysex.rs        # Framing, header validation, dump & param encoders/parsers
-    │   │   ├── page_a.rs       # Sound engine parameters (Osc, Filters, Envelopes, LFOs, Name)
-    │   │   ├── page_b.rs       # Modulation matrix (6 slots), Arp, EQ, Phaser, FX
-    │   │   ├── patch.rs        # 256-byte container combining Page A + B with syx export/import
-    │   │   └── lib.rs          # Public crate API
+    │   │   ├── lib.rs          # Crate root entrypoint (exports pub mod domain)
+    │   │   └── domain/         # Domain model layer
+    │   │       ├── mod.rs      # Module declarations and re-exports
+    │   │       ├── checksum.rs # 7-bit checksum calculator & validator
+    │   │       ├── types.rs    # Bipolar7 (-64..+63), Unipolar7, Osc/Filter/LFO/Matrix enums
+    │   │       ├── sysex.rs    # Framing, header validation, dump & param encoders/parsers
+    │   │       ├── page_a.rs   # Sound engine parameters (Osc, Filters, Envelopes, LFOs, Name)
+    │   │       ├── page_b.rs   # Modulation matrix (6 slots), Arp, EQ, Phaser, FX
+    │   │       └── patch.rs    # 256-byte container combining Page A + B with syx export/import
     │   └── Cargo.toml
     ├── virus-midi/             # Hardware I/O: midir callbacks, port handling, SysEx stream buffering
     ├── virus-db/               # Librarian DB: SQLite schema, full-text search, categories, bank imports
@@ -105,12 +108,13 @@ F0 00 20 33 01 <dd> 10 <bb> <ss> [256 data bytes] <cs> F7
   - [x] Page A parameter mapping & bitfield decoding
   - [x] Page B parameter mapping (Arp, 6-slot Mod Matrix, EQ, Phaser)
   - [x] Full 256-byte `Patch` model with roundtrip serialization & ASCII name support
-  - [x] Embedded unit tests in all modules
-- [ ] **Phase 2: Git & GitHub Setup**
+  - [x] Code organized into clean `domain` module with root `lib.rs` entry point
+- [x] **Phase 2: Git & GitHub Setup**
   - [x] Git repository initialized in `D:\VirusEditor`
-  - [ ] Stage manual & verified code updates
-  - [ ] Connect remote to GitHub account and push to `main`
+  - [x] Linked to [https://github.com/johno4321/VirusEditor](https://github.com/johno4321/VirusEditor)
+  - [x] Initial commits pushed to `main` branch
 - [ ] **Phase 3: MIDI Engine (`virus-midi`)**
+  - [ ] Workspace member `crates/virus-midi`
   - [ ] `midir` wrapper and continuous port polling/reconnection
   - [ ] SysEx stream assembler (handling chunked USB-MIDI packets)
   - [ ] Asynchronous command channels (`crossbeam-channel`)
@@ -130,6 +134,7 @@ F0 00 20 33 01 <dd> 10 <bb> <ss> [256 data bytes] <cs> F7
 
 ## 5. Changelog / Work Log
 * **2026-11-23**:
-  * Relocated workspace to `D:\VirusEditor`.
+  * Initialized workspace in `D:\VirusEditor`.
   * Verified SysEx implementation against official Access Virus Rack manual (`OSR1_Manual_International.pdf`).
-  * Updated `virus-syx` with exact Page A (`0x70`), Page B (`0x71`), Page C (`0x72`) parameter commands, Part byte (`0x40` single / `0x00..0x0F` multi), and verified 7-bit checksum formula.
+  * Reorganized `virus-syx` with dedicated `domain` module (`src/domain/`) and top-level `src/lib.rs`.
+  * Linked remote repository to GitHub (`johno4321/VirusEditor`).
