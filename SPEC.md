@@ -58,7 +58,21 @@ D:\VirusEditor\
     │   │   ├── models.rs       # 17 Sound Categories, BankRecord, PatchRecord, PatchFilter
     │   │   └── db.rs           # PatchDatabase connection, CRUD, queries, SysEx bank import/export
     │   └── Cargo.toml
-    └── virus-app/              # UI layer: egui/eframe desktop app with rotary knobs, curves & matrix
+    └── virus-app/              # Native GUI: eframe/egui desktop app
+        ├── src/
+        │   ├── main.rs         # Entrypoint & window viewport config
+        │   ├── app.rs          # VirusApp struct, event loop & tab routing
+        │   ├── widgets/        # Custom widgets
+        │   │   ├── mod.rs      # Widget exports
+        │   │   ├── knob.rs     # Unipolar7 & Bipolar7 rotary knobs with detents
+        │   │   └── curves.rs   # Dual filter frequency response & ADSR envelope curve painters
+        │   └── views/          # Panels
+        │       ├── mod.rs      # View exports
+        │       ├── synth_panel.rs # Oscillators, Filters, Envelopes, LFOs, EQ & FX
+        │       ├── matrix_panel.rs # 6-slot Modulation Matrix & Arpeggiator editor
+        │       ├── librarian_panel.rs # Bank browser, search, categories, syx import/export
+        │       └── midi_bar.rs # Ports, Device ID, activity LEDs, hardware buffer fetch
+        └── Cargo.toml
 ```
 
 ---
@@ -140,13 +154,14 @@ F0 00 20 33 01 <dd> 10 <bb> <ss> [256 data bytes] <cs> F7
   - [x] Dynamic filter and query engine (category matching, text search, favorites, bank ID)
   - [x] SysEx `.syx` bank import parser & multi-patch dump exporter
   - [x] In-memory database support and unit tests for seed, queries, and SysEx roundtrip
-- [ ] **Phase 5: GUI Frontend (`virus-app`)**
-  - [ ] `eframe` / `egui` app skeleton
-  - [ ] Custom rotary knob widget (with bipolar center detent)
-  - [ ] Graphical Filter Frequency Response visualizer
-  - [ ] ADSR Envelope draggable curve widget
-  - [ ] Modulation Matrix grid UI
-  - [ ] Preset Librarian table and search bar
+- [x] **Phase 5: GUI Frontend (`virus-app`)**
+  - [x] `eframe` / `egui` native desktop application with classic dark Access Virus styling
+  - [x] Custom rotary knob widget with center detent for `Bipolar7` and continuous sweep for `Unipolar7`
+  - [x] Dual Filter frequency response visualizer (20 Hz - 20 kHz log axis) & ADSR envelope curve widget
+  - [x] Sound engine editor panel covering Oscillators, Dual Filters, Envelopes, LFOs, EQ & Effects
+  - [x] 6-slot Modulation Matrix and Arpeggiator editor
+  - [x] Patch Librarian panel with bank switching, search, category filtering, favorites, and `.syx` import/export
+  - [x] Real-time MIDI toolbar with port auto-detection, Device ID selection, and Rx/Tx LED activity indicators
 
 ---
 
@@ -159,3 +174,4 @@ F0 00 20 33 01 <dd> 10 <bb> <ss> [256 data bytes] <cs> F7
   * Implemented `virus-midi` crate: robust SysEx stream assembler, port scanner, and threaded background event loop.
   * Verified SQLite requirements: confirmed Windows `winsqlite3.dll` presence and configured `rusqlite` with `features = ["bundled"]` for zero-dependency native compilation.
   * Implemented `virus-db` crate: DDL schema, 17 official Access sound categories, bank/patch CRUD, parameterized queries, and `.syx` bank bulk import/export.
+  * Implemented `virus-app` crate: native `eframe`/`egui` desktop application with custom rotary knobs, filter & envelope curve visualizers, 6-slot modulation matrix, librarian view, and live MIDI SysEx controls.

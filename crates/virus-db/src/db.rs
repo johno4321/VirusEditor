@@ -287,22 +287,23 @@ impl PatchDatabase {
         Ok(summaries)
     }
 
-    /// Imports a `.syx` bank file containing one or more Single Program Dump messages.
+    /// Imports a `.syx` or `.mid` bank file containing one or more Single Program Dump messages.
     /// Stores the patches in the designated `bank_id`. Returns the count of imported patches.
-    pub fn import_syx_bank(&self, bank_id: i64, syx_bytes: &[u8]) -> Result<usize, String> {
+    pub fn import_syx_bank(&self, bank_id: i64, file_bytes: &[u8]) -> Result<usize, String> {
         let mut imported_count = 0;
         let mut idx = 0;
+        let sig = [0x00, 0x20, 0x33, 0x01]; // Access Virus signature
 
-        while idx < syx_bytes.len() {
-            // Find start of SysEx (0xF0)
-            if let Some(start_rel) = syx_bytes[idx..].iter().position(|&b| b == 0xF0) {
-                let start = idx + start_rel;
-                // Find end of SysEx (0xF7)
-                if let Some(end_rel) = syx_bytes[start..].iter().position(|&b| b == 0xF7) {
-                    let end = start + end_rel + 1;
-                    let msg_slice = &syx_bytes[start..end];
+        while idx + 4 <= file_bytes.len() {
+            if file_bytes[idx..].starts_with(&sig) {
+                if let Some(end_rel) = file_bytes[idx..].iter().position(|&b| b == 0xF7) {
+                    let end = idx + end_rel + 1;
+                    let payload = &file_bytes[idx..end];
+                    let mut frame = Vec::with_capacity(payload.len() + 1);
+                    frame.push(0xF0);
+                    frame.extend_from_slice(payload);
 
-                    if let Ok((mut patch, _bank, prog)) = Patch::from_sysex(msg_slice) {
+                    if let Ok((mut patch, _bank, prog)) = Patch::from_sysex(&frame) {
                         self.save_patch(
                             bank_id,
                             prog,
@@ -316,12 +317,10 @@ impl PatchDatabase {
                         imported_count += 1;
                     }
                     idx = end;
-                } else {
-                    break;
+                    continue;
                 }
-            } else {
-                break;
             }
+            idx += 1;
         }
 
         Ok(imported_count)
@@ -516,5 +515,24 @@ mod tests {
 
         let imported_p1 = db.get_patch_by_slot(bank_b_id, 1).unwrap().unwrap();
         assert_eq!(imported_p1.name, "PatchOne");
+    }
+
+    #[test]
+    fn test_import_midi_file_wrapped_sysex() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let bank_id = db.get_banks().unwrap()[0].id;
+
+        let mut p = Patch::new("SmfPatch");
+        let raw_syx = p.to_sysex(0x01, 0, 10);
+
+        // Wrap in MIDI File chunk style: [Delta, 0xF0, VarLen, data..., 0xF7]
+        let mut smf_bytes = vec![0x00, 0xF0, 0x82, 0x0B];
+        smf_bytes.extend_from_slice(&raw_syx[1..]); // Skip the leading 0xF0 since SMF has it before varlen
+
+        let count = db.import_syx_bank(bank_id, &smf_bytes).unwrap();
+        assert_eq!(count, 1);
+
+        let retrieved = db.get_patch_by_slot(bank_id, 10).unwrap().unwrap();
+        assert_eq!(retrieved.name, "SmfPatch");
     }
 }

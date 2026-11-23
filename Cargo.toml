@@ -4,6 +4,7 @@ members = [
     "crates/virus-syx",
     "crates/virus-midi",
     "crates/virus-db",
+    "crates/virus-app",
 ]
 
 [workspace.package]
