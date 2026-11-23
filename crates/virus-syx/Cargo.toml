@@ -1,0 +1,11 @@
+[package]
+name = "virus-syx"
+version.workspace = true
+edition.workspace = true
+description = "Core Access Virus B / Rack SysEx parser, parameter bitfield mappings, and patch models"
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]

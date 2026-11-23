@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+Cargo.lock
+*.pdb
+*.obj
+*.exe
+.idea/
+.vscode/
+*.syx.tmp
