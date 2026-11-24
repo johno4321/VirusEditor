@@ -40,11 +40,11 @@ Page numbers below are the manual's printed page numbers (PDF page − 2).
 * **Page C** (Multi and Global) is **SysEx only**.
 
 ### 1.5 Core architecture
-  * Multi-crate Cargo workspace
-  * Pure domain crate (`virus-syx`) structured cleanly with a `domain` module
-  * Dedicated MIDI I/O thread (`midir` in `virus-midi`) communicating via lock-free channels
-  * Local patch database & indexing (`rusqlite`)
-  * Native immediate-mode GUI (`egui` / `eframe`)
+* Multi-crate Cargo workspace. Dependencies point one way: `virus-app` → `virus-syx`, `virus-midi`, `virus-db`. The three library crates don't depend on each other.
+* **`virus-syx`:** pure domain crate. A raw 256-byte `Patch` is the single source of truth (§5.1), described by one parameter table (§4).
+* **`virus-midi`:** a plain transport on its own thread (`midir` + channels). It doesn't interpret Virus messages.
+* **`virus-db`:** a byte-exact SQLite librarian (`rusqlite`, bundled). The library lives at `%APPDATA%\VirusEditor\data\virus_library.db`.
+* **`virus-app`:** a native immediate-mode GUI (`egui`/`eframe` 0.27, OpenGL 2.0+). Logic that can be tested without the GUI lives in `session.rs`, `library.rs` and `storage.rs`.
 
 ---
 
@@ -52,55 +52,34 @@ Page numbers below are the manual's printed page numbers (PDF page − 2).
 
 ```text
 VirusEditor\
-├── Cargo.toml                  # Workspace definition
-├── SPEC.md                     # Specification (this file)
-├── TODO.md                     # Known issues and planned work
-├── README.md
+├── Cargo.toml / Cargo.lock     # Workspace definition (lockfile committed)
+├── .gitattributes              # .syx/.mid/.lib/.bin/.pdf are binary (never line-ending converted)
+├── SPEC.md · TODO.md · README.md
 ├── OSR1_Manual_International.pdf # Virus Rack manual
-├── VirusOSR200_INT\            # OS 2.00 update: addenda (parameter tables), patch list, factory soundset
-└── crates/
-    ├── virus-syx/              # Core Domain: SysEx, 256-byte Patch, Checksums, Enums, Bipolar types
-    │   ├── src/
-    │   │   ├── lib.rs          # Crate root entrypoint (exports pub mod domain)
-    │   │   └── domain/         # Domain model layer
-    │   │       ├── mod.rs      # Module declarations and re-exports
-    │   │       ├── checksum.rs # 7-bit checksum calculator & validator
-    │   │       ├── types.rs    # Bipolar7 (-64..+63), Unipolar7, Osc/Filter/LFO/Matrix enums
-    │   │       ├── sysex.rs    # Framing, header validation, dump & param encoders/parsers
-    │   │       ├── page_a.rs   # Page A typed view (currently WRONG offsets, see §4 and TODO P1)
-    │   │       ├── page_b.rs   # Page B typed view (currently WRONG offsets, see §4 and TODO P1)
-    │   │       └── patch.rs    # 256-byte container combining Page A + B with syx export/import
-    │   └── Cargo.toml
-    ├── virus-midi/             # Hardware I/O: midir callbacks, port handling, SysEx stream buffering
-    │   ├── src/
-    │   │   ├── lib.rs          # Public MIDI crate API
-    │   │   ├── stream.rs       # SysExStreamAssembler (filters real-time 0xF8..FF, reconstructs dumps)
-    │   │   ├── events.rs       # MidiCommand and MidiEvent channel definitions
-    │   │   ├── ports.rs        # Device scanner & "Virus" port auto-detection
-    │   │   └── engine.rs       # MidiService background thread & non-blocking UI bridge
-    │   └── Cargo.toml
-    ├── virus-db/               # Librarian DB: SQLite schema, full-text search, categories, bank imports
-    │   ├── src/
-    │   │   ├── lib.rs          # Public crate API
-    │   │   ├── schema.rs       # DDL definitions (banks, patches, indexes)
-    │   │   ├── models.rs       # 17 Sound Categories, BankRecord, PatchRecord, PatchFilter
-    │   │   └── db.rs           # PatchDatabase connection, CRUD, queries, SysEx bank import/export
-    │   └── Cargo.toml
-    └── virus-app/              # Native GUI: eframe/egui desktop app
-        ├── src/
-        │   ├── main.rs         # Entrypoint & window viewport config
-        │   ├── app.rs          # VirusApp struct, event loop & tab routing
-        │   ├── widgets/        # Custom widgets
-        │   │   ├── mod.rs      # Widget exports
-        │   │   ├── knob.rs     # Unipolar7 & Bipolar7 rotary knobs with detents
-        │   │   └── curves.rs   # Dual filter frequency response & ADSR envelope curve painters
-        │   └── views/          # Panels
-        │       ├── mod.rs      # View exports
-        │       ├── synth_panel.rs # Oscillators, Filters, Envelopes, LFOs, EQ & FX
-        │       ├── matrix_panel.rs # 6-slot Modulation Matrix & Arpeggiator editor
-        │       ├── librarian_panel.rs # Bank browser, search, categories, syx import/export
-        │       └── midi_bar.rs # Ports, Device ID, activity LEDs, hardware buffer fetch
-        └── Cargo.toml
+├── VirusOSR200_INT\            # OS 2.00 update: addenda (parameter tables), patch list, factory soundset (damaged .mid, §6)
+├── testdata\factory\           # Recovered clean factory Banks A/B (.syx) + recover.py + provenance README
+└── crates\
+    ├── virus-syx\              # Domain: SysEx, raw Patch, parameter table (no I/O)
+    │   ├── src\domain\
+    │   │   ├── checksum.rs     # 7-bit checksum
+    │   │   ├── types.rs        # Unipolar7, Bipolar7, Category, AssignSource (with Unknown(u8))
+    │   │   ├── params.rs       # SINGLE_PARAMS table (§4.1–4.2), classes, value kinds, format_value
+    │   │   ├── patch.rs        # Patch([u8;256]) get/set, name, categories, DumpTarget, SingleBank
+    │   │   ├── sysex.rs        # parse_sysex → SysExMessage (checksum_ok), all encoders (§3)
+    │   │   └── file.rs         # .syx and SMF (.mid) SysEx extraction, tolerant of the damaged files
+    │   └── tests\              # factory.rs (damaged originals), clean_factory.rs (strict round trips)
+    ├── virus-midi\             # Transport: ports by name, input parser, batches, MidiService thread
+    │   └── src\ engine.rs · events.rs · parser.rs · batch.rs · ports.rs
+    ├── virus-db\               # Librarian: schema v2 + migration, byte-exact patches, import/export
+    │   └── src\ db.rs (+ db\tests.rs) · models.rs · patch_data.rs · schema.rs · error.rs
+    └── virus-app\              # GUI
+        └── src\
+            ├── main.rs · app.rs # Window, tabs, wiring
+            ├── session.rs      # MIDI settings, incoming interpretation (§5.5), outgoing edits
+            ├── library.rs      # File import/export glue, store rules, cached queries
+            ├── storage.rs      # DB location and in-memory fallback
+            ├── views\          # editor.rs (generated from SINGLE_PARAMS), modulation.rs, librarian.rs, midi_bar.rs, controls.rs
+            └── widgets\        # knob.rs, curves.rs (filter response, envelopes)
 ```
 
 ---
@@ -346,17 +325,23 @@ Detailed tasks are in [TODO.md](TODO.md).
 
 | Phase | State |
 |---|---|
-| 1. Domain crate (`virus-syx`) | ⚠️ Framing, checksum and encoders are correct. **Parameter map wrong** (§4 not followed): name, cutoff, envelopes, LFOs, filters and matrix are all at the wrong offsets. The "6-slot mod matrix" doesn't exist on the Virus (it has Assign 1/2/3 plus LFO1/2 assign). Decoding normalises bytes, which breaks rule §5.1 |
-| 2. Git setup | ✅ |
-| 3. MIDI engine (`virus-midi`) | ✅ Thread, channels, assembler. ⚠️ incoming CC handling breaks rule §5.5 |
-| 4. Librarian DB (`virus-db`) | ⚠️ Export bank numbers wrong (§3.2); import ignores `bb` (§5.6); categories and names kept outside the patch (§5.3) |
-| 5. GUI (`virus-app`) | ⚠️ Works, but edits the wrong parameters and has data-loss bugs |
-| 6. **Next: correct patch model** | Raw-byte patch with a parameter table generated from §4; factory golden tests |
-| 7. Later | Multi editing (§4.4), Page C globals, bank request/backup, controller-dump sync, arrangement and total dump import |
+| 1. Domain crate (`virus-syx`) | ✅ Rebuilt 24 Nov: raw-byte `Patch`, parameter table from §4, lossless enums, SysEx parse/encode per §3, file reader. All 256 factory patches round-trip byte-identically |
+| 2. Git setup | ✅ Lockfile committed; binary attributes for MIDI files |
+| 3. MIDI engine (`virus-midi`) | ✅ Reworked 24 Nov as a plain transport; interpretation (§5.5) moved to the app |
+| 4. Librarian DB (`virus-db`) | ✅ Reworked 24 Nov: byte-exact storage, schema v2 + migration, bank-aware import/export (§5.6) |
+| 5. GUI (`virus-app`) | ✅ Rebuilt 24 Nov on the new crates (generated editor, Assign panel, 128-slot librarian, synth transfer). ⚠️ Not yet started on a machine with a GPU (TODO G1), not yet tried with the synth (G2) |
+| 6. In progress | Note audition (keyboard, audition, panic; TODO N items) |
+| 7. Needs the synth | Live tests (G2), destination names (Q1), value lists (Q3), banks E–H (Q2) |
+| 8. Later | Settings persistence (G3), synth globals (F3), Multi part selection and Multi editing (§4.4), controller-dump sync, arrangement/total dump import |
 
 ---
 
 ## 9. Changelog
+* **2026-11-24 (afternoon)**
+  * Library crates reworked in parallel (`virus-syx`, `virus-midi`, `virus-db`) and merged into `rework/integration`.
+  * Factory `.mid` files found to be LF→CR damaged; clean Banks A/B recovered from the SoundDiver `.lib` into `testdata/factory`.
+  * App rebuilt on the new crates (98 workspace tests, clippy clean with `-D warnings`, release build OK).
+  * New requirement: note audition, so you can play the synth from the editor (in progress).
 * **2026-11-24**
   * Code review: see TODO.md.
   * Re-read the manual, both addenda, the patch list and the OS 2.00 readme.

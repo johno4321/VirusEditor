@@ -22,6 +22,13 @@ It talks to the synth over MIDI SysEx, edits the current sound live, and keeps a
 
 SQLite is built in (`rusqlite` with the `bundled` feature), so nothing else needs installing.
 
+Behind a proxy that blocks certificate revocation checks (`CRYPT_E_NO_REVOCATION_CHECK`), add this to `%USERPROFILE%\.cargo\config.toml`:
+
+```toml
+[http]
+check-revoke = false
+```
+
 ## Getting started
 
 ```powershell
@@ -49,13 +56,13 @@ The app needs OpenGL 2.0 or later (it won't start in a remote desktop session on
 5. In **📚 Librarian**, import a bank file, then **Load** or **Send** any patch, edit its tags or favourite flag, or export a bank. Edit-buffer dumps from a file appear in a separate list from which you can load or store them.
 6. To put a bank on the synth, select library bank A or B and use **📤 Send bank to synth…**. This overwrites the synth's RAM bank, so back it up first: **Request bank** sends the synth's bank to the app, and **Received from synth → Import as a new library bank** keeps it safe.
 
-Factory banks to try are in `VirusOSR200_INT/OSR200_INT/Goodies/Factory soundset/`.
+Factory banks to try: the clean copies `testdata/factory/Bank_A.syx` and `Bank_B.syx`. The originals in `VirusOSR200_INT/OSR200_INT/Goodies/Factory soundset/` are partly damaged; see SPEC §6.
 
 ## Project layout
 
 | Crate | Purpose |
 |---|---|
-| [`crates/virus-syx`](crates/virus-syx) | Core domain: SysEx framing and checksums, the 256-byte `Patch` (Page A + Page B), parameter types and enums. No I/O |
+| [`crates/virus-syx`](crates/virus-syx) | Core domain: SysEx framing and checksums, the raw 256-byte `Patch`, the parameter table (SPEC §4), and `.syx`/`.mid` reading. No I/O beyond reading files |
 | [`crates/virus-midi`](crates/virus-midi) | MIDI I/O on a background thread (`midir`), SysEx stream assembly, and command/event channels for the UI |
 | [`crates/virus-db`](crates/virus-db) | SQLite librarian: banks, patches, categories, search, and bank import/export |
 | [`crates/virus-app`](crates/virus-app) | The desktop app (`eframe` / `egui`). Non-UI logic (MIDI interpretation, outgoing SysEx, import/export, storage) lives in `session.rs`, `library.rs` and `storage.rs` and is unit-tested; `views/` and `widgets/` draw it |

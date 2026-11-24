@@ -5,23 +5,23 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 
 ## ☀️ Start here
 
-**The goal is an editor and librarian that never corrupts a sound (SPEC §1.1).** Today, loading and re-saving a patch changes it, most knobs edit the wrong parameter on the synth, and several librarian actions overwrite stored patches. SPEC.md now has the verified parameter map (§4) and the rules the code must follow (§5).
+**The goal is an editor and librarian that never corrupts a sound (SPEC §1.1).** As of 24 Nov the rework is on branch **`rework/integration`** (not merged to `main`). All 256 factory patches round-trip byte-identically; the editor, Assign panel, librarian and MIDI layer are rebuilt on the verified parameter map. What's left needs the real synth (Q1–Q3, live tests) or is feature work.
 
-1. ✅ **Baseline (24 Nov):** Rust 1.100.0 + VS 2022 Build Tools. `cargo test --workspace`: **16 passed, 0 failed**. `cargo clippy --workspace --all-targets`: no errors, ~40 warnings (see H8). Behind the corporate proxy, cargo needs `[http] check-revoke = false` in `%USERPROFILE%\.cargo\config.toml`.
-2. ✅ **Sources re-read (24 Nov)** and SPEC.md rewritten: parameter tables, bank numbers, MIDI defaults, editor rules, open questions.
-3. **Fix the quick data-loss bugs** (D1–D4). Each is a few lines.
-4. **Add the factory golden tests** (T1) before touching the patch model, so the rework has a target.
-5. **Rebuild the patch model** (P1–P8) from SPEC §4–§5.
-6. Then the librarian import rules (L1–L4), and only then new features (F1–F8).
+1. ✅ **Baseline (24 Nov):** Rust 1.100.0 + VS 2022 Build Tools. Behind the corporate proxy, cargo needs `[http] check-revoke = false` in `%USERPROFILE%\.cargo\config.toml`.
+2. ✅ **Sources re-read (24 Nov)** and SPEC.md rewritten from them.
+3. ✅ **Data-loss bugs** D1–D8, **patch model** P1–P8, **import rules** L1–L4, **golden tests** T1–T4 (24 Nov, sub-agents + sub-chats).
+4. **Next without hardware:** G1 (the GUI can't start on this VM), the note audition feature (N items, sub-chat in progress), then features F1–F7 and U5.
+5. **When the MIDI cable arrives:** live tests (G2), then Q1–Q3.
+6. Review and merge `rework/integration` into `main`.
 
 ## Where we stand
 
 | Area | State |
 |---|---|
 | **Build** | Builds (debug + release); 98 tests pass; `clippy --workspace --all-targets -D warnings` clean (24 Nov, after the app rebuild) |
-| **`virus-syx`** | SysEx framing, checksum and encoders are right. **The parameter map is wrong almost everywhere** (SPEC §4). It invents a 6-slot matrix the Virus doesn't have, and decoding normalises bytes (breaks SPEC §5.1) |
-| **`virus-midi`** | Thread, channels and SysEx assembler work. Incoming CCs on any channel are treated as parameters; ports chosen by index; send errors ignored |
-| **`virus-db`** | Schema and queries fine. Export bank numbering wrong; import ignores the bank byte; names and categories duplicated outside the patch |
+| **`virus-syx`** | Raw 256-byte `Patch`; parameter table from the addendum; lossless enums; SysEx parse/encode with checksum reporting; `.syx`/SMF reader tolerant of the damaged factory files. 30 tests incl. strict factory round trips |
+| **`virus-midi`** | Plain transport: ports by name, channel-tagged input events, robust parser (R3), paced batches, all errors reported. 11 tests |
+| **`virus-db`** | Byte-exact storage, schema v2 with migration, bank-aware import (one transaction) and export (A–D = 1–4), favourites/tags separate from data. 18 tests |
 | **`virus-app`** | Rebuilt on the raw-byte crates (24 Nov): generated editor, Assign/LFO-assign panel, librarian with import report and bank transfer, name-based MIDI ports. Logic in `session.rs`/`library.rs`/`storage.rs` with unit tests. Not yet tried with real hardware |
 
 ### Evidence from the documents and factory data
@@ -40,7 +40,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | D1 | ✅ | The favourite star saves the **editor's** patch over the clicked row | `virus-app/src/views/librarian_panel.rs` (fav button) | Fixed: `PatchDatabase::set_favorite` (db rework); the app's star and checkbox call only that |
 | D2 | ✅ | "💾 Store Active to DB" always writes to **slot 0** and reports success even on failure | `virus-app/src/app.rs` (header button) | Fixed: "💾 Store…" opens a dialog (bank + slot; default = selected or first free slot); errors shown |
 | D3 | ✅ | `StoreActiveToSlot` ignores `save_patch` errors | `virus-app/src/app.rs` | Fixed: `library::store_patch` returns the `DbError`; shown in the dialog (tested) |
-| D4 | ⬜ | Export maps Bank A→`0` (edit buffer) and B→`1` (Bank A) | `virus-db/src/db.rs` `export_syx_bank` | Use A=1, B=2, C=3, D=4 (SPEC §3.2) |
+| D4 | ✅ | Export maps Bank A→`0` (edit buffer) and B→`1` (Bank A) | `virus-db` `export_bank_dumps` | Bank byte from the letter, A–D = 1–4; test `export_frames_use_bank_byte_and_exact_data` |
 | D5 | ✅ | Incoming CC/SysEx param rebuilds the page from a **stale** `raw` buffer, so unsaved knob edits are lost | `virus-app/src/app.rs` `ParamReceived` | Fixed: one raw `Patch`; `Session::handle_midi` sets a single byte (tested) |
 | D6 | ✅ | Incoming CCs on **any channel** are written to `raw[cc]`, including performance controllers (mod wheel CC1 → A1, volume CC7 → A7) | `virus-midi/src/engine.rs` `handle_incoming_midi_bytes` | Fixed in `virus-app/src/session.rs`: CC/PolyPressure only on the synth channel and only `is_sound_param`; SysEx param changes only for the edited part, never class `p`, A0 or Page C (tested) |
 | D7 | ✅ | Non-ASCII names put bytes > 127 into program dumps (invalid SysEx); can split a UTF-8 char | `virus-syx/src/domain/page_a.rs` `set_name`; `synth_panel.rs` name box | Fixed: `Patch::set_name` + `session::sanitize_name` (ASCII 32–126, 10 chars); only changed name bytes are sent (tested) |
@@ -50,9 +50,9 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 
 | # | Status | Item | Notes |
 |---|---|---|---|
-| P1 | ⬜ | **One parameter table** (page, number, name, class, kind: unipolar/bipolar/enum/bool/note/char, value texts) transcribed from SPEC §4.1–4.2. UI, MIDI and decoding all use it | Replaces the hand-written offsets in `page_a.rs`/`page_b.rs`. Each entry cites the addendum row |
-| P2 | ⬜ | `Patch` = **`[u8; 256]` as the single source of truth**; typed get/set accessors touch only their own byte; `to_bytes(&self)` | SPEC §5.1. Removes the stale-buffer bugs (D5) |
-| P3 | ⬜ | Enums never lose data: `Unknown(u8)` variants; bools read/write the whole byte | Factory values exceed the documented ranges (A49 ≤ 30, A112 ≤ 29, destinations ≤ 114) |
+| P1 | ✅ | **One parameter table** (page, number, name, class, kind: unipolar/bipolar/enum/bool/note/char, value texts) transcribed from SPEC §4.1–4.2. UI, MIDI and decoding all use it | `virus-syx` `params::SINGLE_PARAMS`; the editor is generated from it |
+| P2 | ✅ | `Patch` = **`[u8; 256]` as the single source of truth**; typed get/set accessors touch only their own byte; `to_bytes(&self)` | Test: editing one parameter changes exactly one byte on all 256 factory patches |
+| P3 | ✅ | Enums never lose data: `Unknown(u8)` variants; bools read/write the whole byte | `Category`, `AssignSource`; Choice values beyond the list kept and shown as `#n` |
 | P4 | ✅ | Replace the invented 6-slot matrix with **Assign 1/2/3 (1+2+3 destinations) and LFO1/LFO2 assign** (B64–82); 28 sources (SPEC §4.5) | Done: Modulation tab from `ASSIGN_LAYOUT`/`LFO_ASSIGN_LAYOUT`; raw destination numbers with greyed unverified name hints (Q1); Definable 1/2 likewise |
 | P5 | ✅ | Name and categories read from and written to the patch (B112–121, B123–124), using the 17 categories in SPEC §4.5 order | Done: editor header writes the patch bytes and sends B112–121/B123–124 param changes; DB derives its search copies from the bytes |
 | P6 | ✅ | A0 Sound Version is read-only; performance controllers (class `p`) aren't editable patch fields | Done: Sound Version shown read-only; `Internal`/`Performance` rows not in the editor; `Session::edit` refuses A0 |
@@ -64,9 +64,9 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | # | Status | Item | Notes |
 |---|---|---|---|
 | T1 | ✅ | **Golden tests:** `crates/virus-syx/tests/factory.rs` (damaged `.mid` originals; exact bad-checksum counts) and `tests/clean_factory.rs` (recovered `testdata/factory/Bank_A/B.syx`): all 256 patches parse with valid checksums and round-trip **byte-identically**; names and categories decode; editing one parameter changes exactly one byte | Recovered banks from the SoundDiver `.lib` (sub-chat, 24 Nov) |
-| T2 | ⬜ | DB tests: the favourite toggle and slot store don't touch patch data | Covers D1–D2 |
+| T2 | ✅ | DB tests: the favourite toggle and slot store don't touch patch data | `favourite_and_tags_do_not_touch_data`, `save_and_load_is_byte_exact` |
 | T3 | ✅ | Incoming param doesn't revert other edits; performance CCs and other channels are ignored | Covers D5–D6. `virus-app/src/session.rs` tests |
-| T4 | ⬜ | Import `multis.mid`: banks A and B land in A and B; edit-buffer and multi dumps aren't put in bank slots | Covers L1–L2 |
+| T4 | ✅ | Import `multis.mid`: banks A and B land in A and B; edit-buffer and multi dumps aren't put in bank slots | Routing unit-tested (`import_original_banks_routes_by_bank_byte`); `multis.mid` checked end-to-end by hand (A 128, B 128, 33 loose, 129 multi + 1 other skipped). Not a committed test |
 
 ## 📚 Librarian import and export (SPEC §5.6)
 
@@ -91,6 +91,14 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | F7 | ⬜ | Bank/program change via SysEx (C31–33) so selecting a library patch can also select it on the synth | SPEC §3.5 |
 | F8 | ⬜ | Banks E–H (1,024-sound OS) | Blocked on Q2 |
 
+## 🖥️ Running and live testing
+
+| # | Status | Item | Notes |
+|---|---|---|---|
+| G1 | ⬜ | **The GUI can't start on this dev VM** (Hyper-V over RDP, no GPU): `egui_glow requires opengl 2.0+`; wgpu also fails (`NoSuitableAdapterFound`). This happens before any app code runs; the old app had the same backend | Check on a machine with a GPU first. Fallback options: a software OpenGL (Mesa `opengl32.dll` / llvmpipe next to the exe), or the wgpu renderer with a fallback adapter. Not done |
+| G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 150 ms gaps (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items) | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
+| G3 | ⬜ | Persist settings between runs (ports, channel, device ID, part, window) | e.g. eframe `persistence` or a small TOML in the data dir |
+
 ## ❓ Open questions (SPEC §7)
 
 | # | Question | Blocks |
@@ -107,11 +115,11 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 |---|---|---|---|
 | R1 | ✅ | Connect MIDI ports by **name**, not index; clear stale selection after refresh | Done: `session::Ports` (auto-detect via `find_virus_ports`, stale selections cleared and disconnected; tested) |
 | R2 | ✅ | Report MIDI send failures; don't flash Tx when no output is connected | Done: Tx lights only on `MidiEvent::Sent`; errors in the status bar; nothing is sent without an output |
-| R3 | ⬜ | SysEx assembler: abort a frame on a non-real-time status byte (0x80–0xEF, 0xF1–0xF6) | `virus-midi/src/stream.rs` |
-| R4 | ⬜ | Wrap `import_syx_bank` in one transaction | `virus-db/src/db.rs` |
+| R3 | ✅ | SysEx assembler: abort a frame on a non-real-time status byte (0x80–0xEF, 0xF1–0xF6) | `virus-midi` parser; test `status_byte_aborts_sysex_and_is_processed` |
+| R4 | ✅ | Wrap `import_syx_bank` in one transaction | `import_single_dumps` writes in one transaction (rollback tested) |
 | R5 | ✅ | *(moved to L1)* | |
-| R6 | ⬜ | Show an error, not a zeroed patch, when a stored blob isn't 256 bytes | `row_to_patch_record` |
-| R7 | ⬜ | Escape `%` and `_` in librarian search (`LIKE … ESCAPE`) | `query_patches` |
+| R6 | ✅ | Show an error, not a zeroed patch, when a stored blob isn't 256 bytes | `DbError::CorruptPatch`; test `corrupt_blob_is_an_error` |
+| R7 | ✅ | Escape `%` and `_` in librarian search (`LIKE … ESCAPE`) | `escape_like`; test `query_filters_and_like_escaping` |
 | R8 | ✅ | Show export write failures in the status bar | Done: `library::export_bank_file` errors (empty bank, write failure) shown (tested) |
 
 ## ⚪ Performance and UX
@@ -131,8 +139,8 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | H1 | ✅ | Stop tracking `virus_library.db`, `-shm`, `-wal`; add `*.db*` to `.gitignore` | `git rm --cached` |
 | H2 | ✅ | Commit `Cargo.lock` (it's an application); remove it from `.gitignore` | |
 | H3 | ✅ | Clippy clean-up: unused `bounded`/`Duration` imports in `engine.rs`; `Arc<Mutex>` around the assembler isn't needed; `SoundCategory::from_str` → implement `FromStr` | Done with the crate rewrites: `cargo clippy --workspace --all-targets -- -D warnings` passes (24 Nov) |
-| H4 | ⬜ | `Patch::from_sysex` returns `InvalidPayloadLength` for any non-dump message; add a proper error | `patch.rs` |
-| H5 | ⬜ | Short-message parsing: check `F7` sits right after the payload | `sysex.rs` |
+| H4 | ✅ | `Patch::from_sysex` returns `InvalidPayloadLength` for any non-dump message; add a proper error | `SyxError::NotASingleDump` |
+| H5 | ✅ | Short-message parsing: check `F7` sits right after the payload | Test `fixed_size_messages_require_exact_length` |
 | H6 | ✅ | SPEC.md: `D:\VirusEditor` paths and the unverified "Phase 1" claims corrected (24 Nov rewrite) | |
 | H7 | ⬜ | Add a CI workflow (build, test, clippy) on GitHub Actions | |
 | H8 | ✅ | **16 `float_literal_f32_fallback` warnings will become hard errors** in a future Rust release: write `1.0_f32` (e.g. in `Stroke::new(1.0, …)`) | Done: app rewritten with typed literals; no warnings or future-incompat notes |
