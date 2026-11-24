@@ -673,6 +673,49 @@ fn flagged_patches_follow_the_export_policy() {
 }
 
 #[test]
+fn mark_checked_clears_only_the_flag() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    let mut flagged = dump(1, 1, "Damaged");
+    flagged.checksum_ok = false;
+    db.import_single_dumps(&[dump(1, 0, "Fine"), flagged.clone()], ImportTarget::OriginalBanks)
+        .unwrap();
+    let a = bank_id(&db, "A");
+    let id = db.get_patch_by_slot(a, 1).unwrap().unwrap().id;
+    db.set_tags(id, "keep").unwrap();
+    let before = db.data_version();
+
+    assert!(db.mark_checked(id).unwrap());
+    let record = db.get_patch_by_slot(a, 1).unwrap().unwrap();
+    assert!(record.checksum_ok);
+    assert_eq!((record.data, record.tags.as_str()), (flagged.data, "keep"));
+    assert_ne!(db.data_version(), before, "the librarian cache must refresh");
+    let export = db.export_bank(a, 0x10, None, BadChecksumPolicy::Skip).unwrap();
+    assert_eq!((export.frames.len(), export.skipped_flagged), (2, 0));
+    assert!(!db.mark_checked(9999).unwrap());
+}
+
+#[test]
+fn mark_bank_checked_clears_every_flag_of_that_bank_only() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    let flagged = |bank, program, name| IncomingDump {
+        checksum_ok: false,
+        ..dump(bank, program, name)
+    };
+    db.import_single_dumps(
+        &[flagged(1, 0, "A0"), flagged(1, 5, "A5"), dump(1, 6, "A6"), flagged(2, 0, "B0")],
+        ImportTarget::OriginalBanks,
+    )
+    .unwrap();
+    let (a, b) = (bank_id(&db, "A"), bank_id(&db, "B"));
+
+    assert_eq!(db.mark_bank_checked(a).unwrap(), 2);
+    assert!(db.get_bank_slots(a).unwrap().iter().flatten().all(|s| s.checksum_ok));
+    assert!(!db.get_patch_by_slot(b, 0).unwrap().unwrap().checksum_ok, "bank B untouched");
+    assert_eq!(db.mark_bank_checked(a).unwrap(), 0);
+    assert!(matches!(db.mark_bank_checked(9999), Err(DbError::BankNotFound(9999))));
+}
+
+#[test]
 fn on_disk_v1_database_is_backed_up_including_wal() {
     let dir = std::env::temp_dir().join(format!("virus-db-v1-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

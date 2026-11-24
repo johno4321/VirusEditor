@@ -1,17 +1,18 @@
 //! Multi tab (TODO F4/F5): the 16 parts of the Multi edit buffer, live edits via Page C, fetch
 //! and send of the Multi edit buffer, and a librarian for the Multi bank.
 
-use egui::{ComboBox, DragValue, Grid, RichText, ScrollArea, TextEdit, Ui};
-use virus_db::{IncomingMultiDump, PatchDatabase};
+use egui::{Button, ComboBox, DragValue, Grid, RichText, ScrollArea, TextEdit, Ui, Window};
+use virus_db::{BadChecksumPolicy, IncomingMultiDump, PatchDatabase};
 use virus_syx::{
     multi_common_params, multi_part_params, Multi, MultiLocation, MultiParamDef, ValueKind, MULTI_BANK_SLOTS,
     MULTI_PARTS,
 };
 
-use super::{Notice, ACCENT, DIM, WARN};
+use super::{Notice, ACCENT, DANGER, DIM, WARN};
+use crate::library::sendable_count;
 use crate::multi_session::{
-    display_value, export_multi_bank_file, import_multi_file, import_summary, store_multi, MultiLibraryCache,
-    MultiSession, SingleNames,
+    display_value, export_multi_bank_file, import_multi_file, import_summary, is_complete_multi_bank,
+    multi_backup_bytes, store_multi, MultiLibraryCache, MultiSession, SingleNames, MULTI_BANK_SEND_GAP_MS,
 };
 use crate::session::{EditPart, MidiSettings};
 
@@ -23,6 +24,10 @@ pub enum MultiAction {
     /// Switch to the sound editor (after picking a part to edit, F4).
     OpenEditor,
     Notice(Notice),
+    /// [F9] Send the library's Multi bank to the synth, paced; flagged multis per `policy`.
+    SendBank { policy: BadChecksumPolicy },
+    /// [F9] Stop a running bank send.
+    CancelBatch,
 }
 
 #[derive(Default)]
@@ -34,9 +39,20 @@ pub struct MultiView {
     loose: Vec<IncomingMultiDump>,
     name_buffer: String,
     name_for: Option<String>,
+    // [F9] sending the Multi bank
+    confirm_send_bank: bool,
+    /// A complete Multi bank from the synth was saved to a file in this session.
+    backed_up: bool,
+    send_without_backup: bool,
+    send_flagged: bool,
 }
 
 impl MultiView {
+    /// [F9] Multi edit-buffer dumps found by the Librarian's file import.
+    pub fn add_loose(&mut self, dumps: Vec<IncomingMultiDump>) {
+        self.loose.extend(dumps);
+    }
+
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -53,6 +69,87 @@ impl MultiView {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ScrollArea::both().show(ui, |ui| self.editor(ui, session, settings, actions));
         });
+        self.send_bank_dialog(ui.ctx(), settings, actions);
+    }
+
+    /// [F9] Confirmation before the Multi bank overwrites the synth's (like L4 for singles).
+    fn send_bank_dialog(&mut self, ctx: &egui::Context, settings: &MidiSettings, actions: &mut Vec<MultiAction>) {
+        if !self.confirm_send_bank {
+            return;
+        }
+        let count = self.library.slots.iter().flatten().count();
+        let flagged = self.library.slots.iter().flatten().filter(|m| !m.checksum_ok).count();
+        let mut open = true;
+        let mut close = false;
+        Window::new("Send the Multi bank to the synth").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            ui.colored_label(
+                DANGER,
+                format!(
+                    "This overwrites multis in the synth's Multi bank irrevocably. {count} stored multi(s) will be \
+                     sent to their slots; empty library slots are skipped."
+                ),
+            );
+            ui.label(format!(
+                "The dumps go out {MULTI_BANK_SEND_GAP_MS} ms apart (about {} s).",
+                (count as u64 * MULTI_BANK_SEND_GAP_MS).div_ceil(1000)
+            ));
+            ui.label(
+                "Back up the synth's Multi bank first: request it, wait until all 128 multis have arrived, \
+                 then use \"Save to file…\" under the received multis.",
+            );
+            if self.backed_up {
+                ui.colored_label(ACCENT, "✔ The synth's Multi bank was saved to a file in this session.");
+            } else {
+                ui.checkbox(&mut self.send_without_backup, "Send without a backup (the synth's current multis are lost)");
+            }
+            if flagged > 0 {
+                ui.colored_label(WARN, format!("⚠ {flagged} of the stored multis are flagged (wrong checksum)."));
+                ui.checkbox(&mut self.send_flagged, "Send them anyway (the synth may refuse or mis-load them)");
+            }
+            let n = sendable_count(count, flagged, self.send_flagged);
+            let can_send = n > 0 && (self.backed_up || self.send_without_backup);
+            ui.horizontal(|ui| {
+                if ui.button("📥 Request the synth's Multi bank").clicked() {
+                    actions.push(MultiAction::Send(MultiSession::bank_request(settings)));
+                }
+                if ui.add_enabled(can_send, Button::new(RichText::new(format!("Send {n} multi(s)")).color(DANGER))).clicked() {
+                    let policy = if self.send_flagged { BadChecksumPolicy::KeepInvalid } else { BadChecksumPolicy::Skip };
+                    actions.push(MultiAction::SendBank { policy });
+                    close = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if !open || close {
+            self.confirm_send_bank = false;
+        }
+    }
+
+    /// [F9] Saves the received multis as a `.syx` backup.
+    fn save_received(&mut self, session: &MultiSession, actions: &mut Vec<MultiAction>) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("SysEx", &["syx"])
+            .set_file_name("Multi_bank_backup.syx")
+            .save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&path, multi_backup_bytes(&session.received)) {
+            Ok(()) => {
+                let complete = is_complete_multi_bank(&session.received);
+                self.backed_up |= complete;
+                let note = if complete { "" } else { " (not all 128 multis had arrived, so it isn't a full backup)" };
+                actions.push(MultiAction::Notice(Notice::info(format!(
+                    "Saved {} received multi(s) to {}{note}.",
+                    session.received.len(),
+                    path.display()
+                ))));
+            }
+            Err(e) => actions.push(MultiAction::Notice(Notice::error(format!("Cannot write {}: {e}", path.display())))),
+        }
     }
 
     fn library_panel(
@@ -93,6 +190,9 @@ impl MultiView {
                         }
                         Err(e) => actions.push(MultiAction::Notice(Notice::error(format!("Multi import failed: {e}")))),
                     }
+                }
+                if ui.small_button("Save to file…").on_hover_text("Back up the received multis as a .syx file").clicked() {
+                    self.save_received(session, actions);
                 }
                 if ui.small_button("Discard").clicked() {
                     session.received.clear();
@@ -141,6 +241,19 @@ impl MultiView {
         if let Some(error) = &self.library.error {
             ui.colored_label(WARN, error);
         }
+        // [F9] the whole Multi bank to the synth, after a confirmation
+        ui.horizontal_wrapped(|ui| {
+            let stored = self.library.slots.iter().flatten().count();
+            let send = ui.add_enabled(stored > 0, Button::new("📤 Send Multi bank to synth…"));
+            if send.on_hover_text("Overwrites the synth's Multi bank (asks first)").clicked() {
+                self.confirm_send_bank = true;
+                self.send_without_backup = false;
+                self.send_flagged = false;
+            }
+            if ui.small_button("⏹ Cancel sending").clicked() {
+                actions.push(MultiAction::CancelBatch);
+            }
+        });
         if let Some(multi) = session.multi() {
             let slot = self.selected_slot.or_else(|| first_free(&self.library)).unwrap_or(0);
             let occupant = self.library.slots.get(slot as usize).and_then(Option::as_ref);

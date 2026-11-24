@@ -174,7 +174,8 @@ impl PatchDatabase {
     ///
     /// v1 stored bytes from a lossy patch model and placed imports in whatever bank was
     /// selected, so migrated rows are flagged `checksum_ok = 0`: the librarian shows ⚠ and
-    /// bank send/export skip them by default. Re-import from the original files to clear it.
+    /// bank send/export skip them by default. Re-import from the original files, or
+    /// [`Self::mark_checked`] / [`Self::mark_bank_checked`] after checking the sounds, clears it.
     fn migrate_v1_to_v2(&self) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute_batch(MIGRATE_V1_TO_V2_SQL)?;
@@ -328,6 +329,27 @@ impl PatchDatabase {
     /// Updates only the tags. Returns `false` if the patch doesn't exist.
     pub fn set_tags(&self, patch_id: i64, tags: &str) -> Result<bool> {
         self.update_meta("tags", &tags, patch_id)
+    }
+
+    /// Clears the ⚠ flag (`checksum_ok = 0`, e.g. a patch migrated from v1) after the user has
+    /// checked the sound. The data bytes are not touched. Returns `false` if the patch doesn't
+    /// exist.
+    pub fn mark_checked(&self, patch_id: i64) -> Result<bool> {
+        self.update_meta("checksum_ok", &true, patch_id)
+    }
+
+    /// [`Self::mark_checked`] for every flagged patch of a bank. Returns how many were cleared.
+    pub fn mark_bank_checked(&self, bank_id: i64) -> Result<usize> {
+        self.require_bank(bank_id)?;
+        let n = self.conn.execute(
+            "UPDATE patches SET checksum_ok = 1, updated_at = CURRENT_TIMESTAMP
+             WHERE bank_id = ?1 AND checksum_ok = 0",
+            params![bank_id],
+        )?;
+        if n > 0 {
+            self.bump();
+        }
+        Ok(n)
     }
 
     fn update_meta(&self, column: &str, value: &dyn ToSql, patch_id: i64) -> Result<bool> {

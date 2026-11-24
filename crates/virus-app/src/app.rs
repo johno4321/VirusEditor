@@ -9,7 +9,7 @@ use virus_midi::{MidiCommand, MidiEvent, MidiService, ReleaseTrigger};
 use virus_syx::Patch;
 
 use crate::audition::Audition;
-use crate::comforts::Comforts;
+use crate::comforts::{Comforts, Replace, ReplaceRequest};
 use crate::session::{Activity, EditPart, Incoming, MidiSettings, PacedSend, Ports, Session};
 use crate::settings::{self, FolderPrefs, Loaded, Settings, SettingsStore, WindowPrefs};
 use crate::storage::{adopt_legacy_library, open_library, open_library_at, pending_legacy_library, LibraryLocation};
@@ -19,16 +19,8 @@ use crate::views::comforts::{ComfortAction, ComfortsView};
 use crate::views::librarian::{LibAction, LibrarianView, BANK_SEND_GAP_MS};
 use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, DANGER, DIM, WARN};
 // [multi] Multi tab (F4/F5)
-use crate::multi_session::MultiSession;
+use crate::multi_session::{MultiSession, MULTI_BANK_SEND_GAP_MS};
 use crate::views::multi::{MultiAction, MultiView};
-
-/// [comforts] A pending replacement of the edited patch, held until the user confirms (E5).
-enum Replace {
-    Load { patch: Patch, origin: String },
-    SendToEditBuffer { patch: Patch, origin: String },
-    Init,
-    Fetch,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
@@ -88,7 +80,7 @@ pub struct VirusApp {
     /// [comforts] undo/redo, compare, original patch (E1–E5).
     comforts: Comforts,
     comfort_ui: ComfortsView,
-    pending_replace: Option<Replace>,
+    pending_replace: ReplaceRequest,
     /// Edited part and device the editor was last in sync with (RV-M5).
     last_target: (EditPart, u8),
     // [multi] Multi tab (F4/F5)
@@ -142,7 +134,7 @@ impl VirusApp {
             legacy,
             comforts: Comforts::new(Patch::init()),
             comfort_ui: ComfortsView::default(),
-            pending_replace: None,
+            pending_replace: ReplaceRequest::default(),
             last_target: (EditPart::default(), 0),
             multi: MultiSession::default(),    // [multi]
             multi_view: MultiView::default(), // [multi]
@@ -396,16 +388,21 @@ impl VirusApp {
         if self.comforts.comparing() {
             self.comfort_action(ComfortAction::ToggleCompare, 0.0);
         }
-        if self.comforts.is_edited(&self.session) {
-            self.pending_replace = Some(action);
-        } else {
+        // [E6] held until confirmed; a cancelled Load never selects on the synth
+        let edited = self.comforts.is_edited(&self.session);
+        if let Some(action) = self.pending_replace.request(action, edited) {
             self.perform_replace(action);
         }
     }
 
     fn perform_replace(&mut self, action: Replace) {
         match action {
-            Replace::Load { patch, origin } => self.load(patch, origin),
+            Replace::Load { patch, origin, select } => {
+                self.load(patch, origin);
+                if let Some(slot) = select {
+                    self.select_on_synth(slot.bank_id, slot.program); // [E6]
+                }
+            }
             Replace::Init => self.load(Patch::init(), "init".to_owned()),
             Replace::Fetch => self.send(self.session.fetch_request()),
             Replace::SendToEditBuffer { patch, origin } => {
@@ -426,15 +423,11 @@ impl VirusApp {
 
     /// [comforts] The "discard unstored edits?" dialog.
     fn replace_dialog(&mut self, ctx: &egui::Context) {
-        if self.pending_replace.is_none() {
-            return;
-        }
+        let Some(pending) = self.pending_replace.pending() else { return };
+        let warning = pending.warning(&self.comforts.edited(&self.session).name()); // [E6]
         let mut choice = None;
         egui::Window::new("Replace the edited patch?").collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.label(format!(
-                "'{}' has edits that are not stored in the library. Replacing it discards them (and the undo history).",
-                self.comforts.edited(&self.session).name()
-            ));
+            ui.label(warning);
             ui.horizontal(|ui| {
                 if ui.button("Replace").clicked() {
                     choice = Some(true);
@@ -448,14 +441,8 @@ impl VirusApp {
                 }
             });
         });
-        match choice {
-            Some(true) => {
-                if let Some(action) = self.pending_replace.take() {
-                    self.perform_replace(action);
-                }
-            }
-            Some(false) => self.pending_replace = None,
-            None => {}
+        if let Some(action) = choice.and_then(|replace| self.pending_replace.resolve(replace)) {
+            self.perform_replace(action);
         }
     }
 
@@ -508,8 +495,7 @@ impl VirusApp {
 
     fn handle_library_action(&mut self, action: LibAction) {
         match action {
-            LibAction::Load { patch, origin } => self.request_replace(Replace::Load { patch, origin }),
-            LibAction::SelectOnSynth { bank_id, program } => self.select_on_synth(bank_id, program),
+            LibAction::Load { patch, origin, select } => self.request_replace(Replace::Load { patch, origin, select }),
             LibAction::SendToEditBuffer { patch, origin } => {
                 self.request_replace(Replace::SendToEditBuffer { patch, origin });
             }
@@ -533,6 +519,7 @@ impl VirusApp {
                 self.notice = Notice::info("Pending bank transfer cancelled.");
             }
             LibAction::Notice(notice) => self.notice = notice,
+            LibAction::LooseMultis(dumps) => self.multi_view.add_loose(dumps), // [F9]
         }
     }
 
@@ -583,6 +570,30 @@ impl VirusApp {
                 self.notice = Notice::info(text);
             }
             Err(e) => self.notice = Notice::error(format!("Cannot send the bank: {e}")),
+        }
+    }
+
+    /// [F9] Sends the library's Multi bank, paced like single banks.
+    fn send_multi_bank(&mut self, policy: BadChecksumPolicy) {
+        if !self.ports.output_connected() {
+            self.notice = Notice::warning("No MIDI output connected: the Multi bank was not sent.");
+            return;
+        }
+        match self.db.export_multi_bank(self.session.settings.device_id, policy) {
+            Ok(export) if export.frames.is_empty() => {
+                self.notice = Notice::warning("Nothing to send: the Multi bank is empty or every multi is flagged ⚠.");
+            }
+            Ok(export) => {
+                let count = export.frames.len();
+                self.paced.start(Instant::now(), count, Duration::from_millis(MULTI_BANK_SEND_GAP_MS));
+                self.command(MidiCommand::SendBatch { messages: export.frames, gap_ms: MULTI_BANK_SEND_GAP_MS });
+                let mut text = format!("Sending {count} multi(s) to the synth's Multi bank…");
+                if export.skipped_flagged > 0 {
+                    text.push_str(&format!(" {} flagged ⚠ multi(s) left out.", export.skipped_flagged));
+                }
+                self.notice = Notice::info(text);
+            }
+            Err(e) => self.notice = Notice::error(format!("Cannot send the Multi bank: {e}")),
         }
     }
 
@@ -668,6 +679,7 @@ impl VirusApp {
                 if ui.button("Init").on_hover_text("Load a neutral init sound (not sent)").clicked() {
                     self.request_replace(Replace::Init);
                 }
+                theme::watermark(ui, ui.available_rect_before_wrap()); // [V2] only in the empty gap
             });
         });
         match &self.location {
@@ -767,6 +779,7 @@ impl App for VirusApp {
         let mut edits = Vec::new();
         let mut actions = Vec::new();
         let comparing = self.comforts.comparing(); // [comforts] editing is disabled while comparing
+        self.librarian.editor_comparing = comparing; // [E6]
         let mut multi_actions = Vec::new(); // [multi]
         CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Editor => {
@@ -803,6 +816,8 @@ impl App for VirusApp {
                 MultiAction::Send(message) => self.send(message),
                 MultiAction::OpenEditor => self.tab = Tab::Editor,
                 MultiAction::Notice(notice) => self.notice = notice,
+                MultiAction::SendBank { policy } => self.send_multi_bank(policy), // [F9]
+                MultiAction::CancelBatch => self.handle_library_action(LibAction::CancelBatch),
             }
         }
         self.flush_paced();

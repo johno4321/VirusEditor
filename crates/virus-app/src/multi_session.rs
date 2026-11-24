@@ -9,9 +9,9 @@ use std::path::Path;
 use virus_db::{DbError, IncomingMultiDump, MultiImportReport, MultiSummary, PatchDatabase, PatchMeta};
 use virus_midi::MidiEvent;
 use virus_syx::{
-    encode_dump_request, encode_multi_bank_request, encode_multi_request, extract_sysex_frames,
+    encode_dump_request, encode_multi_bank_request, encode_multi_dump, encode_multi_request, extract_sysex_frames,
     multi_param_for_live, parse_sysex, Multi, MultiDumpTarget, MultiParamDef, SysExMessage, ValueKind,
-    DEVICE_ID_OMNI, MULTI_PARAMS, MULTI_PARTS, PART_BANK_NAMES,
+    DEVICE_ID_OMNI, MULTI_BANK, MULTI_BANK_SLOTS, MULTI_PARAMS, MULTI_PARTS, PART_BANK_NAMES,
 };
 
 use crate::session::{EditPart, MidiSettings};
@@ -225,6 +225,33 @@ pub fn import_summary(report: &MultiImportReport) -> String {
         parts.push(format!("{} dump(s) skipped (unsupported bank or program)", report.skipped));
     }
     parts.join("; ") + "."
+}
+
+/// Pause between dumps when sending the Multi bank (F9). The Virus sends its own Multi bank
+/// dumps about 339 ms apart (live test, 24 Nov), so 300 ms keeps a similar pace.
+pub const MULTI_BANK_SEND_GAP_MS: u64 = 300;
+
+/// Whether `dumps` hold all 128 Multi bank programs, i.e. a full backup of the synth's bank.
+pub fn is_complete_multi_bank(dumps: &[IncomingMultiDump]) -> bool {
+    let mut programs: Vec<u8> = dumps.iter().filter(|d| d.bank == MULTI_BANK).map(|d| d.program).collect();
+    programs.sort_unstable();
+    programs.dedup();
+    programs.len() >= MULTI_BANK_SLOTS
+}
+
+/// `.syx` bytes of received multi dumps, for a backup file (device ID Omni). A dump that
+/// arrived with a wrong checksum keeps a wrong one, so the damage stays detectable.
+pub fn multi_backup_bytes(dumps: &[IncomingMultiDump]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for dump in dumps {
+        let mut frame = encode_multi_dump(DEVICE_ID_OMNI, dump.bank, dump.program, &dump.data);
+        if !dump.checksum_ok {
+            let checksum = frame.len() - 2;
+            frame[checksum] = (frame[checksum] + 1) & 0x7F;
+        }
+        bytes.extend(frame);
+    }
+    bytes
 }
 
 /// Writes the Multi bank as a `.syx` file (device ID Omni). Returns the number of multis.
@@ -515,5 +542,29 @@ mod tests {
         assert_eq!(display_value(param("Part MIDI Volume Init"), 0), "Off");
         assert_eq!(display_value(param("Part MIDI Volume Init"), 100), "100");
         assert_eq!(display_value(param("Part Volume"), 0), "-64");
+    }
+
+    fn incoming(bank: u8, program: u8, name: &str, checksum_ok: bool) -> IncomingMultiDump {
+        IncomingMultiDump { bank, program, data: *sample(name).as_bytes(), checksum_ok }
+    }
+
+    #[test]
+    fn a_complete_multi_bank_needs_all_128_programs() {
+        let mut dumps: Vec<IncomingMultiDump> = (0..127).map(|p| incoming(1, p, "M", true)).collect();
+        dumps.push(incoming(0, 127, "EditBuf", true));
+        dumps.push(incoming(1, 5, "Again", true));
+        assert!(!is_complete_multi_bank(&dumps), "edit buffers and repeats don't count");
+        dumps.push(incoming(1, 127, "Last", true));
+        assert!(is_complete_multi_bank(&dumps));
+    }
+
+    #[test]
+    fn backup_bytes_reimport_byte_exact_and_keep_bad_checksums_detectable() {
+        let dumps = [incoming(1, 0, "Good", true), incoming(1, 9, "Damaged", false)];
+        let bytes = multi_backup_bytes(&dumps);
+        let parsed = parse_multi_frames(&extract_sysex_frames(&bytes));
+        assert_eq!(parsed.len(), 2);
+        assert_eq!((parsed[0].data, parsed[0].checksum_ok), (dumps[0].data, true));
+        assert_eq!((parsed[1].program, parsed[1].data, parsed[1].checksum_ok), (9, dumps[1].data, false));
     }
 }

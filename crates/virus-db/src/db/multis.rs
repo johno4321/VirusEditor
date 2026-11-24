@@ -4,8 +4,12 @@ use rusqlite::{params, OptionalExtension, Row, ToSql};
 
 use super::{check_program, PatchDatabase, BANK_SLOTS};
 use crate::error::{DbError, Result};
-use crate::models::{IncomingMultiDump, MultiImportReport, MultiRecord, MultiSummary, PatchMeta};
-use crate::multi_data::{encode_multi_dump, multi_name, MULTI_BANK_BYTE, MULTI_EDIT_BUFFER_BANK, MULTI_LEN};
+use crate::models::{
+    BadChecksumPolicy, BankExport, IncomingMultiDump, MultiImportReport, MultiRecord, MultiSummary, PatchMeta,
+};
+use crate::multi_data::{
+    encode_multi_dump, multi_name, MULTI_BANK_BYTE, MULTI_DUMP_LEN, MULTI_EDIT_BUFFER_BANK, MULTI_LEN,
+};
 
 const MULTI_SUMMARY_COLUMNS: &str = "id, slot, name, tags, favorite, checksum_ok";
 const MULTI_RECORD_COLUMNS: &str = "id, slot, name, tags, favorite, checksum_ok, raw_data";
@@ -185,6 +189,44 @@ impl PatchDatabase {
     pub fn export_multi_bank_syx(&self, device_id: u8) -> Result<Vec<u8>> {
         Ok(self.export_multi_bank_dumps(device_id)?.concat())
     }
+
+    /// Multi Dump frames of the Multi bank in slot order, for sending to the synth. Multis
+    /// flagged `checksum_ok = false` are handled according to `policy` (like
+    /// [`Self::export_bank`]); multis with bytes ≥ 0x80 are always left out.
+    pub fn export_multi_bank(&self, device_id: u8, policy: BadChecksumPolicy) -> Result<BankExport> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slot, raw_data, checksum_ok FROM multis WHERE slot IS NOT NULL ORDER BY slot ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, u8>(1)?, r.get::<_, Vec<u8>>(2)?, r.get::<_, bool>(3)?))
+        })?;
+        let mut export = BankExport::default();
+        for row in rows {
+            let (id, slot, raw, checksum_ok) = row?;
+            let data = to_multi_bytes(id, &raw)?;
+            if data.iter().any(|&b| b > 0x7F) {
+                export.skipped_invalid += 1;
+                continue;
+            }
+            let mut frame = encode_multi_dump(device_id, MULTI_BANK_BYTE, slot, &data);
+            if !checksum_ok {
+                match policy {
+                    BadChecksumPolicy::Skip => {
+                        export.skipped_flagged += 1;
+                        continue;
+                    }
+                    BadChecksumPolicy::KeepInvalid => {
+                        let checksum = &mut frame[MULTI_DUMP_LEN - 2];
+                        *checksum = (*checksum + 1) & 0x7F;
+                    }
+                    BadChecksumPolicy::Rechecksum => {}
+                }
+                export.included_flagged += 1;
+            }
+            export.frames.push(frame);
+        }
+        Ok(export)
+    }
 }
 
 fn row_to_multi_summary(row: &Row) -> rusqlite::Result<MultiSummary> {
@@ -352,6 +394,28 @@ mod tests {
             assert_eq!(frame[265], multi_dump_checksum(0x10, 1, slot, data));
         }
         assert_eq!(db.export_multi_bank_syx(0x10).unwrap(), frames.concat());
+    }
+
+    #[test]
+    fn multi_bank_send_export_follows_the_flag_policy() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let mut bad = dump(1, 4, "Damaged");
+        bad.checksum_ok = false;
+        db.import_multi_dumps(&[dump(1, 0, "Fine"), bad.clone()]).unwrap();
+        let correct = multi_dump_checksum(0x00, 1, 4, &bad.data);
+
+        let skip = db.export_multi_bank(0x00, BadChecksumPolicy::Skip).unwrap();
+        assert_eq!((skip.frames.len(), skip.skipped_flagged, skip.included_flagged), (1, 1, 0));
+        assert_eq!(skip.frames[0][8], 0);
+
+        let keep = db.export_multi_bank(0x00, BadChecksumPolicy::KeepInvalid).unwrap();
+        assert_eq!((keep.frames.len(), keep.included_flagged), (2, 1));
+        assert_eq!(&keep.frames[1][9..265], &bad.data[..]);
+        assert_ne!(keep.frames[1][265], correct);
+        assert!(keep.frames[1][265] < 0x80);
+
+        let fix = db.export_multi_bank(0x00, BadChecksumPolicy::Rechecksum).unwrap();
+        assert_eq!(fix.frames[1][265], correct);
     }
 
     #[test]
