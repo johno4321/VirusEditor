@@ -72,6 +72,22 @@ The app draws with OpenGL 2.0 or later. Where that isn't available (for example 
 
 Factory banks to try: the clean copies `testdata/factory/Bank_A.syx` and `Bank_B.syx`. The originals in `VirusOSR200_INT/OSR200_INT/Goodies/Factory soundset/` are partly damaged; see SPEC §6.
 
+## Command-line tool
+
+`virus` (crate [`crates/virus-cli`](crates/virus-cli)) talks to the synth without the GUI. It's meant for the first live session and the open questions. It can:
+
+- list ports and monitor incoming MIDI, decoded;
+- fetch and send the edit buffer, and set single parameters;
+- request banks (with an optional backup into the library) and send RAM banks A/B (with confirmation and an automatic backup);
+- probe destination names (Q1) and value lists (Q3);
+- run a self-test.
+
+```powershell
+cargo run -p virus-cli --release -- --help
+```
+
+See the [crate README](crates/virus-cli/README.md) for the commands and the **first cable session runbook**.
+
 ## Project layout
 
 | Crate | Purpose |
@@ -80,6 +96,7 @@ Factory banks to try: the clean copies `testdata/factory/Bank_A.syx` and `Bank_B
 | [`crates/virus-midi`](crates/virus-midi) | MIDI I/O on a background thread (`midir`), SysEx stream assembly, and command/event channels for the UI |
 | [`crates/virus-db`](crates/virus-db) | SQLite librarian: banks, patches, categories, search, bank import/export, and the Multi bank |
 | [`crates/virus-app`](crates/virus-app) | The desktop app (`eframe` / `egui`). Non-UI logic (MIDI interpretation, outgoing SysEx, import/export, storage) lives in `session.rs`, `library.rs`, `storage.rs`, `audition.rs` and `multi_session.rs` and is unit-tested; `views/` and `widgets/` draw it |
+| [`crates/virus-cli`](crates/virus-cli) | The `virus` command-line tool for live sessions: fetch, send, banks, monitor, Q1/Q3 probes, self-test. Logic is tested against an in-memory fake Virus |
 
 ## Documentation
 

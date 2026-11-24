@@ -40,11 +40,12 @@ Page numbers below are the manual's printed page numbers (PDF page − 2).
 * **Page C** (Multi and Global) is **SysEx only**.
 
 ### 1.5 Core architecture
-* Multi-crate Cargo workspace. Dependencies point one way: `virus-app` → `virus-syx`, `virus-midi`, `virus-db`. The three library crates don't depend on each other.
+* Multi-crate Cargo workspace. Dependencies point one way: `virus-app` and `virus-cli` → `virus-syx`, `virus-midi`, `virus-db`. The three library crates don't depend on each other.
 * **`virus-syx`:** pure domain crate. A raw 256-byte `Patch` is the single source of truth (§5.1), described by one parameter table (§4).
 * **`virus-midi`:** a plain transport on its own thread (`midir` + channels). It doesn't interpret Virus messages.
 * **`virus-db`:** a byte-exact SQLite librarian (`rusqlite`, bundled). The library lives at `%APPDATA%\VirusEditor\data\virus_library.db`.
 * **`virus-app`:** a native immediate-mode GUI (`egui`/`eframe` 0.27). It renders with OpenGL 2.0+ (`glow`) and, if that fails at start-up, falls back to `wgpu` (Direct3D 12, which includes the WARP software rasteriser for machines without a GPU). `--renderer glow|wgpu` or `VIRUS_RENDERER` forces one. Logic that can be tested without the GUI lives in `session.rs`, `library.rs` and `storage.rs`.
+* **`virus-cli`:** the headless `virus` binary (`clap`) for live sessions: fetch, send, set, get-bank and put-bank, monitor, Q1/Q3 probes and a self-test. Message building, the answer collectors (fed with `MidiEvent`s) and probe planning are pure, and are tested against an in-memory fake Virus. Its README holds the first-cable-session runbook.
 
 ---
 
@@ -73,22 +74,31 @@ VirusEditor\
     │   └── src\ engine.rs · events.rs · parser.rs · batch.rs · ports.rs · notes.rs (note audition, §5.9)
     ├── virus-db\               # Librarian: schema v3 + migrations, byte-exact patches and multis, import/export
     │   └── src\ db.rs (+ db\tests.rs, db\multis.rs) · models.rs · patch_data.rs · multi_data.rs · schema.rs · error.rs
-    └── virus-app\              # GUI
+    ├── virus-app\              # GUI
+    │   └── src\
+    │       ├── main.rs · app.rs # Window, tabs, wiring
+    │       ├── session.rs      # MIDI settings, incoming interpretation (§5.5), outgoing edits
+    │       ├── library.rs      # File import/export glue, store rules, cached queries
+    │       ├── storage.rs      # DB location and in-memory fallback
+    │       ├── settings.rs     # Persisted settings (settings.json), migration, port restore, window geometry
+    │       ├── dialogs.rs      # Off-thread file dialogs and file I/O (one task at a time)
+    │       ├── synth_select.rs # SysEx bank/program change messages for "Select on synth" (F7)
+    │       ├── multi_session.rs # Multi edit buffer, incoming multi dumps/Page C, live edits, multi librarian glue
+    │       ├── audition.rs     # Note audition state (§5.9)
+    │       ├── theme.rs        # Red & black palette (§5.10)
+    │       ├── comforts.rs · history.rs · compare.rs · sections.rs # Undo/redo, Compare, diff, section copy/paste (E1–E5)
+    │       ├── renderer.rs     # Renderer choice: OpenGL first, wgpu/WARP fallback (G1)
+    │       ├── views\          # editor.rs (generated from SINGLE_PARAMS), modulation.rs, librarian.rs, multi.rs (Multi tab), midi_bar.rs, controls.rs
+    │       └── widgets\        # knob.rs, curves.rs (filter response, envelopes), piano.rs
+    └── virus-cli\              # `virus` CLI + README runbook
         └── src\
-            ├── main.rs · app.rs # Window, tabs, wiring
-            ├── session.rs      # MIDI settings, incoming interpretation (§5.5), outgoing edits
-            ├── library.rs      # File import/export glue, store rules, cached queries
-            ├── storage.rs      # DB location and in-memory fallback
-            ├── settings.rs     # Persisted settings (settings.json), migration, port restore, window geometry
-            ├── dialogs.rs      # Off-thread file dialogs and file I/O (one task at a time)
-            ├── synth_select.rs # SysEx bank/program change messages for "Select on synth" (F7)
-            ├── multi_session.rs # Multi edit buffer, incoming multi dumps/Page C, live edits, multi librarian glue
-            ├── audition.rs     # Note audition state (§5.9)
-            ├── theme.rs        # Red & black palette (§5.10)
-            ├── comforts.rs · history.rs · compare.rs · sections.rs # Undo/redo, Compare, diff, section copy/paste (E1–E5)
-            ├── renderer.rs     # Renderer choice: OpenGL first, wgpu/WARP fallback (G1)
-            ├── views\          # editor.rs (generated from SINGLE_PARAMS), modulation.rs, librarian.rs, multi.rs (Multi tab), midi_bar.rs, controls.rs
-            └── widgets\        # knob.rs, curves.rs (filter response, envelopes), piano.rs
+            ├── main.rs · cli.rs · commands.rs   # clap definition, I/O shell
+            ├── transport.rs    # Transport trait, collectors (edit buffer, bank, first answer), exchange()
+            ├── ops.rs · messages.rs · files.rs  # fetch/send/set/banks, message building, file picking
+            ├── probe.rs · selftest.rs           # Q1/Q3 probes (JSON, restore), G2 checks
+            ├── decode.rs · summary.rs           # monitor lines, patch summary
+            ├── midi_link.rs    # MidiService transport, port selection, --verbose hex log
+            └── fake.rs         # in-memory Virus for tests
 ```
 
 ---
@@ -391,7 +401,8 @@ Detailed tasks are in [TODO.md](TODO.md).
 | 4. Librarian DB (`virus-db`) | ✅ Reworked 24 Nov: byte-exact storage, schema v3 + migrations (v1→v2→v3), bank-aware import/export (§5.6), Multi bank storage |
 | 5. GUI (`virus-app`) | ✅ Rebuilt 24 Nov on the new crates (generated editor, Assign panel, 128-slot librarian, synth transfer). Starts and renders on the GPU-less dev VM via the wgpu/WARP fallback (TODO G1); ⚠️ not yet started on a machine with a GPU, not yet tried with the synth (G2) |
 | 6. Done 24 Nov | Note audition (TODO N items); **Multi editor and librarian** (F4/F5, §4.4) with the audition on the part's real channel (N9) |
-| 7. Needs the synth | Live tests (G2), destination names (Q1), value lists (Q3), banks E–H (Q2) |
+| 6b. CLI (`virus-cli`) | ✅ Built 24 Nov: a headless tool for the live session (runbook in `crates/virus-cli/README.md`). Not yet tried with the synth |
+| 7. Needs the synth | Live tests (G2), destination names (Q1), value lists (Q3), banks E–H (Q2). Run them with the `virus` CLI |
 | 8. Later | Synth globals (F3), sending the whole Multi bank, controller-dump sync, arrangement/total dump import |
 
 ---
@@ -405,6 +416,15 @@ Detailed tasks are in [TODO.md](TODO.md).
   * Multi programs (F4/F5): `virus-syx` `Multi` + `MULTI_PARAMS` with the live Page C mapping (§4.4); golden test on all 129 multi dumps of `multis.mid`; `virus-db` schema v3 (`multis` table, transactional v2→v3); Multi tab in the app.
   * Note audition follows the edited part's MIDI channel from the fetched Multi (N9).
   * `rework/integration` merged in (theme, CI, review, note audition); 166 workspace tests, clippy clean.
+* **2026-11-24 (late morning)**
+  * New crate `virus-cli` (binary `virus`), on branch `rework/cli`. Commands:
+    * `ports`, `monitor`, `fetch`, `send`, `set`;
+    * `get-bank` (optionally into the library);
+    * `put-bank` (RAM A/B only; `--yes`; automatic backup first; 150 ms gaps; `--verify`);
+    * `probe-destinations` (Q1), `probe-values` (Q3), `probe-table`;
+    * `selftest` (G2).
+  * The probes back up and restore the edit buffer, read each value back to find where ranges end, and save JSON after every step.
+  * The library crates are unchanged; 39 new tests.
 * **2026-11-24 (afternoon)**
   * Library crates reworked in parallel (`virus-syx`, `virus-midi`, `virus-db`) and merged into `rework/integration`.
   * Factory `.mid` files found to be LF→CR damaged; clean Banks A/B recovered from the SoundDiver `.lib` into `testdata/factory`.
