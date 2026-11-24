@@ -3,6 +3,7 @@
 //! refreshes when the database changes (U1).
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use virus_db::{
     BadChecksumPolicy, BankRecord, DbError, ImportPlan, ImportReport, ImportTarget, IncomingDump, IncomingMultiDump,
@@ -477,6 +478,50 @@ pub fn store_patch(db: &PatchDatabase, bank_id: i64, program: u8, patch: &Patch)
     db.save_patch(bank_id, program, patch.as_bytes(), &meta)
 }
 
+/// What the Store button does with the patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorePlan {
+    /// Store the editor's copy as it is.
+    StoreNow,
+    /// Request the synth's edit buffer, adopt it, then store it.
+    FetchThenStore,
+}
+
+/// "Fetch from synth first" applies only when the choice is on, an output is connected and the
+/// editor's own patch is being stored (a received dump is already the synth's).
+pub fn plan_store(fetch_first: bool, editor_patch: bool, output_connected: bool) -> StorePlan {
+    if fetch_first && editor_patch && output_connected {
+        StorePlan::FetchThenStore
+    } else {
+        StorePlan::StoreNow
+    }
+}
+
+/// A store waiting for the synth's edit-buffer dump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingStore {
+    pub bank_id: i64,
+    pub program: u8,
+    deadline: Instant,
+}
+
+impl PendingStore {
+    /// Quiet-line wait (up to 0.5 s) plus the synth's answer.
+    pub const TIMEOUT: Duration = Duration::from_secs(5);
+
+    pub fn new(bank_id: i64, program: u8, now: Instant) -> Self {
+        Self { bank_id, program, deadline: now + Self::TIMEOUT }
+    }
+
+    pub fn expired(&self, now: Instant) -> bool {
+        now >= self.deadline
+    }
+
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+}
+
 pub fn first_free_slot(slots: &[Option<PatchSummary>]) -> Option<u8> {
     slots.iter().position(Option::is_none).and_then(|i| u8::try_from(i).ok())
 }
@@ -599,6 +644,23 @@ mod tests {
         assert_eq!((parsed.multis.len(), parsed.other_messages, parsed.invalid_frames), (1, 1, 1));
         assert_eq!(parsed.dumps[0].bank, 0);
         assert!(!parsed.dumps[2].checksum_ok);
+    }
+
+    #[test]
+    fn fetch_first_needs_the_choice_an_output_and_the_editor_patch() {
+        assert_eq!(plan_store(true, true, true), StorePlan::FetchThenStore);
+        assert_eq!(plan_store(false, true, true), StorePlan::StoreNow, "choice is off");
+        assert_eq!(plan_store(true, true, false), StorePlan::StoreNow, "no output connected");
+        assert_eq!(plan_store(true, false, true), StorePlan::StoreNow, "a received dump needs no fetch");
+    }
+
+    #[test]
+    fn pending_store_expires_after_the_timeout() {
+        let t0 = Instant::now();
+        let pending = PendingStore::new(3, 17, t0);
+        assert!(!pending.expired(t0 + PendingStore::TIMEOUT - Duration::from_millis(1)));
+        assert!(pending.expired(t0 + PendingStore::TIMEOUT));
+        assert_eq!((pending.bank_id, pending.program), (3, 17));
     }
 
     #[test]

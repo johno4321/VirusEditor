@@ -15,4 +15,7 @@ pub use engine::MidiService;
 pub use events::{MidiCommand, MidiEvent};
 pub use notes::{NoteEvent, NoteTracker, Phrase, PhraseNote, PhrasePlayer, ReleaseTrigger};
 pub use parser::{MidiInputParser, MAX_SYSEX_LEN, SYSEX_END, SYSEX_START};
-pub use ports::{find_virus_ports, list_input_ports, list_output_ports};
+pub use ports::{
+    auto_pick_port, base_port_name, find_port_or_renamed, find_virus_ports, list_input_ports, list_output_ports,
+    real_ports,
+};

@@ -4,16 +4,13 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use virus_midi::{find_virus_ports, list_input_ports, list_output_ports, MidiCommand, MidiEvent, MidiService};
+use virus_midi::{find_virus_ports, list_input_ports, list_output_ports, real_ports, MidiCommand, MidiEvent, MidiService};
 
 use crate::messages::hex;
 use crate::transport::Transport;
 
 /// How long to wait for the worker to confirm a send or a connection.
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Ports that are never a Virus (Windows' built-in synth).
-const NEVER_VIRUS: &[&str] = &["microsoft gs wavetable"];
 
 /// Picks one port name. With a pattern: an exact (case-insensitive) match, else the only
 /// name containing it. Without: the only Virus-looking port, else the only real port.
@@ -41,12 +38,8 @@ pub fn select_port(names: &[String], pattern: Option<&str>, kind: &str, flag: &s
     if virus.len() > 1 {
         return Err(format!("several Virus-looking {kind} ports: {}; choose one with {flag}", virus.join(" | ")));
     }
-    let real: Vec<&String> = names
-        .iter()
-        .filter(|n| !NEVER_VIRUS.iter().any(|x| n.to_lowercase().contains(x)))
-        .collect();
-    match real.as_slice() {
-        [only] => Ok((*only).clone()),
+    match real_ports(names).as_slice() {
+        [only] => Ok(only.clone()),
         _ => Err(format!("cannot pick a MIDI {kind} port automatically; use {flag} <name part> (available: {})", list())),
     }
 }

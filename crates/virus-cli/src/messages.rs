@@ -42,6 +42,15 @@ pub fn bank_dumps(target: &Target, bank: u8, programs: &[(u8, [u8; 256])]) -> Ve
         .collect()
 }
 
+/// All Notes Off (CC123) then All Sound Off (CC120) for one channel (0..=15), or for all 16.
+pub fn panic_messages(channel: u8, all_channels: bool) -> Vec<Vec<u8>> {
+    let channels = if all_channels { (0..16).collect() } else { vec![channel & 0x0F] };
+    channels
+        .into_iter()
+        .flat_map(|ch| [virus_midi::notes::all_notes_off(ch), virus_midi::notes::all_sound_off(ch)])
+        .collect()
+}
+
 /// Uppercase hex with spaces, e.g. `F0 00 20 33`.
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
@@ -79,6 +88,15 @@ mod tests {
 
     fn target() -> Target {
         Target { device: DeviceId(0x00), channel: 0, part: Part::Single }
+    }
+
+    #[test]
+    fn panic_messages_cover_one_channel_or_all_sixteen() {
+        assert_eq!(panic_messages(10, false), vec![vec![0xBA, 123, 0], vec![0xBA, 120, 0]]);
+        let all = panic_messages(10, true);
+        assert_eq!(all.len(), 32);
+        assert_eq!(all[0], vec![0xB0, 123, 0]);
+        assert_eq!(all[31], vec![0xBF, 120, 0]);
     }
 
     #[test]

@@ -8,7 +8,9 @@
 use crate::session::EditPart;
 use crate::widgets::piano::{Piano, PianoEvent, VelocityMode};
 use egui::{Event, Key, Modifiers, Ui};
-use virus_midi::notes::{note_name, Message, NoteTracker, Phrase, PhrasePlayer, ReleaseTrigger};
+use virus_midi::notes::{
+    all_notes_off, all_sound_off, note_name, Message, NoteTracker, Phrase, PhrasePlayer, ReleaseTrigger,
+};
 
 /// "C3" on the Virus.
 pub const MIDDLE_C: u8 = 60;
@@ -237,6 +239,20 @@ impl Audition {
         self.player.stop();
         self.keys_down.clear();
         self.tracker.panic(self.channel)
+    }
+
+    /// Note offs for everything, then All Notes Off and All Sound Off on the audition channel
+    /// and on each of `channels` (the synth channel and, in Multi mode, the parts' channels).
+    pub fn panic_on(&mut self, channels: &[u8]) -> Vec<Message> {
+        let mut out = self.panic();
+        for &channel in channels {
+            for message in [all_notes_off(channel), all_sound_off(channel)] {
+                if !out.contains(&message) {
+                    out.push(message);
+                }
+            }
+        }
+        out
     }
 
     pub fn piano_events(&mut self, events: &[PianoEvent]) -> Vec<Message> {
@@ -687,5 +703,16 @@ mod tests {
         assert!(out.ends_with(&[all_notes_off(0), virus_midi::notes::all_sound_off(0)]));
         assert!(!a.is_active());
         assert!(a.tick(10_000).is_empty());
+    }
+
+    #[test]
+    fn panic_on_adds_each_channel_once() {
+        let mut a = Audition::new();
+        let out = a.panic_on(&[10, 0, 2, 2]);
+        for channel in [0, 2, 10] {
+            assert_eq!(out.iter().filter(|m| **m == all_notes_off(channel)).count(), 1, "CC123 on {channel}");
+            assert_eq!(out.iter().filter(|m| **m == all_sound_off(channel)).count(), 1, "CC120 on {channel}");
+        }
+        assert_eq!(out.len(), 6);
     }
 }

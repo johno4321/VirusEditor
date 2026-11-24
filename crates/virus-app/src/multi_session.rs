@@ -171,6 +171,21 @@ impl MultiSession {
             EditPart::Multi(part) => self.part_channel(part),
         }
     }
+
+    /// Channels Panic must silence: the synth channel, plus (in Multi mode, once a multi is
+    /// known) the channel of every enabled part. No duplicates, synth channel first.
+    pub fn panic_channels(&self, settings: &MidiSettings) -> Vec<u8> {
+        let mut channels = vec![settings.channel & 0x0F];
+        if let (EditPart::Multi(_), Some(multi)) = (settings.part, self.multi()) {
+            for part in (0..16u8).filter(|&p| multi.part_enabled(p)) {
+                let channel = multi.part(part).midi_channel & 0x0F;
+                if !channels.contains(&channel) {
+                    channels.push(channel);
+                }
+            }
+        }
+        channels
+    }
 }
 
 /// Display text for a Multi value (`MIDI Volume Init` 0 is "Off").
@@ -535,6 +550,27 @@ mod tests {
         let c34 = sysex(encode_param_change(0, Page::PageC, 6, 34, 9));
         s.handle_midi(&c34, &settings());
         assert_eq!(s.edited_part_channel(EditPart::Multi(6)), Some(9));
+    }
+
+    #[test]
+    fn panic_channels_cover_enabled_parts_in_multi_mode_only() {
+        let mut s = MultiSession::default();
+        let single = MidiSettings { channel: 10, device_id: 0, part: EditPart::Single };
+        let multi_mode = MidiSettings { part: EditPart::Multi(0), ..single };
+        assert_eq!(s.panic_channels(&multi_mode), vec![10], "no multi fetched yet");
+
+        let mut multi = sample("M");
+        for part in 0..16 {
+            multi.set_part_enabled(part, false);
+        }
+        for (part, channel) in [(0u8, 0u8), (1, 10), (2, 2), (3, 2)] {
+            multi.set_part_enabled(part, true);
+            multi.set(param("Part MIDI Channel"), part, channel);
+        }
+        multi.set(param("Part MIDI Channel"), 9, 7); // disabled part: not touched
+        s.load(multi, "test");
+        assert_eq!(s.panic_channels(&multi_mode), vec![10, 0, 2]);
+        assert_eq!(s.panic_channels(&single), vec![10]);
     }
 
     #[test]

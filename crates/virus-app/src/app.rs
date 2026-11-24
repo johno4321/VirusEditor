@@ -10,6 +10,7 @@ use virus_syx::Patch;
 
 use crate::audition::Audition;
 use crate::comforts::{Comforts, Replace, ReplaceRequest};
+use crate::library::{slot_label, store_patch, PendingStore};
 use crate::session::{Activity, EditPart, Incoming, MidiSettings, PacedSend, Ports, Session};
 use crate::settings::{self, FolderPrefs, Loaded, Settings, SettingsStore, WindowPrefs};
 use crate::storage::{adopt_legacy_library, open_library, open_library_at, pending_legacy_library, LibraryLocation};
@@ -86,6 +87,8 @@ pub struct VirusApp {
     // [multi] Multi tab (F4/F5)
     multi: MultiSession,
     multi_view: MultiView,
+    /// A store waiting for the synth's edit-buffer dump ("Fetch from synth first").
+    pending_store: Option<PendingStore>,
 }
 
 impl VirusApp {
@@ -138,6 +141,7 @@ impl VirusApp {
             last_target: (EditPart::default(), 0),
             multi: MultiSession::default(),    // [multi]
             multi_view: MultiView::default(), // [multi]
+            pending_store: None,
         };
         app.apply_settings(&loaded.settings);
         app
@@ -155,6 +159,7 @@ impl VirusApp {
         audition.settings.audition_length_ms = s.audition.length_ms;
         self.tab = Tab::from_key(&s.ui.tab);
         self.librarian.select_on_synth = s.ui.select_on_synth;
+        self.librarian.fetch_before_store = s.ui.fetch_before_store;
         if let (Some(name), Ok(banks)) = (&s.ui.bank, self.db.get_banks()) {
             self.librarian.set_bank_id(banks.iter().find(|b| &b.name == name).map(|b| b.id));
         }
@@ -173,8 +178,8 @@ impl VirusApp {
         let mut midi = match &self.pending_ports {
             Some(saved) => saved.clone(),
             None => settings::MidiPrefs {
-                input: self.ports.selected_input.clone(),
-                output: self.ports.selected_output.clone(),
+                input: self.ports.wanted_input.clone(),
+                output: self.ports.wanted_output.clone(),
                 auto_connect: self.ports.auto_connect,
                 ..Default::default()
             },
@@ -196,6 +201,7 @@ impl VirusApp {
                 tab: self.tab.key().to_owned(),
                 bank: self.bank_name.1.clone(),
                 select_on_synth: self.librarian.select_on_synth,
+                fetch_before_store: self.librarian.fetch_before_store,
             },
             folders: FolderPrefs {
                 import: FolderPrefs::from_path(&self.librarian.files.import_dir),
@@ -258,6 +264,18 @@ impl VirusApp {
         for message in messages {
             self.command(MidiCommand::Send(message));
         }
+    }
+
+    /// Header Panic: stops the audition and sends All Notes Off / All Sound Off on the synth
+    /// channel and, in Multi mode, on every enabled part's channel.
+    fn panic(&mut self) {
+        let channels = self.multi.panic_channels(&self.session.settings);
+        let messages = self.audition.panic_on(&channels);
+        self.send_notes(messages);
+        self.notice = Notice::info(format!(
+            "Panic sent on channel(s) {}.",
+            channels.iter().map(|c| (c + 1).to_string()).collect::<Vec<_>>().join(", ")
+        ));
     }
 
     /// Note offs must go out before the output is closed or changed (SPEC §5.9).
@@ -341,6 +359,7 @@ impl VirusApp {
                         "Received '{name}' from the synth; your unsaved edits were replaced — Undo brings them back."
                     ));
                 }
+                self.complete_pending_store(checksum_ok);
             }
             Incoming::DumpQueued { bank, program, checksum_ok } => {
                 let count = self.session.received.len();
@@ -525,6 +544,43 @@ impl VirusApp {
             }
             LibAction::Notice(notice) => self.notice = notice,
             LibAction::LooseMultis(dumps) => self.multi_view.add_loose(dumps), // [F9]
+            LibAction::FetchThenStore { bank_id, program } => {
+                self.pending_store = Some(PendingStore::new(bank_id, program, Instant::now()));
+                self.send(self.session.fetch_request());
+                self.notice = Notice::info("Fetching the synth's edit buffer; it is stored when it arrives…");
+            }
+        }
+    }
+
+    /// Gives up on a store whose edit-buffer dump never came; nothing is stored then.
+    fn expire_pending_store(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_store else { return };
+        let now = Instant::now();
+        if pending.expired(now) {
+            self.pending_store = None;
+            self.notice = Notice::warning("The synth did not send its edit buffer: nothing was stored.");
+        } else {
+            ctx.request_repaint_after(pending.deadline() - now);
+        }
+    }
+
+    /// Stores the just-adopted edit buffer in the slot chosen in the Store dialog.
+    fn complete_pending_store(&mut self, checksum_ok: bool) {
+        let Some(pending) = self.pending_store.take() else { return };
+        if !checksum_ok {
+            self.notice = Notice::warning("The synth's edit buffer arrived with a wrong checksum: nothing was stored.");
+            return;
+        }
+        let patch = self.session.patch().clone();
+        match store_patch(&self.db, pending.bank_id, pending.program, &patch) {
+            Ok(_) => {
+                let bank = self.db.get_banks().ok().and_then(|banks| banks.into_iter().find(|b| b.id == pending.bank_id));
+                let label = slot_label(bank.as_ref(), pending.program);
+                self.notice = Notice::info(format!("Stored '{}' (fetched from the synth) to {label}.", patch.name()));
+                self.comforts.mark_stored(patch);
+                self.origin = label;
+            }
+            Err(e) => self.notice = Notice::error(format!("Store failed: {e}")),
         }
     }
 
@@ -684,6 +740,13 @@ impl VirusApp {
                 if ui.button("Init").on_hover_text("Load a neutral init sound (not sent)").clicked() {
                     self.request_replace(Replace::Init);
                 }
+                if ui
+                    .add_enabled(self.ports.output_connected(), egui::Button::new("🛑 Panic"))
+                    .on_hover_text("Silence the synth: note offs, All Notes Off and All Sound Off on its channel (every enabled part's channel in Multi mode)")
+                    .clicked()
+                {
+                    self.panic();
+                }
                 theme::watermark(ui, ui.available_rect_before_wrap()); // [V2] only in the empty gap
             });
         });
@@ -711,6 +774,9 @@ impl VirusApp {
 impl App for VirusApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         self.poll_midi();
+        self.expire_pending_store(ctx);
+        self.librarian.output_connected = self.ports.output_connected();
+        self.librarian.editor_edited = self.comforts.is_edited(&self.session);
         let shortcut = self.comfort_shortcuts(ctx); // [comforts]
         let now_secs = ctx.input(|i| i.time);
         if let Some(action) = shortcut {
