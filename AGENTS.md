@@ -34,7 +34,7 @@ cargo run -p virus-app --release
 
 * Rust is pinned in `rust-toolchain.toml` (1.100.0; keep it in sync with `.github/workflows/ci.yml`). Windows needs the VS Build Tools C++ workload; Linux needs `libasound2-dev`.
 * Behind a proxy that breaks certificate revocation checks: `[http] check-revoke = false` in `%USERPROFILE%\.cargo\config.toml`, or set `CARGO_HTTP_CHECK_REVOKE=false`.
-* CI (GitHub Actions) runs clippy, tests and release builds of the app and the `virus` CLI on Windows and Ubuntu, and uploads `virus-app.exe` and `virus.exe` as artifacts. Its actions are pinned to commit SHAs (update the SHA and the version comment together). `cargo fmt` isn't applied yet (TODO H11), so don't reformat files you aren't changing.
+* CI (GitHub Actions) runs clippy, tests and release builds of the app and the `virus` CLI on Windows and Ubuntu, and uploads `virus-app.exe` and `virus.exe` as artifacts. Its actions are pinned to commit SHAs (update the SHA and the version comment together). The workspace is rustfmt-clean (default settings) and CI checks it: run `cargo fmt --all` before you finish.
 * **Editing docs from PowerShell 5.1:** `Get-Content`/`Set-Content` mangle UTF-8 (emoji, ✅, →) and add a BOM. Use your editor tools, or .NET `[IO.File]` with `UTF8Encoding($false)`.
 
 ## The synth and the hardware

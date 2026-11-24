@@ -8,18 +8,19 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 **The goal is an editor and librarian that never corrupts a sound (SPEC §1.1).** Read [AGENTS.md](AGENTS.md) first if you're an AI agent picking this up.
 
 **State on 24 Nov, evening:**
-* `main` @ `cc7cd97` is pushed to GitHub and CI was green there. **On top of it, all fixes for the second code review (CR-H1 … CR-L11, "🔍 Code review 2" below) are uncommitted on `main` until the owner reviews and commits them.** With them, 439 tests pass and clippy is clean with `-D warnings`. There are no other branches.
+* All fixes for the second code review (CR-H1 … CR-L11, "🔍 Code review 2" below) are committed on `main` (`d1382ab`, with the theme switcher), followed by `cargo fmt --all` (`971b012`, H11) and the CI format check. 439 tests pass, clippy is clean with `-D warnings` and `cargo fmt --all -- --check` passes. There are no other branches.
+* **Not pushed yet:** GitHub's `origin/main` is at `cc32333` (last fetch), so local `main` is several commits ahead. The push from the dev VM was refused (403: the VM's git login `JohnOSullivan4321` has no write access to `johno4321/VirusEditor`). Push from an account with access; CI then runs on all of it.
 * All 256 factory patches round-trip byte-identically. The editor, Assign panel, librarian, Multi tab, note audition, editor comforts and the `virus` CLI are built.
 * **The CLI has been used with the real synth** (24 Nov; results under G2 below): ports, fetch, param changes, bank backups, Global request and selftest 5/5 all pass. The timing problem it found is fixed in the CLI and the app (SPEC §3.7).
 * **The GUI hasn't been used with the synth yet.** Its live checks are G2, E7 and N8.
 * Owner's setup: the Virus Rack is on **MIDI channel 11**, Device ID 1, through an iConnectivity mioXC on a laptop. Studio routing: SPEC §3.7 "Owner's studio".
 
-**In flight:** the code-review-2 fixes, uncommitted on `main` (owner to review and commit). The studio-robustness work (R10–R12: renamed ports reconnect, Panic in the header and `virus panic`, "Fetch from synth first" in the Store dialog) was merged on 24 Nov; its live check is R13.
+**In flight:** nothing (the code-review-2 fixes and H11 are committed; they need a push). The studio-robustness work (R10–R12: renamed ports reconnect, Panic in the header and `virus panic`, "Fetch from synth first" in the Store dialog) was merged on 24 Nov; its live check is R13.
 
 **New live checks from code review 2** (add to G2 / R13 when at the synth):
 * **Bank-send pacing:** the gap is now silence *after* each dump has left the wire (CR-M1): ≈385 ms start-to-start, ≈49 s for a full bank at the default 300 ms (`virus_midi::DUMP_GAP_MS`). Check no buffer overflow or checksum errors on the Virus, and the progress count (`BatchFinished`).
 * **Automatic port reconnect** (CR-M2): the app re-lists ports every 2 s and reopens an output after a failed send. Unplug and replug the mioXC (also into another USB socket) without pressing ⟳; the app should reconnect by itself.
-* **Fetch before store** (CR-M6): the 10 s timeout starts when the request actually goes out; the option is unavailable during a bank send. Try it right after moving knobs on the Virus.
+* **Fetch before store** (CR-M6): the 5 s answer timeout starts when the request actually goes out (a request still queued after 10 s is withdrawn); the option is unavailable during a bank send. Try it right after moving knobs on the Virus.
 * **Undo/Compare** (CR-M3): steps touching more than 16 bytes or any non-sound byte now send one edit-buffer dump (keeping the synth's A0) instead of parameter changes. Undo a Fetch and check the synth plays the previous sound and no notes hang.
 * **Multi Part Bank** (CR-M7): runbook step 12a decides whether C32 is 0- or 1-based; also change a part's Bank on the Multi tab and check the synth's part switches to that bank.
 
@@ -32,8 +33,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
    Record results in the G2 results table.
 2. 🎹 **GUI live checks:** the G2 list, E7 (comforts with the synth), N8 (note audition), R13 (port rename and automatic reconnect, Panic, fetch-before-store), the code-review-2 checks above, and a V1 on-screen check on a real screen.
 3. **Without hardware:**
-   * The owner reviews and commits the code-review-2 fixes.
-   * H11 `cargo fmt` plus a CI check. Do it when no other branch is open and the fixes are committed; it touches ~4,000 lines.
+   * Push `main` to GitHub from an account with access and check CI is green.
    * F2 send a patch to a RAM bank slot.
    * Then F3/F6/F8, which need some live input.
 4. Fix anything the live checks turn up. If F7's C32 value turns out 1-based, the fix is one constant (`PART_BANK_C32_BASE`, see F7).
@@ -163,7 +163,7 @@ A second read-only review of `main` @ `cc7cd97` (all five crates against SPEC §
 | CR-L7 | ✅ | Low | Docs and wording drift (R10, runbook step 14, SPEC §5 numbering, T4, Audition tooltip) | Docs updated in this pass (README, SPEC, TODO, AGENTS, CLI README); tooltip reworded (`audition.rs`) |
 | CR-L8 | ✅ | Low | Code quality: logic in views, constants in three places, dead public API | One pacing constant `virus_midi::DUMP_GAP_MS` (app and CLI default); removed `SyxError::UnknownCommand/ChecksumMismatch/InvalidPart`, `verify_checksum`, `Unipolar7`, `Bipolar7`, `MidiInputParser::reset`, `BatchQueue::len`; Multi import/store logic moved to `multi_session.rs`. Still open: bank letter ↔ `bb` mapping in three crates, large view files |
 | CR-L9 | ✅ | Low | Test gaps (store keeps ⚠, Multi import confirmation, Multi export policy, pacing, undo of class `p`, `tab = "multi"`, DB golden test) | Each added next to its fix; DB golden test: `testdata/factory/Bank_A.syx` import → export is byte-identical |
-| CR-L10 | ✅ | Low | Hygiene: CI didn't build the CLI, unpinned actions, `.gitignore`, licence wording, `publish` | CI builds and uploads `virus.exe`, actions pinned to SHAs; runbook outputs ignored; `publish = false`; README licence section. H11 (`cargo fmt`) stays ⬜ |
+| CR-L10 | ✅ | Low | Hygiene: CI didn't build the CLI, unpinned actions, `.gitignore`, licence wording, `publish` | CI builds and uploads `virus.exe`, actions pinned to SHAs; runbook outputs ignored; `publish = false`; README licence section. H11 (`cargo fmt`) followed as its own commit |
 | CR-L11 | ✅ | Low | UX: Cancel sending always enabled; unexplained "0 stored slot(s)"; Multi send estimate; Panic vs bank send | Cancel enabled only while a batch runs; the send dialog counts the bank being sent from the library; both send dialogs estimate count × (gap + 85 ms); Panic hover says it doesn't stop a send; the Store dialog's disabled "Fetch from synth first" says why. Also: "✔ Mark as checked…" for flagged multis (`mark_multi_checked`) |
 | Q3 | ✅ | — | Concurrent DB use (GUI and `virus get-bank --to-library`) | 2 s SQLite busy timeout |
 
@@ -282,4 +282,4 @@ A second read-only review of `main` @ `cc7cd97` (all five crates against SPEC §
 | H8 | ✅ | **16 `float_literal_f32_fallback` warnings will become hard errors** in a future Rust release: write `1.0_f32` (e.g. in `Stroke::new(1.0, …)`) | Done: app rewritten with typed literals; no warnings or future-incompat notes |
 | H9 | ✅ | Q4 decided: the repo stays private, so the Access material stays | |
 | H10 | ✅ | README: say "Virus Rack (classic), OS 2.00" as the verified target, and mention open questions Q1/Q5 | Done: the README names the target and links Q1 |
-| H11 | ⬜ | Run `cargo fmt --all`, then add `cargo fmt --all -- --check` to CI (there's a placeholder comment in `ci.yml`) | Unblocked: all branches are merged. ~4,000 lines change (about 800 hunks), so do it when **no other branch is open** (check `git branch -a`), as its own commit with no other changes |
+| H11 | ✅ | Run `cargo fmt --all`, then add `cargo fmt --all -- --check` to CI | Done 24 Nov: `971b012` (formatting only, default rustfmt settings, 60 files); CI "Format" step and the `rustfmt` component added in the next commit. Clippy clean, 439 tests pass |

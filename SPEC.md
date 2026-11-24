@@ -450,7 +450,7 @@ Detailed tasks are in [TODO.md](TODO.md).
 
 ## 9. Changelog
 * **2026-11-24 (late evening, code review 2; uncommitted on `main` until the owner commits)**
-  * Second code review of `cc7cd97` (report outside the repo: `Downloads\VirusEditor-review-2026-11-24.md`; TODO "🔍 Code review 2"). All findings fixed except H11 (`cargo fmt`).
+  * Second code review of `cc7cd97` (report outside the repo: `Downloads\VirusEditor-review-2026-11-24.md`; TODO "🔍 Code review 2"). All findings fixed; H11 (`cargo fmt --all`) followed as its own commit, and CI now checks formatting.
   * Data safety: the ⚠ flag survives Store and is cleared only by "Mark as checked" (now for multis too) (§5 rule 13); Multi-tab imports ask before overwriting (rule 6); Multi bank file export skips flagged multis by default (rule 7); 7-bit guards for multis; legacy adopt only replaces an empty library and keeps `.pre-adopt.bak` (rule 15); 2 s SQLite busy timeout (rule 14); Librarian "Clear slot…" and "Delete bank…"; Multi delete/overwrite confirmations.
   * Live MIDI: bank-send gap = silence after each dump, one constant `virus_midi::DUMP_GAP_MS` (≈49 s per bank); `BatchFinished`; port polling every 2 s and reopening a dead output; fetch-before-store timeout from when the request goes out (§3.7, rule 12).
   * Editor: undo/redo/Compare send one dump for large or non-sound steps (§5.11); one C32 helper for Select on synth and the Multi Part Bank row (§3.5).
