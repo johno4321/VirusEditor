@@ -1,11 +1,16 @@
-//! Low-latency MIDI I/O engine, SysEx chunk buffering, and port discovery for the Access Virus.
+//! Dumb, reliable MIDI transport for the Access Virus editor.
+//!
+//! The crate moves raw bytes: it parses incoming MIDI into channel events and SysEx
+//! frames and sends outgoing messages, but does not interpret Virus parameters.
 
-pub mod events;
-pub mod ports;
-pub mod stream;
+pub mod batch;
 pub mod engine;
+pub mod events;
+pub mod parser;
+pub mod ports;
 
-pub use events::{MidiCommand, MidiEvent};
-pub use ports::{find_virus_port_indices, list_input_ports, list_output_ports, PortInfo};
-pub use stream::SysExStreamAssembler;
+pub use batch::BatchQueue;
 pub use engine::MidiService;
+pub use events::{MidiCommand, MidiEvent};
+pub use parser::{MidiInputParser, MAX_SYSEX_LEN, SYSEX_END, SYSEX_START};
+pub use ports::{find_virus_ports, list_input_ports, list_output_ports};
