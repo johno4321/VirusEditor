@@ -63,7 +63,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 
 | # | Status | Item | Notes |
 |---|---|---|---|
-| T1 | ⬜ | **Golden tests** on `OSR_FactoryPatches_Bank_A.mid` and `_Bank_B.mid`: 128 dumps each, checksums valid, names match the patch list (`OvertureCK`, `Smoog   OK`, `JunoArp JS`), categories decode (Smoog = Bass), and import → export is **byte-identical** | Would have caught D4, P1–P3 |
+| T1 | ✅ | **Golden tests:** `crates/virus-syx/tests/factory.rs` (damaged `.mid` originals; exact bad-checksum counts) and `tests/clean_factory.rs` (recovered `testdata/factory/Bank_A/B.syx`): all 256 patches parse with valid checksums and round-trip **byte-identically**; names and categories decode; editing one parameter changes exactly one byte | Recovered banks from the SoundDiver `.lib` (sub-chat, 24 Nov) |
 | T2 | ⬜ | DB tests: the favourite toggle and slot store don't touch patch data | Covers D1–D2 |
 | T3 | ⬜ | Incoming param doesn't revert other edits; performance CCs and other channels are ignored | Covers D5–D6 |
 | T4 | ⬜ | Import `multis.mid`: banks A and B land in A and B; edit-buffer and multi dumps aren't put in bank slots | Covers L1–L2 |
