@@ -309,12 +309,19 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 
 ## 6. Ground-Truth Test Data
 
+> ⚠️ **The factory `.mid` files are damaged.** An old LF→CR text conversion turned every `0x0A` byte into `0x0D`; the files contain no `0x0A` at all. Effects:
+> * some SMF SysEx lengths (`82 0A` → `82 0D`) are wrong;
+> * Bank A's program 10 appears as 13;
+> * checksums fail on 20 dumps in Bank A, 32 in Bank B and 170 of 418 in `multis.mid`.
+>
+> Parsers must resynchronise on `F7`. Golden tests must expect these counts, or use the recovered banks in `testdata/factory/` (being recovered from the SoundDiver `.lib`, which still contains `0x0A` bytes).
+
 | File | Contents |
 |---|---|
-| `Factory soundset/OSR_FactoryPatches_Bank_A.mid` | SMF with 128 single dumps, `dd=10`, `bb=01`, all checksums valid. Prog 0 = `OvertureCK`, 1 = `Smoog   OK`, 2 = `JunoArp JS` (matches the patch list). A0 = 6 in all |
-| `Factory soundset/OSR_FactoryPatches_Bank_B.mid` | 128 single dumps, `bb=02` |
-| `Factory soundset/multis.mid` | Total dump: 33 single dumps with `bb=00` (edit buffers), 128 × `bb=01`, 128 × `bb=02`, 1 multi edit buffer, 128 multis, 1 command-`12` message |
-| `Factory soundset/Virus_rack_factory_patches.lib` | **Emagic SoundDiver library** (`FORM…ESSL`), not SysEx. Unsupported |
+| `Factory soundset/OSR_FactoryPatches_Bank_A.mid` | SMF with 128 single dumps, `dd=10`, `bb=01`. Prog 0 = `OvertureCK`, 1 = `Smoog   OK`, 2 = `JunoArp JS` (matches the patch list). A0 = 6 in all. 20 bad checksums (damaged) |
+| `Factory soundset/OSR_FactoryPatches_Bank_B.mid` | 128 single dumps, `bb=02`. 32 bad checksums (damaged) |
+| `Factory soundset/multis.mid` | Total dump: 33 single dumps with `bb=00` (edit buffers), 128 × `bb=01`, 128 × `bb=02`, 1 multi edit buffer, 128 multis, 1 command-`12` message. Damaged the same way |
+| `Factory soundset/Virus_rack_factory_patches.lib` | **Emagic SoundDiver library** (`FORM…ESSL`), not SysEx. Apparently undamaged |
 | `OSR15 Patch list.pdf` | Names for banks A–H |
 
 Required tests: import → export is byte-identical for both banks; names and categories decode as listed; checksums verify.

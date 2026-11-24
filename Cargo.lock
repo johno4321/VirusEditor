@@ -2596,7 +2596,6 @@ name = "virus-db"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
- "virus-syx",
 ]
 
 [[package]]
@@ -2605,7 +2604,6 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "midir",
- "virus-syx",
 ]
 
 [[package]]
