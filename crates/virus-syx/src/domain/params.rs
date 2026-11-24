@@ -100,7 +100,12 @@ impl ParamDef {
 /// Formats a raw value for display: bipolar as `+n`/`-n`, choices by name (or `#raw` when
 /// the value is beyond the documented list), notes as `C-1`…`G9`.
 pub fn format_value(def: &ParamDef, raw: u8) -> String {
-    match def.kind {
+    format_kind(def.kind, raw)
+}
+
+/// [`format_value`] for a bare [`ValueKind`] (also used by the Multi table).
+pub fn format_kind(kind: ValueKind, raw: u8) -> String {
+    match kind {
         ValueKind::Unipolar | ValueKind::Raw => raw.to_string(),
         ValueKind::Bipolar => match raw as i16 - 64 {
             v if v > 0 => format!("+{v}"),

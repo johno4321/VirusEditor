@@ -12,6 +12,9 @@ use crate::session::{Activity, Incoming, Ports, Session};
 use crate::storage::{open_library, LibraryLocation};
 use crate::views::librarian::{LibAction, LibrarianView, BANK_SEND_GAP_MS};
 use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, ACCENT, DANGER, DIM};
+// [multi] Multi tab (F4/F5)
+use crate::multi_session::MultiSession;
+use crate::views::multi::{MultiAction, MultiView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
@@ -19,6 +22,7 @@ enum Tab {
     Editor,
     Modulation,
     Librarian,
+    Multi, // [multi]
 }
 
 pub struct VirusApp {
@@ -34,6 +38,9 @@ pub struct VirusApp {
     notice: Notice,
     /// Where the edited patch came from, for the header.
     origin: String,
+    // [multi] Multi tab (F4/F5)
+    multi: MultiSession,
+    multi_view: MultiView,
 }
 
 impl VirusApp {
@@ -77,6 +84,8 @@ impl VirusApp {
             librarian: LibrarianView::default(),
             notice,
             origin: "init".to_owned(),
+            multi: MultiSession::default(),    // [multi]
+            multi_view: MultiView::default(), // [multi]
         }
     }
 
@@ -130,6 +139,11 @@ impl VirusApp {
     }
 
     fn handle_incoming(&mut self, event: &MidiEvent) {
+        // [multi] Multi dumps and Multi parameter changes; the event still goes to the session.
+        let multi = self.multi.handle_midi(event, &self.session.settings);
+        if let Some(notice) = multi.notice(self.multi.received.len()) {
+            self.notice = notice;
+        }
         match self.session.handle_midi(event) {
             Incoming::PatchLoaded { name, checksum_ok } => {
                 self.origin = "synth".to_owned();
@@ -229,6 +243,7 @@ impl VirusApp {
             ui.selectable_value(&mut self.tab, Tab::Editor, "🎹 Sound Editor");
             ui.selectable_value(&mut self.tab, Tab::Modulation, "🔀 Modulation");
             ui.selectable_value(&mut self.tab, Tab::Librarian, "📚 Librarian");
+            ui.selectable_value(&mut self.tab, Tab::Multi, "🎛 Multi"); // [multi]
             ui.separator();
             ui.label(RichText::new(self.session.patch().name()).monospace().strong())
                 .on_hover_text(format!("Edited patch, from {}", self.origin));
@@ -291,15 +306,26 @@ impl App for VirusApp {
 
         let mut edits = Vec::new();
         let mut actions = Vec::new();
+        let mut multi_actions = Vec::new(); // [multi]
         CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Editor => self.editor.show(ui, self.session.patch(), &mut edits),
             Tab::Modulation => modulation::show(ui, self.session.patch(), &mut edits),
             Tab::Librarian => self.librarian.show(ui, &self.db, &mut self.session.received, &mut actions),
+            // [multi]
+            Tab::Multi => self.multi_view.show(ui, &self.db, &mut self.multi, &mut self.session.settings, &mut multi_actions),
         });
         self.librarian.show_dialogs(ctx, &self.db, self.session.patch(), &mut actions);
         self.apply_edits(edits);
         for action in actions {
             self.handle_library_action(action);
+        }
+        // [multi] Multi tab actions
+        for action in multi_actions {
+            match action {
+                MultiAction::Send(message) => self.send(message),
+                MultiAction::OpenEditor => self.tab = Tab::Editor,
+                MultiAction::Notice(notice) => self.notice = notice,
+            }
         }
 
         // Only keep repainting while an activity LED is lit.

@@ -145,6 +145,10 @@ pub enum SyxError {
     NotASingleDump { command: u8 },
     /// Single dump bank byte outside `00..=04` (banks E–H addressing is undocumented).
     UnsupportedBank(u8),
+    /// A valid message that is not a multi dump was given where one was required.
+    NotAMultiDump { command: u8 },
+    /// Multi dump bank byte other than `00` (edit buffer) or `01` (multi bank).
+    UnsupportedMultiBank(u8),
 }
 
 impl fmt::Display for SyxError {
@@ -169,6 +173,10 @@ impl fmt::Display for SyxError {
                 write!(f, "Not a single dump (command 0x{command:02X})")
             }
             Self::UnsupportedBank(bank) => write!(f, "Unsupported single bank number: 0x{bank:02X}"),
+            Self::NotAMultiDump { command } => {
+                write!(f, "Not a multi dump (command 0x{command:02X})")
+            }
+            Self::UnsupportedMultiBank(bank) => write!(f, "Unsupported multi bank number: 0x{bank:02X}"),
         }
     }
 }

@@ -2,10 +2,11 @@
 //!
 //! * v1: original schema (text categories, `is_factory`), `user_version` was left at 0.
 //! * v2: integer categories, `checksum_ok` flag, `is_rom` per bank.
+//! * v3: `multis` table (the Multi bank's 128 slots plus unslotted multis).
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
-/// Current (v2) schema.
+/// Banks and single patches (unchanged since v2).
 pub const CREATE_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS banks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,6 +36,25 @@ CREATE INDEX IF NOT EXISTS idx_patches_name ON patches(name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_patches_cat1 ON patches(category1);
 CREATE INDEX IF NOT EXISTS idx_patches_cat2 ON patches(category2);
 CREATE INDEX IF NOT EXISTS idx_patches_fav ON patches(favorite);
+"#;
+
+/// v3: multis. `slot` 0..=127 is the Multi bank program; `NULL` = an unslotted multi (e.g. an
+/// edit-buffer dump the user chose to keep). Applied by the v2 → v3 migration and on new databases.
+pub const CREATE_MULTI_TABLES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS multis (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slot INTEGER CHECK (slot IS NULL OR (slot >= 0 AND slot <= 127)),
+    name TEXT NOT NULL,
+    raw_data BLOB NOT NULL,
+    checksum_ok INTEGER NOT NULL DEFAULT 1,
+    tags TEXT NOT NULL DEFAULT '',
+    favorite INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_multis_slot ON multis(slot) WHERE slot IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_multis_name ON multis(name COLLATE NOCASE);
 "#;
 
 /// First half of the v1 → v2 migration. Patch rows are then copied from `patches_v1`

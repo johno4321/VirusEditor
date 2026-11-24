@@ -15,7 +15,7 @@ use crate::patch_data::{
     bank_byte_for_letter, encode_single_dump, letter_for_bank_byte, patch_categories, patch_name,
     EDIT_BUFFER_BANK, PATCH_LEN,
 };
-use crate::schema::{CREATE_TABLES_SQL, MIGRATE_V1_TO_V2_SQL, SCHEMA_VERSION};
+use crate::schema::{CREATE_MULTI_TABLES_SQL, CREATE_TABLES_SQL, MIGRATE_V1_TO_V2_SQL, SCHEMA_VERSION};
 
 /// Number of program slots in a bank.
 pub const BANK_SLOTS: usize = 128;
@@ -98,11 +98,16 @@ impl PatchDatabase {
             0 if !self.table_exists("patches")? => {
                 let tx = self.conn.unchecked_transaction()?;
                 tx.execute_batch(CREATE_TABLES_SQL)?;
+                tx.execute_batch(CREATE_MULTI_TABLES_SQL)?;
                 tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 tx.commit()?;
             }
             // Pre-versioning databases (user_version 0 with tables) are v1.
-            0 | 1 => self.migrate_v1_to_v2()?,
+            0 | 1 => {
+                self.migrate_v1_to_v2()?;
+                self.migrate_v2_to_v3()?;
+            }
+            2 => self.migrate_v2_to_v3()?,
             SCHEMA_VERSION => {}
             v => return Err(DbError::UnsupportedSchemaVersion(v)),
         }
@@ -148,7 +153,16 @@ impl PatchDatabase {
             }
         }
         tx.execute_batch("DROP TABLE patches_v1;")?;
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.pragma_update(None, "user_version", 2)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// v2 → v3 in one transaction: adds the `multis` table. Nothing else changes.
+    fn migrate_v2_to_v3(&self) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch(CREATE_MULTI_TABLES_SQL)?;
+        tx.pragma_update(None, "user_version", 3)?;
         tx.commit()?;
         Ok(())
     }
@@ -616,3 +630,5 @@ fn into_record((s, raw): (PatchSummary, Vec<u8>)) -> Result<PatchRecord> {
 
 #[cfg(test)]
 mod tests;
+
+mod multis;

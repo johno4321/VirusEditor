@@ -4,6 +4,7 @@
 
 mod app;
 mod library;
+mod multi_session;
 mod session;
 mod storage;
 mod views;

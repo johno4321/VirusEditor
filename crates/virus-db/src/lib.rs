@@ -7,11 +7,13 @@
 pub mod db;
 pub mod error;
 pub mod models;
+pub mod multi_data;
 pub mod patch_data;
 pub mod schema;
 
 pub use db::{PatchDatabase, BANK_SLOTS};
 pub use error::{DbError, Result};
 pub use models::*;
+pub use multi_data::{multi_name, MULTI_LEN};
 pub use patch_data::{patch_categories, patch_name, PATCH_LEN};
 pub use schema::SCHEMA_VERSION;

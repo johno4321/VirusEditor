@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::multi_data::MULTI_LEN;
 use crate::patch_data::PATCH_LEN;
 
 /// Sound category (Page B 123/124), SPEC §4.5. Values outside 0..=16 are kept as `Unknown`.
@@ -188,5 +189,53 @@ pub struct ImportReport {
     /// Dumps with a wrong checksum (they are still imported/returned, and flagged).
     pub bad_checksum: usize,
     /// Dumps that could not be placed (unknown `bb`, or program > 127).
+    pub skipped: usize,
+}
+
+/// One received/parsed Multi Dump (`F0 00 20 33 01 dd 11 bb mm ... F7`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingMultiDump {
+    /// Raw `bb`: 0 = Multi edit buffer, 1 = Multi bank.
+    pub bank: u8,
+    /// Raw `mm`: Multi bank program 0..=127 (ignored for the edit buffer).
+    pub program: u8,
+    pub data: [u8; MULTI_LEN],
+    pub checksum_ok: bool,
+}
+
+/// A stored multi. `data` is the byte-exact source of truth; `name` is derived from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiRecord {
+    pub id: i64,
+    /// Multi bank program 0..=127, or `None` for an unslotted multi.
+    pub slot: Option<u8>,
+    pub data: [u8; MULTI_LEN],
+    pub name: String,
+    pub tags: String,
+    pub favorite: bool,
+    pub checksum_ok: bool,
+}
+
+/// Lightweight multi row for lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiSummary {
+    pub id: i64,
+    pub slot: Option<u8>,
+    pub name: String,
+    pub tags: String,
+    pub favorite: bool,
+    pub checksum_ok: bool,
+}
+
+/// Outcome of [`crate::PatchDatabase::import_multi_dumps`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MultiImportReport {
+    /// Multi bank slots written.
+    pub imported: usize,
+    /// Multi edit-buffer dumps (`bb == 0`); never written to a slot.
+    pub loose: Vec<IncomingMultiDump>,
+    /// Dumps with a wrong checksum (still imported/returned, and flagged).
+    pub bad_checksum: usize,
+    /// Dumps that could not be placed (`bb` > 1, or program > 127).
     pub skipped: usize,
 }
