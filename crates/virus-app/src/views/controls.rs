@@ -21,8 +21,18 @@ pub fn param_id(def: &ParamDef) -> String {
 /// A compact label for knobs; the full name is in the tooltip.
 pub fn short_label(def: &ParamDef) -> String {
     const PREFIXES: &[&str] = &[
-        "Filter Env ", "Amp Env ", "Osc1 ", "Osc2 ", "Lfo1 ", "Lfo2 ", "Lfo3 ", "Unison ", "Chorus ",
-        "Phaser ", "Arp ", "Analog Boost ",
+        "Filter Env ",
+        "Amp Env ",
+        "Osc1 ",
+        "Osc2 ",
+        "Lfo1 ",
+        "Lfo2 ",
+        "Lfo3 ",
+        "Unison ",
+        "Chorus ",
+        "Phaser ",
+        "Arp ",
+        "Analog Boost ",
     ];
     const ABBREVIATIONS: &[(&str, &str)] = &[
         ("Suboscillator", "Sub"),
@@ -58,9 +68,17 @@ pub fn short_label(def: &ParamDef) -> String {
 }
 
 fn tooltip(def: &ParamDef, raw: u8) -> String {
-    let mut text = format!("{} ({})\nValue: {}", def.name, param_id(def), format_value(def, raw));
+    let mut text = format!(
+        "{} ({})\nValue: {}",
+        def.name,
+        param_id(def),
+        format_value(def, raw)
+    );
     if raw < def.min || raw > def.max {
-        text.push_str(&format!("\nOutside the documented range {}..{}; kept as is.", def.min, def.max));
+        text.push_str(&format!(
+            "\nOutside the documented range {}..{}; kept as is.",
+            def.min, def.max
+        ));
     }
     if def.flags.multi_single {
         text.push_str("\nIn Multi mode this is stored with the Multi.");
@@ -85,7 +103,11 @@ pub fn param_control(ui: &mut Ui, patch: &Patch, def: &'static ParamDef, edits: 
         }
         ValueKind::Toggle => labelled(ui, def, |ui| {
             let mut on = value != 0;
-            let text = if value > 1 { format!("#{value}") } else { String::new() };
+            let text = if value > 1 {
+                format!("#{value}")
+            } else {
+                String::new()
+            };
             let changed = ui.checkbox(&mut on, text).changed();
             if changed {
                 value = u8::from(on);
@@ -98,7 +120,11 @@ pub fn param_control(ui: &mut Ui, patch: &Patch, def: &'static ParamDef, edits: 
             value != before
         }),
         ValueKind::Note => labelled(ui, def, |ui| {
-            let r = ui.add(DragValue::new(&mut value).clamp_range(0..=127).custom_formatter(|n, _| format_value(def, n as u8)));
+            let r = ui.add(
+                DragValue::new(&mut value)
+                    .clamp_range(0..=127)
+                    .custom_formatter(|n, _| format_value(def, n as u8)),
+            );
             user_changed(&r)
         }),
         ValueKind::Raw | ValueKind::NameChar => labelled(ui, def, |ui| {
@@ -110,7 +136,11 @@ pub fn param_control(ui: &mut Ui, patch: &Patch, def: &'static ParamDef, edits: 
     // Out-of-range stored values are rewritten by DragValue's clamp without any interaction;
     // `user_changed` keeps those from becoming edits (M1).
     if changed && value != raw {
-        edits.push(Edit::Param { page: def.page, number: def.number, value });
+        edits.push(Edit::Param {
+            page: def.page,
+            number: def.number,
+            value,
+        });
     }
 }
 
@@ -118,10 +148,18 @@ pub fn param_control(ui: &mut Ui, patch: &Patch, def: &'static ParamDef, edits: 
 /// (e.g. a byte > 127 from an imported patch), with no interaction at all (M1). Only count a
 /// change while the user is dragging, typing or committing.
 fn user_changed(response: &egui::Response) -> bool {
-    response.changed() && (response.dragged() || response.has_focus() || response.lost_focus() || response.clicked())
+    response.changed()
+        && (response.dragged()
+            || response.has_focus()
+            || response.lost_focus()
+            || response.clicked())
 }
 
-fn labelled(ui: &mut Ui, def: &ParamDef, add: impl FnOnce(&mut Ui) -> bool) -> (egui::Response, bool) {
+fn labelled(
+    ui: &mut Ui,
+    def: &ParamDef,
+    add: impl FnOnce(&mut Ui) -> bool,
+) -> (egui::Response, bool) {
     let mut changed = false;
     let response = ui
         .vertical(|ui| {
@@ -139,14 +177,22 @@ pub fn choice_combo(ui: &mut Ui, def: &ParamDef, texts: &[&str], value: &mut u8)
     let known = (*value as usize) < texts.len();
     ComboBox::from_id_source(("param", def.page, def.number))
         .width(CONTROL_WIDTH - 8.0)
-        .selected_text(if known { RichText::new(selected) } else { RichText::new(selected).color(WARN) })
+        .selected_text(if known {
+            RichText::new(selected)
+        } else {
+            RichText::new(selected).color(WARN)
+        })
         .show_ui(ui, |ui| {
             for (raw, text) in texts.iter().enumerate() {
                 ui.selectable_value(value, raw as u8, *text);
             }
             if !known {
                 let current = *value;
-                ui.selectable_value(value, current, RichText::new(format!("#{current} (undocumented)")).color(WARN));
+                ui.selectable_value(
+                    value,
+                    current,
+                    RichText::new(format!("#{current} (undocumented)")).color(WARN),
+                );
             }
         });
 }
@@ -172,7 +218,11 @@ pub fn destination_control(
             .on_hover_text("Unverified: the printed list order may not be the raw value mapping (open question Q1).");
     });
     if changed && value != raw {
-        edits.push(Edit::Param { page: def.page, number: def.number, value });
+        edits.push(Edit::Param {
+            page: def.page,
+            number: def.number,
+            value,
+        });
     }
 }
 
@@ -207,8 +257,14 @@ mod tests {
 
     #[test]
     fn untouched_controls_never_emit_edits() {
-        assert!(render_all(|_| 200).is_empty(), "bytes above 127 must not be rewritten by clamping");
-        assert!(render_all(|d| d.max.saturating_add(1)).is_empty(), "values past the documented max");
+        assert!(
+            render_all(|_| 200).is_empty(),
+            "bytes above 127 must not be rewritten by clamping"
+        );
+        assert!(
+            render_all(|d| d.max.saturating_add(1)).is_empty(),
+            "values past the documented max"
+        );
         assert!(render_all(|d| d.min).is_empty());
         assert!(render_all(|d| d.max).is_empty());
         assert!(render_all(|_| 127).is_empty());

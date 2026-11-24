@@ -9,7 +9,8 @@ use crate::session::EditPart;
 use crate::widgets::piano::{Piano, PianoEvent, VelocityMode};
 use egui::{Event, Key, Modifiers, Ui};
 use virus_midi::notes::{
-    all_notes_off, all_sound_off, note_name, Message, NoteTracker, Phrase, PhrasePlayer, ReleaseTrigger,
+    all_notes_off, all_sound_off, note_name, Message, NoteTracker, Phrase, PhrasePlayer,
+    ReleaseTrigger,
 };
 
 /// "C3" on the Virus.
@@ -145,7 +146,12 @@ impl Audition {
     /// Follows the app's synth channel and edited part (call every frame). A part change
     /// releases everything even if the channel stays the same. `multi_channel` is the edited
     /// part's channel from the fetched Multi, if any (see [`auto_channel`]).
-    pub fn sync_target(&mut self, synth_channel: u8, part: EditPart, multi_channel: Option<u8>) -> Vec<Message> {
+    pub fn sync_target(
+        &mut self,
+        synth_channel: u8,
+        part: EditPart,
+        multi_channel: Option<u8>,
+    ) -> Vec<Message> {
         let mut out = Vec::new();
         if part != self.part {
             out.extend(self.release_all(ReleaseTrigger::PartChange));
@@ -662,13 +668,19 @@ mod tests {
             velocity: 90,
         }]);
         // Same channel, different part: still released.
-        assert_eq!(a.sync_target(3, EditPart::Multi(3), None), vec![note_off(3, 60)]);
+        assert_eq!(
+            a.sync_target(3, EditPart::Multi(3), None),
+            vec![note_off(3, 60)]
+        );
         a.piano_events(&[PianoEvent::Press {
             note: 60,
             velocity: 90,
         }]);
         a.settings.channel_override = Some(9);
-        assert_eq!(a.sync_target(3, EditPart::Multi(3), None), vec![note_off(3, 60)]);
+        assert_eq!(
+            a.sync_target(3, EditPart::Multi(3), None),
+            vec![note_off(3, 60)]
+        );
         assert_eq!(a.channel, 9);
         assert!(a.sync_target(3, EditPart::Multi(3), None).is_empty());
     }
@@ -678,7 +690,11 @@ mod tests {
         // N9: part 6 listens on the channel stored in the Multi, not on channel 6.
         assert_eq!(auto_channel(3, EditPart::Multi(6), Some(0)), 0);
         assert_eq!(auto_channel(3, EditPart::Multi(6), Some(0x1F)), 0x0F);
-        assert_eq!(auto_channel(3, EditPart::Single, Some(0)), 3, "Single mode ignores the Multi");
+        assert_eq!(
+            auto_channel(3, EditPart::Single, Some(0)),
+            3,
+            "Single mode ignores the Multi"
+        );
 
         let mut a = Audition::new();
         assert!(a.sync_target(3, EditPart::Multi(6), Some(0)).is_empty());
@@ -688,7 +704,10 @@ mod tests {
             velocity: 90,
         }]);
         // The part's channel changes in the Multi (e.g. C34 from the synth): release on the old one.
-        assert_eq!(a.sync_target(3, EditPart::Multi(6), Some(9)), vec![note_off(0, 60)]);
+        assert_eq!(
+            a.sync_target(3, EditPart::Multi(6), Some(9)),
+            vec![note_off(0, 60)]
+        );
         assert_eq!(a.channel, 9);
         // No Multi any more: fall back to part n = channel n.
         a.sync_target(3, EditPart::Multi(6), None);
@@ -711,8 +730,16 @@ mod tests {
         let mut a = Audition::new();
         let out = a.panic_on(&[10, 0, 2, 2]);
         for channel in [0, 2, 10] {
-            assert_eq!(out.iter().filter(|m| **m == all_notes_off(channel)).count(), 1, "CC123 on {channel}");
-            assert_eq!(out.iter().filter(|m| **m == all_sound_off(channel)).count(), 1, "CC120 on {channel}");
+            assert_eq!(
+                out.iter().filter(|m| **m == all_notes_off(channel)).count(),
+                1,
+                "CC123 on {channel}"
+            );
+            assert_eq!(
+                out.iter().filter(|m| **m == all_sound_off(channel)).count(),
+                1,
+                "CC120 on {channel}"
+            );
         }
         assert_eq!(out.len(), 6);
     }

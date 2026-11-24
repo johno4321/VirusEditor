@@ -1,26 +1,29 @@
 //! Multi tab (TODO F4/F5): the 16 parts of the Multi edit buffer, live edits via Page C, fetch
 //! and send of the Multi edit buffer, and a librarian for the Multi bank.
 
-use egui::{Button, ComboBox, Context, DragValue, Grid, RichText, ScrollArea, TextEdit, Ui, Window};
+use egui::{
+    Button, ComboBox, Context, DragValue, Grid, RichText, ScrollArea, TextEdit, Ui, Window,
+};
 use std::time::Duration;
 use virus_db::{BadChecksumPolicy, IncomingMultiDump, PatchDatabase};
 use virus_midi::DUMP_GAP_MS;
 use virus_syx::{
-    multi_common_params, multi_part_params, Multi, MultiLocation, MultiParamDef, ValueKind, MULTI_BANK_SLOTS,
-    MULTI_PARTS,
+    multi_common_params, multi_part_params, Multi, MultiLocation, MultiParamDef, ValueKind,
+    MULTI_BANK_SLOTS, MULTI_PARTS,
 };
 
 use super::librarian::TRANSPORT_REMINDER;
-use super::{Notice, accent, DANGER, DIM, WARN};
+use super::{accent, Notice, DANGER, DIM, WARN};
 use crate::dialogs::{FileJobs, Outcome, Task};
 use crate::library::{
-    sendable_count, ExportResult, ImportOutcome, MarkChecked, PendingImport, MARK_CHECKED_EXPLANATION, STORES_FLAGGED,
+    sendable_count, ExportResult, ImportOutcome, MarkChecked, PendingImport,
+    MARK_CHECKED_EXPLANATION, STORES_FLAGGED,
 };
 use crate::multi_session::{
-    commit_multi_import, display_value, export_multi_bank_bytes, export_summary, is_complete_multi_bank,
-    multi_backup_bytes, multi_import_has_warnings, multi_import_summary, prepare_multi_import,
-    prepare_multi_import_bytes, store_edited_multi, store_multi, MultiConfirm, MultiLibraryCache, MultiSession,
-    SingleNames,
+    commit_multi_import, display_value, export_multi_bank_bytes, export_summary,
+    is_complete_multi_bank, multi_backup_bytes, multi_import_has_warnings, multi_import_summary,
+    prepare_multi_import, prepare_multi_import_bytes, store_edited_multi, store_multi,
+    MultiConfirm, MultiLibraryCache, MultiSession, SingleNames,
 };
 use crate::session::{dump_batch_duration, EditPart, MidiSettings};
 
@@ -33,7 +36,9 @@ pub enum MultiAction {
     OpenEditor,
     Notice(Notice),
     /// [F9] Send the library's Multi bank to the synth, paced; flagged multis per `policy`.
-    SendBank { policy: BadChecksumPolicy },
+    SendBank {
+        policy: BadChecksumPolicy,
+    },
     /// [F9] Stop a running bank send.
     CancelBatch,
 }
@@ -41,9 +46,15 @@ pub enum MultiAction {
 /// What the running file task is for, captured when the user clicked (CR-M4).
 enum MultiFile {
     /// Backup of the received multis; the bytes are taken when the button is clicked.
-    SaveReceived { bytes: Vec<u8>, count: usize, complete: bool },
+    SaveReceived {
+        bytes: Vec<u8>,
+        count: usize,
+        complete: bool,
+    },
     Import,
-    Export { result: ExportResult },
+    Export {
+        result: ExportResult,
+    },
 }
 
 /// An import into the Multi bank that would overwrite stored multis (CR-H2).
@@ -98,9 +109,14 @@ impl MultiView {
     ) {
         self.library.refresh(db);
         self.singles.refresh(db);
-        egui::SidePanel::left("multi-library").resizable(false).exact_width(270.0).show_inside(ui, |ui| {
-            ScrollArea::vertical().show(ui, |ui| self.library_panel(ui, db, session, settings, actions));
-        });
+        egui::SidePanel::left("multi-library")
+            .resizable(false)
+            .exact_width(270.0)
+            .show_inside(ui, |ui| {
+                ScrollArea::vertical().show(ui, |ui| {
+                    self.library_panel(ui, db, session, settings, actions)
+                });
+            });
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ScrollArea::both().show(ui, |ui| self.editor(ui, session, settings, actions));
         });
@@ -123,23 +139,34 @@ impl MultiView {
     }
 
     /// Explains what clearing a multi's ⚠ flag means before doing it (as R9 does for singles).
-    fn mark_checked_dialog(&mut self, ctx: &Context, db: &PatchDatabase, actions: &mut Vec<MultiAction>) {
-        let Some(request) = self.mark_checked.take() else { return };
+    fn mark_checked_dialog(
+        &mut self,
+        ctx: &Context,
+        db: &PatchDatabase,
+        actions: &mut Vec<MultiAction>,
+    ) {
+        let Some(request) = self.mark_checked.take() else {
+            return;
+        };
         let mut open = true;
         let mut answer = None;
-        Window::new("Mark as checked").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-            ui.set_max_width(420.0);
-            ui.label(RichText::new(request.question()).strong());
-            ui.label(MARK_CHECKED_EXPLANATION);
-            ui.horizontal(|ui| {
-                if ui.button("✔ Mark as checked").clicked() {
-                    answer = Some(true);
-                }
-                if ui.button("Cancel").clicked() {
-                    answer = Some(false);
-                }
+        Window::new("Mark as checked")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(RichText::new(request.question()).strong());
+                ui.label(MARK_CHECKED_EXPLANATION);
+                ui.horizontal(|ui| {
+                    if ui.button("✔ Mark as checked").clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        answer = Some(false);
+                    }
+                });
             });
-        });
         match answer {
             Some(true) => report(request.apply(db), actions),
             Some(false) => {}
@@ -149,12 +176,23 @@ impl MultiView {
     }
 
     /// [F9] Confirmation before the Multi bank overwrites the synth's (like L4 for singles).
-    fn send_bank_dialog(&mut self, ctx: &egui::Context, settings: &MidiSettings, actions: &mut Vec<MultiAction>) {
+    fn send_bank_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        settings: &MidiSettings,
+        actions: &mut Vec<MultiAction>,
+    ) {
         if !self.confirm_send_bank {
             return;
         }
         let count = self.library.slots.iter().flatten().count();
-        let flagged = self.library.slots.iter().flatten().filter(|m| !m.checksum_ok).count();
+        let flagged = self
+            .library
+            .slots
+            .iter()
+            .flatten()
+            .filter(|m| !m.checksum_ok)
+            .count();
         let mut open = true;
         let mut close = false;
         Window::new("Send the Multi bank to the synth").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
@@ -220,8 +258,16 @@ impl MultiView {
     }
 
     /// [F9] Saves the received multis as a `.syx` backup.
-    fn start_save_received(&mut self, ctx: &Context, session: &MultiSession, actions: &mut Vec<MultiAction>) {
-        let task = Task::PickExport { dir: self.files.export_dir.clone(), file_name: "Multi_bank_backup.syx".to_owned() };
+    fn start_save_received(
+        &mut self,
+        ctx: &Context,
+        session: &MultiSession,
+        actions: &mut Vec<MultiAction>,
+    ) {
+        let task = Task::PickExport {
+            dir: self.files.export_dir.clone(),
+            file_name: "Multi_bank_backup.syx".to_owned(),
+        };
         if self.start_task(ctx, task, actions) {
             self.pending_file = Some(MultiFile::SaveReceived {
                 bytes: multi_backup_bytes(&session.received),
@@ -232,34 +278,75 @@ impl MultiView {
     }
 
     fn start_import(&mut self, ctx: &Context, actions: &mut Vec<MultiAction>) {
-        if self.start_task(ctx, Task::PickImport { dir: self.files.import_dir.clone() }, actions) {
+        if self.start_task(
+            ctx,
+            Task::PickImport {
+                dir: self.files.import_dir.clone(),
+            },
+            actions,
+        ) {
             self.pending_file = Some(MultiFile::Import);
         }
     }
 
     fn start_export(&mut self, ctx: &Context, actions: &mut Vec<MultiAction>) {
-        let task = Task::PickExport { dir: self.files.export_dir.clone(), file_name: "Multi_bank.syx".to_owned() };
+        let task = Task::PickExport {
+            dir: self.files.export_dir.clone(),
+            file_name: "Multi_bank.syx".to_owned(),
+        };
         if self.start_task(ctx, task, actions) {
-            self.pending_file = Some(MultiFile::Export { result: ExportResult::default() });
+            self.pending_file = Some(MultiFile::Export {
+                result: ExportResult::default(),
+            });
         }
     }
 
     /// Applies a finished file task on the UI thread; the database stays on this thread.
-    fn poll_files(&mut self, ctx: &Context, db: &PatchDatabase, session: &mut MultiSession, actions: &mut Vec<MultiAction>) {
-        let Some(outcome) = self.files.poll() else { return };
-        let Some(pending) = self.pending_file.take() else { return };
+    fn poll_files(
+        &mut self,
+        ctx: &Context,
+        db: &PatchDatabase,
+        session: &mut MultiSession,
+        actions: &mut Vec<MultiAction>,
+    ) {
+        let Some(outcome) = self.files.poll() else {
+            return;
+        };
+        let Some(pending) = self.pending_file.take() else {
+            return;
+        };
         match (pending, outcome) {
             (_, Outcome::Failed(e)) => actions.push(MultiAction::Notice(Notice::error(e))),
-            (MultiFile::SaveReceived { bytes, count, complete }, Outcome::ExportPicked(Some(path))) => {
+            (
+                MultiFile::SaveReceived {
+                    bytes,
+                    count,
+                    complete,
+                },
+                Outcome::ExportPicked(Some(path)),
+            ) => {
                 self.files.export_dir = parent_of(&path);
                 if self.start_task(ctx, Task::WriteFile { path, bytes }, actions) {
-                    self.pending_file = Some(MultiFile::SaveReceived { bytes: Vec::new(), count, complete });
+                    self.pending_file = Some(MultiFile::SaveReceived {
+                        bytes: Vec::new(),
+                        count,
+                        complete,
+                    });
                 }
             }
-            (MultiFile::SaveReceived { count, complete, .. }, Outcome::Written { path, result }) => match result {
+            (
+                MultiFile::SaveReceived {
+                    count, complete, ..
+                },
+                Outcome::Written { path, result },
+            ) => match result {
                 Ok(()) => {
                     self.backed_up |= complete;
-                    let note = if complete { "" } else { " (not all 128 multis had arrived, so it isn't a full backup)" };
+                    let note = if complete {
+                        ""
+                    } else {
+                        " (not all 128 multis had arrived, so it isn't a full backup)"
+                    };
                     actions.push(MultiAction::Notice(Notice::info(format!(
                         "Saved {count} received multi(s) to {}{note}.",
                         path.display()
@@ -274,7 +361,10 @@ impl MultiView {
                 }
             }
             (MultiFile::Import, Outcome::Read { path, result }) => {
-                let label = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                let label = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
                 match result.and_then(|bytes| prepare_multi_import_bytes(db, &label, &bytes)) {
                     Ok(pending) => self.import_or_ask(db, session, pending, false, actions),
                     Err(e) => actions.push(MultiAction::Notice(Notice::error(e))),
@@ -291,7 +381,13 @@ impl MultiView {
                     Err(e) => actions.push(MultiAction::Notice(Notice::error(e))),
                 }
             }
-            (MultiFile::Export { result }, Outcome::Written { path, result: written }) => {
+            (
+                MultiFile::Export { result },
+                Outcome::Written {
+                    path,
+                    result: written,
+                },
+            ) => {
                 actions.push(MultiAction::Notice(match written {
                     Ok(()) => Notice::info(export_summary(&result, &path)),
                     Err(e) => Notice::error(e),
@@ -312,7 +408,10 @@ impl MultiView {
         actions: &mut Vec<MultiAction>,
     ) {
         if pending.needs_confirmation() {
-            self.pending_import = Some(MultiImportDialog { pending, from_received });
+            self.pending_import = Some(MultiImportDialog {
+                pending,
+                from_received,
+            });
         } else {
             let result = commit_multi_import(db, &pending, true);
             self.finish_import(result, from_received, session, actions);
@@ -329,8 +428,13 @@ impl MultiView {
         match result {
             Ok(outcome) => {
                 let text = multi_import_summary(&outcome);
-                let warn = multi_import_has_warnings(&outcome) || !outcome.multis_left_out.is_empty();
-                actions.push(MultiAction::Notice(if warn { Notice::warning(text) } else { Notice::info(text) }));
+                let warn =
+                    multi_import_has_warnings(&outcome) || !outcome.multis_left_out.is_empty();
+                actions.push(MultiAction::Notice(if warn {
+                    Notice::warning(text)
+                } else {
+                    Notice::info(text)
+                }));
                 if from_received {
                     session.received.clear();
                 } else if let Some(report) = outcome.multis {
@@ -342,39 +446,67 @@ impl MultiView {
     }
 
     /// CR-H2: lists the occupied Multi bank slots an import would replace.
-    fn import_dialog(&mut self, ctx: &Context, db: &PatchDatabase, session: &mut MultiSession, actions: &mut Vec<MultiAction>) {
-        let Some(dialog) = self.pending_import.take() else { return };
+    fn import_dialog(
+        &mut self,
+        ctx: &Context,
+        db: &PatchDatabase,
+        session: &mut MultiSession,
+        actions: &mut Vec<MultiAction>,
+    ) {
+        let Some(dialog) = self.pending_import.take() else {
+            return;
+        };
         let mut open = true;
         let mut choice = None;
         let mut cancelled = false;
-        Window::new("Import would overwrite multis").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-            let overwrites = &dialog.pending.multi_overwrites;
-            ui.colored_label(
-                DANGER,
-                format!("{}: {} occupied Multi bank slot(s) would be overwritten.", dialog.pending.label, overwrites.len()),
-            );
-            ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                for o in overwrites.iter().take(40) {
-                    ui.label(
-                        RichText::new(format!("M{:03}: '{}' → '{}'", o.slot, o.old_name, o.new_name)).monospace().size(11.0),
-                    );
-                }
-                if overwrites.len() > 40 {
-                    ui.label(format!("… and {} more", overwrites.len() - 40));
-                }
+        Window::new("Import would overwrite multis")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                let overwrites = &dialog.pending.multi_overwrites;
+                ui.colored_label(
+                    DANGER,
+                    format!(
+                        "{}: {} occupied Multi bank slot(s) would be overwritten.",
+                        dialog.pending.label,
+                        overwrites.len()
+                    ),
+                );
+                ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                    for o in overwrites.iter().take(40) {
+                        ui.label(
+                            RichText::new(format!(
+                                "M{:03}: '{}' → '{}'",
+                                o.slot, o.old_name, o.new_name
+                            ))
+                            .monospace()
+                            .size(11.0),
+                        );
+                    }
+                    if overwrites.len() > 40 {
+                        ui.label(format!("… and {} more", overwrites.len() - 40));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(Button::new(RichText::new("Overwrite").color(DANGER)))
+                        .clicked()
+                    {
+                        choice = Some(true);
+                    }
+                    if ui
+                        .button("Only empty slots")
+                        .on_hover_text("Occupied slots are left as they are.")
+                        .clicked()
+                    {
+                        choice = Some(false);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancelled = true;
+                    }
+                });
             });
-            ui.horizontal(|ui| {
-                if ui.add(Button::new(RichText::new("Overwrite").color(DANGER))).clicked() {
-                    choice = Some(true);
-                }
-                if ui.button("Only empty slots").on_hover_text("Occupied slots are left as they are.").clicked() {
-                    choice = Some(false);
-                }
-                if ui.button("Cancel").clicked() {
-                    cancelled = true;
-                }
-            });
-        });
         if cancelled || !open {
             return;
         }
@@ -387,25 +519,42 @@ impl MultiView {
     }
 
     /// CR-L2: Delete / Overwrite on the Multi tab ask first.
-    fn confirm_dialog(&mut self, ctx: &Context, db: &PatchDatabase, session: &MultiSession, actions: &mut Vec<MultiAction>) {
-        let Some(request) = self.confirm.take() else { return };
+    fn confirm_dialog(
+        &mut self,
+        ctx: &Context,
+        db: &PatchDatabase,
+        session: &MultiSession,
+        actions: &mut Vec<MultiAction>,
+    ) {
+        let Some(request) = self.confirm.take() else {
+            return;
+        };
         let mut open = true;
         let mut answer = None;
-        Window::new(request.title()).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-            ui.set_max_width(400.0);
-            ui.label(request.question(session));
-            if matches!(request, MultiConfirm::Overwrite { .. }) && session.flagged() {
-                ui.colored_label(WARN, STORES_FLAGGED);
-            }
-            ui.horizontal(|ui| {
-                if ui.add(Button::new(RichText::new(request.confirm_label()).color(DANGER))).clicked() {
-                    answer = Some(true);
+        Window::new(request.title())
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_max_width(400.0);
+                ui.label(request.question(session));
+                if matches!(request, MultiConfirm::Overwrite { .. }) && session.flagged() {
+                    ui.colored_label(WARN, STORES_FLAGGED);
                 }
-                if ui.button("Cancel").clicked() {
-                    answer = Some(false);
-                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(Button::new(
+                            RichText::new(request.confirm_label()).color(DANGER),
+                        ))
+                        .clicked()
+                    {
+                        answer = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        answer = Some(false);
+                    }
+                });
             });
-        });
         match answer {
             Some(true) => report(request.apply(db, session), actions),
             Some(false) => {}
@@ -424,7 +573,11 @@ impl MultiView {
     ) {
         ui.label(RichText::new("Synth").strong().color(accent()));
         ui.horizontal_wrapped(|ui| {
-            if ui.button("📥 Fetch multi").on_hover_text("Request the Multi edit buffer (31 00 00)").clicked() {
+            if ui
+                .button("📥 Fetch multi")
+                .on_hover_text("Request the Multi edit buffer (31 00 00)")
+                .clicked()
+            {
                 actions.push(MultiAction::Send(MultiSession::fetch_request(settings)));
             }
             let can_send = session.multi().is_some();
@@ -437,7 +590,11 @@ impl MultiView {
                     actions.push(MultiAction::Send(dump));
                 }
             }
-            if ui.button("Request bank").on_hover_text("Request all 128 multis (33 01)").clicked() {
+            if ui
+                .button("Request bank")
+                .on_hover_text("Request all 128 multis (33 01)")
+                .clicked()
+            {
                 actions.push(MultiAction::Send(MultiSession::bank_request(settings)));
             }
         });
@@ -445,14 +602,22 @@ impl MultiView {
             let idle = self.files.busy().is_none();
             ui.horizontal_wrapped(|ui| {
                 ui.label(format!("{} multi dump(s) received", session.received.len()));
-                if ui.button("Import into Multi bank").on_hover_text("Asks first if occupied slots would be overwritten").clicked() {
-                    match prepare_multi_import(db, "received from synth", session.received.clone()) {
+                if ui
+                    .button("Import into Multi bank")
+                    .on_hover_text("Asks first if occupied slots would be overwritten")
+                    .clicked()
+                {
+                    match prepare_multi_import(db, "received from synth", session.received.clone())
+                    {
                         Ok(pending) => self.import_or_ask(db, session, pending, true, actions),
                         Err(e) => actions.push(MultiAction::Notice(Notice::error(e))),
                     }
                 }
                 let save = ui.add_enabled(idle, Button::new("Save to file…").small());
-                if save.on_hover_text("Back up the received multis as a .syx file").clicked() {
+                if save
+                    .on_hover_text("Back up the received multis as a .syx file")
+                    .clicked()
+                {
                     self.start_save_received(&ui.ctx().clone(), session, actions);
                 }
                 if ui.small_button("Discard").clicked() {
@@ -501,10 +666,21 @@ impl MultiView {
                 let multi = Multi::from_bytes(&dump.data);
                 let flagged = !dump.checksum_ok;
                 ui.horizontal(|ui| {
-                    let name = if flagged { format!("{}  ⚠", multi.name()) } else { multi.name() };
+                    let name = if flagged {
+                        format!("{}  ⚠", multi.name())
+                    } else {
+                        multi.name()
+                    };
                     ui.label(RichText::new(name).monospace());
                     if ui.small_button("Load").clicked() {
-                        load(session, &mut self.name_for, multi.clone(), "file (edit buffer)", flagged, actions);
+                        load(
+                            session,
+                            &mut self.name_for,
+                            multi.clone(),
+                            "file (edit buffer)",
+                            flagged,
+                            actions,
+                        );
                     }
                     let keep = ui.small_button("Keep");
                     let keep = if flagged {
@@ -514,7 +690,12 @@ impl MultiView {
                     };
                     if keep.clicked() {
                         let stored = store_multi(db, None, &multi, dump.checksum_ok);
-                        report(stored.map(|_| "Kept in the library.").map_err(|e| format!("Library error: {e}")), actions);
+                        report(
+                            stored
+                                .map(|_| "Kept in the library.")
+                                .map_err(|e| format!("Library error: {e}")),
+                            actions,
+                        );
                         remove = Some(index);
                     }
                     if ui.small_button("✖").clicked() {
@@ -536,19 +717,33 @@ impl MultiView {
         ui.horizontal_wrapped(|ui| {
             let stored = self.library.slots.iter().flatten().count();
             let send = ui.add_enabled(stored > 0, Button::new("📤 Send Multi bank to synth…"));
-            if send.on_hover_text("Overwrites the synth's Multi bank (asks first)").clicked() {
+            if send
+                .on_hover_text("Overwrites the synth's Multi bank (asks first)")
+                .clicked()
+            {
                 self.confirm_send_bank = true;
                 self.send_without_backup = false;
                 self.send_flagged = false;
             }
-            let cancel = ui.add_enabled(self.batch_running, Button::new("⏹ Cancel sending").small());
-            if cancel.on_disabled_hover_text("Nothing is being sent.").clicked() {
+            let cancel =
+                ui.add_enabled(self.batch_running, Button::new("⏹ Cancel sending").small());
+            if cancel
+                .on_disabled_hover_text("Nothing is being sent.")
+                .clicked()
+            {
                 actions.push(MultiAction::CancelBatch);
             }
         });
         if session.multi().is_some() {
-            let slot = self.selected_slot.or_else(|| first_free(&self.library)).unwrap_or(0);
-            let occupant = self.library.slots.get(slot as usize).and_then(Option::as_ref);
+            let slot = self
+                .selected_slot
+                .or_else(|| first_free(&self.library))
+                .unwrap_or(0);
+            let occupant = self
+                .library
+                .slots
+                .get(slot as usize)
+                .and_then(Option::as_ref);
             let label = match occupant {
                 Some(existing) => format!("💾 Overwrite M{slot:03} ({})…", existing.name),
                 None => format!("💾 Store in M{slot:03}"),
@@ -556,53 +751,124 @@ impl MultiView {
             if session.flagged() {
                 ui.colored_label(WARN, STORES_FLAGGED);
             }
-            if ui.button(label).on_hover_text("Store the edited multi in the library's Multi bank").clicked() {
+            if ui
+                .button(label)
+                .on_hover_text("Store the edited multi in the library's Multi bank")
+                .clicked()
+            {
                 match occupant {
                     Some(existing) => {
-                        self.confirm = Some(MultiConfirm::Overwrite { slot, old_name: existing.name.clone() });
+                        self.confirm = Some(MultiConfirm::Overwrite {
+                            slot,
+                            old_name: existing.name.clone(),
+                        });
                     }
                     None => report(store_edited_multi(db, session, slot), actions),
                 }
                 self.selected_slot = Some(slot);
             }
         }
-        let selected = self.selected_slot.and_then(|s| self.library.slots.get(s as usize).cloned().flatten());
+        let selected = self
+            .selected_slot
+            .and_then(|s| self.library.slots.get(s as usize).cloned().flatten());
         if let Some(summary) = selected {
             if !summary.checksum_ok {
-                ui.colored_label(WARN, "⚠ Flagged: imported or received with a wrong checksum.");
-                if ui.small_button("✔ Mark as checked…").on_hover_text("Clear the ⚠ flag (asks first)").clicked() {
-                    let label = summary.slot.map_or_else(|| "unslotted".to_owned(), |s| format!("M{s:03}"));
-                    self.mark_checked = Some(MarkChecked::Multi { id: summary.id, label });
+                ui.colored_label(
+                    WARN,
+                    "⚠ Flagged: imported or received with a wrong checksum.",
+                );
+                if ui
+                    .small_button("✔ Mark as checked…")
+                    .on_hover_text("Clear the ⚠ flag (asks first)")
+                    .clicked()
+                {
+                    let label = summary
+                        .slot
+                        .map_or_else(|| "unslotted".to_owned(), |s| format!("M{s:03}"));
+                    self.mark_checked = Some(MarkChecked::Multi {
+                        id: summary.id,
+                        label,
+                    });
                 }
             }
             ui.horizontal(|ui| {
-                if ui.button("Load").on_hover_text("Load into the Multi editor (not sent)").clicked() {
-                    load_record(db, summary.id, session, &mut self.name_for, false, settings, actions);
+                if ui
+                    .button("Load")
+                    .on_hover_text("Load into the Multi editor (not sent)")
+                    .clicked()
+                {
+                    load_record(
+                        db,
+                        summary.id,
+                        session,
+                        &mut self.name_for,
+                        false,
+                        settings,
+                        actions,
+                    );
                 }
-                if ui.button("Send to synth").on_hover_text("Load and send to the Multi edit buffer").clicked() {
-                    load_record(db, summary.id, session, &mut self.name_for, true, settings, actions);
+                if ui
+                    .button("Send to synth")
+                    .on_hover_text("Load and send to the Multi edit buffer")
+                    .clicked()
+                {
+                    load_record(
+                        db,
+                        summary.id,
+                        session,
+                        &mut self.name_for,
+                        true,
+                        settings,
+                        actions,
+                    );
                 }
-                if ui.button("Delete…").on_hover_text("Delete from the library (asks first)").clicked() {
-                    let label = summary.slot.map_or_else(|| "unslotted".to_owned(), |s| format!("M{s:03}"));
-                    self.confirm = Some(MultiConfirm::Delete { id: summary.id, label, name: summary.name.clone() });
+                if ui
+                    .button("Delete…")
+                    .on_hover_text("Delete from the library (asks first)")
+                    .clicked()
+                {
+                    let label = summary
+                        .slot
+                        .map_or_else(|| "unslotted".to_owned(), |s| format!("M{s:03}"));
+                    self.confirm = Some(MultiConfirm::Delete {
+                        id: summary.id,
+                        label,
+                        name: summary.name.clone(),
+                    });
                 }
             });
         }
         let mut picked = None;
         for slot in 0..MULTI_BANK_SLOTS as u8 {
-            let entry = self.library.slots.get(slot as usize).and_then(Option::as_ref);
+            let entry = self
+                .library
+                .slots
+                .get(slot as usize)
+                .and_then(Option::as_ref);
             let mut text = format!("M{slot:03}  {}", entry.map_or("—", |m| m.name.as_str()));
             if entry.is_some_and(|m| !m.checksum_ok) {
                 text.push_str("  ⚠");
             }
-            let rich = if entry.is_some() { RichText::new(text).monospace() } else { RichText::new(text).monospace().color(DIM) };
+            let rich = if entry.is_some() {
+                RichText::new(text).monospace()
+            } else {
+                RichText::new(text).monospace().color(DIM)
+            };
             let response = ui.selectable_label(self.selected_slot == Some(slot), rich);
             if response.clicked() {
                 picked = Some(slot);
             }
             if response.double_clicked() {
                 if let Some(entry) = entry {
-                    load_record(db, entry.id, session, &mut self.name_for, false, settings, actions);
+                    load_record(
+                        db,
+                        entry.id,
+                        session,
+                        &mut self.name_for,
+                        false,
+                        settings,
+                        actions,
+                    );
                 }
             }
         }
@@ -617,18 +883,39 @@ impl MultiView {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(&summary.name).monospace());
                     if ui.small_button("Load").clicked() {
-                        load_record(db, summary.id, session, &mut self.name_for, false, settings, actions);
+                        load_record(
+                            db,
+                            summary.id,
+                            session,
+                            &mut self.name_for,
+                            false,
+                            settings,
+                            actions,
+                        );
                     }
-                    if ui.small_button("✖").on_hover_text("Delete from the library (asks first)").clicked() {
-                        self.confirm =
-                            Some(MultiConfirm::Delete { id: summary.id, label: "unslotted".to_owned(), name: summary.name.clone() });
+                    if ui
+                        .small_button("✖")
+                        .on_hover_text("Delete from the library (asks first)")
+                        .clicked()
+                    {
+                        self.confirm = Some(MultiConfirm::Delete {
+                            id: summary.id,
+                            label: "unslotted".to_owned(),
+                            name: summary.name.clone(),
+                        });
                     }
                 });
             }
         }
     }
 
-    fn editor(&mut self, ui: &mut Ui, session: &mut MultiSession, settings: &mut MidiSettings, actions: &mut Vec<MultiAction>) {
+    fn editor(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut MultiSession,
+        settings: &mut MidiSettings,
+        actions: &mut Vec<MultiAction>,
+    ) {
         let Some(multi) = session.multi().cloned() else {
             ui.add_space(20.0);
             ui.label(RichText::new("No multi loaded.").strong());
@@ -643,7 +930,12 @@ impl MultiView {
         }
         ui.horizontal(|ui| {
             ui.label(RichText::new("Multi").strong().color(accent()));
-            let response = ui.add(TextEdit::singleline(&mut self.name_buffer).char_limit(10).desired_width(110.0).font(egui::TextStyle::Monospace));
+            let response = ui.add(
+                TextEdit::singleline(&mut self.name_buffer)
+                    .char_limit(10)
+                    .desired_width(110.0)
+                    .font(egui::TextStyle::Monospace),
+            );
             if response.changed() {
                 for message in session.set_name(settings, &self.name_buffer) {
                     actions.push(MultiAction::Send(message));
@@ -652,15 +944,27 @@ impl MultiView {
             }
             ui.label(RichText::new(format!("from {}", session.origin)).color(DIM));
             if session.flagged() {
-                ui.colored_label(WARN, "⚠ flagged").on_hover_text(STORES_FLAGGED);
+                ui.colored_label(WARN, "⚠ flagged")
+                    .on_hover_text(STORES_FLAGGED);
             }
             if session.unsent_changes {
-                ui.colored_label(WARN, "⚠ Tempo/delay changes are applied only when you send the multi.");
+                ui.colored_label(
+                    WARN,
+                    "⚠ Tempo/delay changes are applied only when you send the multi.",
+                );
             }
             if let EditPart::Multi(part) = settings.part {
                 let multi_channel = session.edited_part_channel(settings.part);
-                let channel = crate::audition::auto_channel(settings.channel, settings.part, multi_channel);
-                ui.label(RichText::new(format!("Editing part {} (MIDI ch {})", part + 1, channel + 1)).color(DIM));
+                let channel =
+                    crate::audition::auto_channel(settings.channel, settings.part, multi_channel);
+                ui.label(
+                    RichText::new(format!(
+                        "Editing part {} (MIDI ch {})",
+                        part + 1,
+                        channel + 1
+                    ))
+                    .color(DIM),
+                );
             }
         });
 
@@ -669,10 +973,13 @@ impl MultiView {
             for def in multi_common_params() {
                 ui.vertical(|ui| {
                     let label = match def.location {
-                        MultiLocation::Common(15) => format!("{} ({} BPM)", def.short, multi.clock_tempo_bpm()),
+                        MultiLocation::Common(15) => {
+                            format!("{} ({} BPM)", def.short, multi.clock_tempo_bpm())
+                        }
                         _ => def.short.to_owned(),
                     };
-                    ui.label(RichText::new(label).size(10.5)).on_hover_text(hover(def, multi.get(def, 0)));
+                    ui.label(RichText::new(label).size(10.5))
+                        .on_hover_text(hover(def, multi.get(def, 0)));
                     let mut value = multi.get(def, 0);
                     // Only user changes count: drawing a DragValue may clamp the value (RV-M1).
                     let changed = value_control(ui, def, 0, &mut value).changed();
@@ -736,7 +1043,11 @@ impl MultiView {
 }
 
 fn first_free(library: &MultiLibraryCache) -> Option<u8> {
-    library.slots.iter().position(Option::is_none).and_then(|i| u8::try_from(i).ok())
+    library
+        .slots
+        .iter()
+        .position(Option::is_none)
+        .and_then(|i| u8::try_from(i).ok())
 }
 
 fn load(
@@ -771,15 +1082,26 @@ fn load_record(
                 Some(slot) => format!("library M{slot:03}"),
                 None => "library".to_owned(),
             };
-            load(session, name_for, Multi::from_bytes(&record.data), &origin, !record.checksum_ok, actions);
+            load(
+                session,
+                name_for,
+                Multi::from_bytes(&record.data),
+                &origin,
+                !record.checksum_ok,
+                actions,
+            );
             if send {
                 if let Some(dump) = session.edit_buffer_dump(settings) {
                     actions.push(MultiAction::Send(dump));
                 }
             }
         }
-        Ok(None) => actions.push(MultiAction::Notice(Notice::warning("That multi no longer exists."))),
-        Err(e) => actions.push(MultiAction::Notice(Notice::error(format!("Cannot load the multi: {e}")))),
+        Ok(None) => actions.push(MultiAction::Notice(Notice::warning(
+            "That multi no longer exists.",
+        ))),
+        Err(e) => actions.push(MultiAction::Notice(Notice::error(format!(
+            "Cannot load the multi: {e}"
+        )))),
     }
 }
 
@@ -791,7 +1113,9 @@ fn report<T: std::fmt::Display>(result: Result<T, String>, actions: &mut Vec<Mul
 }
 
 fn parent_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
-    path.parent().filter(|p| !p.as_os_str().is_empty()).map(std::path::Path::to_path_buf)
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
 }
 
 fn hover(def: &MultiParamDef, raw: u8) -> String {
@@ -801,7 +1125,10 @@ fn hover(def: &MultiParamDef, raw: u8) -> String {
         None => text.push_str("\nNo parameter change: sent with the whole multi"),
     }
     if raw < def.min || raw > def.max {
-        text.push_str(&format!("\nOutside the documented range {}..{}; kept as is.", def.min, def.max));
+        text.push_str(&format!(
+            "\nOutside the documented range {}..{}; kept as is.",
+            def.min, def.max
+        ));
     }
     text
 }
@@ -811,7 +1138,11 @@ fn value_control(ui: &mut Ui, def: &MultiParamDef, part: u8, value: &mut u8) -> 
     match def.kind {
         ValueKind::Toggle => {
             let mut on = *value != 0;
-            let text = if *value > 1 { format!("#{value}") } else { String::new() };
+            let text = if *value > 1 {
+                format!("#{value}")
+            } else {
+                String::new()
+            };
             let response = ui.checkbox(&mut on, text);
             if response.changed() {
                 *value = u8::from(on);
@@ -824,14 +1155,22 @@ fn value_control(ui: &mut Ui, def: &MultiParamDef, part: u8, value: &mut u8) -> 
             let before = *value;
             let mut response = ComboBox::from_id_source(("multi", def.name, part))
                 .width(if texts.len() > 4 { 72.0 } else { 40.0 })
-                .selected_text(if known { RichText::new(selected) } else { RichText::new(selected).color(WARN) })
+                .selected_text(if known {
+                    RichText::new(selected)
+                } else {
+                    RichText::new(selected).color(WARN)
+                })
                 .show_ui(ui, |ui| {
                     for (raw, text) in texts.iter().enumerate() {
                         ui.selectable_value(value, raw as u8, *text);
                     }
                     if !known {
                         let current = *value;
-                        ui.selectable_value(value, current, RichText::new(format!("#{current} (undocumented)")).color(WARN));
+                        ui.selectable_value(
+                            value,
+                            current,
+                            RichText::new(format!("#{current} (undocumented)")).color(WARN),
+                        );
                     }
                 })
                 .response;
@@ -875,20 +1214,39 @@ mod tests {
     impl Backend for Fake {
         fn run(&self, task: Task) -> Outcome {
             match task {
-                Task::PickImport { .. } => Outcome::ImportPicked(Some(PathBuf::from("in").join("multis.syx"))),
-                Task::ReadFile(path) => Outcome::Read { path, result: Ok(self.file.clone()) },
-                Task::PickExport { file_name, .. } => Outcome::ExportPicked(Some(PathBuf::from("out").join(file_name))),
+                Task::PickImport { .. } => {
+                    Outcome::ImportPicked(Some(PathBuf::from("in").join("multis.syx")))
+                }
+                Task::ReadFile(path) => Outcome::Read {
+                    path,
+                    result: Ok(self.file.clone()),
+                },
+                Task::PickExport { file_name, .. } => {
+                    Outcome::ExportPicked(Some(PathBuf::from("out").join(file_name)))
+                }
                 Task::WriteFile { path, bytes } => {
                     *self.written.lock().unwrap() = Some((path.clone(), bytes));
-                    Outcome::Written { path, result: Ok(()) }
+                    Outcome::Written {
+                        path,
+                        result: Ok(()),
+                    }
                 }
             }
         }
     }
 
     fn view_with(file: Vec<u8>) -> (MultiView, Arc<Fake>) {
-        let fake = Arc::new(Fake { file, written: Mutex::new(None) });
-        (MultiView { files: FileJobs::with_backend(fake.clone()), ..Default::default() }, fake)
+        let fake = Arc::new(Fake {
+            file,
+            written: Mutex::new(None),
+        });
+        (
+            MultiView {
+                files: FileJobs::with_backend(fake.clone()),
+                ..Default::default()
+            },
+            fake,
+        )
     }
 
     fn multi(name: &str) -> Multi {
@@ -897,7 +1255,13 @@ mod tests {
         multi
     }
 
-    fn pump(view: &mut MultiView, ctx: &Context, db: &PatchDatabase, session: &mut MultiSession, actions: &mut Vec<MultiAction>) {
+    fn pump(
+        view: &mut MultiView,
+        ctx: &Context,
+        db: &PatchDatabase,
+        session: &mut MultiSession,
+        actions: &mut Vec<MultiAction>,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while view.files.busy().is_some() || view.pending_file.is_some() {
             view.poll_files(ctx, db, session, actions);
@@ -921,8 +1285,14 @@ mod tests {
     fn importing_a_file_over_an_occupied_slot_waits_for_the_user() {
         let db = PatchDatabase::open_in_memory().unwrap();
         store_multi(&db, Some(3), &multi("Mine"), true).unwrap();
-        let (mut view, _) = view_with(encode_multi_dump(DEVICE_ID_OMNI, 1, 3, multi("Theirs").as_bytes()));
-        let (ctx, mut session, mut actions) = (Context::default(), MultiSession::default(), Vec::new());
+        let (mut view, _) = view_with(encode_multi_dump(
+            DEVICE_ID_OMNI,
+            1,
+            3,
+            multi("Theirs").as_bytes(),
+        ));
+        let (ctx, mut session, mut actions) =
+            (Context::default(), MultiSession::default(), Vec::new());
 
         view.start_import(&ctx, &mut actions);
         assert!(view.files.busy().is_some());
@@ -936,8 +1306,14 @@ mod tests {
     #[test]
     fn importing_a_file_into_empty_slots_happens_at_once() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        let (mut view, _) = view_with(encode_multi_dump(DEVICE_ID_OMNI, 1, 3, multi("Theirs").as_bytes()));
-        let (ctx, mut session, mut actions) = (Context::default(), MultiSession::default(), Vec::new());
+        let (mut view, _) = view_with(encode_multi_dump(
+            DEVICE_ID_OMNI,
+            1,
+            3,
+            multi("Theirs").as_bytes(),
+        ));
+        let (ctx, mut session, mut actions) =
+            (Context::default(), MultiSession::default(), Vec::new());
         view.start_import(&ctx, &mut actions);
         pump(&mut view, &ctx, &db, &mut session, &mut actions);
         assert!(view.pending_import.is_none());
@@ -951,8 +1327,14 @@ mod tests {
         store_multi(&db, Some(3), &multi("Mine"), true).unwrap();
         let (mut view, _) = view_with(Vec::new());
         let mut session = MultiSession::default();
-        session.received.push(IncomingMultiDump { bank: 1, program: 3, data: *multi("Theirs").as_bytes(), checksum_ok: true });
-        let pending = prepare_multi_import(&db, "received from synth", session.received.clone()).unwrap();
+        session.received.push(IncomingMultiDump {
+            bank: 1,
+            program: 3,
+            data: *multi("Theirs").as_bytes(),
+            checksum_ok: true,
+        });
+        let pending =
+            prepare_multi_import(&db, "received from synth", session.received.clone()).unwrap();
         let mut actions = Vec::new();
         view.import_or_ask(&db, &mut session, pending, true, &mut actions);
         assert!(view.pending_import.is_some());
@@ -964,19 +1346,40 @@ mod tests {
     #[test]
     fn exporting_leaves_flagged_multis_out_and_says_so() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        db.save_multi(Some(0), multi("Fine").as_bytes(), &PatchMeta::default(), true).unwrap();
-        db.save_multi(Some(1), multi("Damaged").as_bytes(), &PatchMeta::default(), false).unwrap();
+        db.save_multi(
+            Some(0),
+            multi("Fine").as_bytes(),
+            &PatchMeta::default(),
+            true,
+        )
+        .unwrap();
+        db.save_multi(
+            Some(1),
+            multi("Damaged").as_bytes(),
+            &PatchMeta::default(),
+            false,
+        )
+        .unwrap();
         let (mut view, fake) = view_with(Vec::new());
-        let (ctx, mut session, mut actions) = (Context::default(), MultiSession::default(), Vec::new());
+        let (ctx, mut session, mut actions) =
+            (Context::default(), MultiSession::default(), Vec::new());
 
         view.start_export(&ctx, &mut actions);
         pump(&mut view, &ctx, &db, &mut session, &mut actions);
 
-        let (path, bytes) = fake.written.lock().unwrap().clone().expect("a file was written");
+        let (path, bytes) = fake
+            .written
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a file was written");
         assert_eq!(path, PathBuf::from("out").join("Multi_bank.syx"));
         assert_eq!(bytes.len(), 267, "only the clean multi");
         let last = texts(&actions).pop().unwrap();
-        assert!(last.contains("Exported 1 multi(s)") && last.contains("1 flagged ⚠ multi(s) left out"), "{last}");
+        assert!(
+            last.contains("Exported 1 multi(s)") && last.contains("1 flagged ⚠ multi(s) left out"),
+            "{last}"
+        );
     }
 
     /// [CR-M4] Saving the received multis marks a complete Multi bank as backed up.
@@ -986,13 +1389,21 @@ mod tests {
         let (mut view, fake) = view_with(Vec::new());
         let mut session = MultiSession::default();
         for program in 0..128u8 {
-            session.received.push(IncomingMultiDump { bank: 1, program, data: *multi("M").as_bytes(), checksum_ok: true });
+            session.received.push(IncomingMultiDump {
+                bank: 1,
+                program,
+                data: *multi("M").as_bytes(),
+                checksum_ok: true,
+            });
         }
         let (ctx, mut actions) = (Context::default(), Vec::new());
         view.start_save_received(&ctx, &session, &mut actions);
         pump(&mut view, &ctx, &db, &mut session, &mut actions);
         assert!(view.backed_up);
-        assert_eq!(fake.written.lock().unwrap().as_ref().unwrap().1.len(), 128 * 267);
+        assert_eq!(
+            fake.written.lock().unwrap().as_ref().unwrap().1.len(),
+            128 * 267
+        );
     }
 
     /// [CR-L2] Delete and Overwrite dialogs render and change nothing until confirmed.
@@ -1000,12 +1411,21 @@ mod tests {
     fn confirmations_render_and_wait() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let id = store_multi(&db, Some(3), &multi("Mine"), true).unwrap();
-        let mut view = MultiView { confirm: Some(MultiConfirm::Delete { id, label: "M003".into(), name: "Mine".into() }), ..Default::default() };
+        let mut view = MultiView {
+            confirm: Some(MultiConfirm::Delete {
+                id,
+                label: "M003".into(),
+                name: "Mine".into(),
+            }),
+            ..Default::default()
+        };
         let mut session = MultiSession::default();
         let ctx = Context::default();
         let mut actions = Vec::new();
         for _ in 0..2 {
-            let _ = ctx.run(egui::RawInput::default(), |ctx| view.show_dialogs(ctx, &db, &mut session, &mut actions));
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                view.show_dialogs(ctx, &db, &mut session, &mut actions)
+            });
         }
         assert!(view.confirm.is_some());
         assert!(db.get_multi_by_slot(3).unwrap().is_some());

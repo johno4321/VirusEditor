@@ -8,7 +8,11 @@ use crate::session::Session;
 /// "A40" / "B112" style label of a dump offset.
 pub fn offset_label(offset: usize) -> String {
     let (page, number) = page_number(offset);
-    let letter = if page == virus_syx::Page::PageA { 'A' } else { 'B' };
+    let letter = if page == virus_syx::Page::PageA {
+        'A'
+    } else {
+        'B'
+    };
     format!("{letter}{number}")
 }
 
@@ -36,15 +40,23 @@ impl Compare {
         }
         self.edited = Some(session.patch().clone());
         let target = *original.as_bytes();
-        let values: Vec<_> = changes_between(session.patch(), original).iter().map(|c| (c.offset, target[c.offset])).collect();
+        let values: Vec<_> = changes_between(session.patch(), original)
+            .iter()
+            .map(|c| (c.offset, target[c.offset]))
+            .collect();
         apply_step(session, values)
     }
 
     /// Restores the parked edited patch. Returns the SysEx messages to send (see [`apply_step`]).
     pub fn leave(&mut self, session: &mut Session) -> Vec<Vec<u8>> {
-        let Some(edited) = self.edited.take() else { return Vec::new() };
+        let Some(edited) = self.edited.take() else {
+            return Vec::new();
+        };
         let target = *edited.as_bytes();
-        let values: Vec<_> = changes_between(session.patch(), &edited).iter().map(|c| (c.offset, target[c.offset])).collect();
+        let values: Vec<_> = changes_between(session.patch(), &edited)
+            .iter()
+            .map(|c| (c.offset, target[c.offset]))
+            .collect();
         apply_step(session, values)
     }
     /// Forgets the parked patch without touching the session (the patch is being replaced).
@@ -97,7 +109,10 @@ mod tests {
     use virus_syx::{is_sound_param, parse_sysex, read_sysex_file, Page, SysExMessage};
 
     fn bank_a() -> Vec<Patch> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/factory/Bank_A.syx");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/factory/Bank_A.syx"
+        );
         read_sysex_file(path)
             .expect("factory bank")
             .iter()
@@ -136,9 +151,14 @@ mod tests {
         for message in messages {
             match parse_sysex(message).expect("valid SysEx") {
                 SysExMessage::ParamChange { page, param, .. } => {
-                    assert!(is_sound_param(page, param), "parameter change for {page:?} {param}");
+                    assert!(
+                        is_sound_param(page, param),
+                        "parameter change for {page:?} {param}"
+                    );
                 }
-                SysExMessage::SingleDump { bank: 0, .. } => assert_eq!(messages.len(), 1, "a dump is sent alone"),
+                SysExMessage::SingleDump { bank: 0, .. } => {
+                    assert_eq!(messages.len(), 1, "a dump is sent alone")
+                }
                 other => panic!("unexpected {other:?}"),
             }
         }
@@ -168,8 +188,18 @@ mod tests {
         let d = diff(&a, &b);
         assert_eq!(d.len(), 2);
         assert_eq!(d[0].offset, 40);
-        assert!(d[0].label.starts_with("Cutoff") && d[0].label.ends_with("(A40)"), "{}", d[0].label);
-        assert_eq!(d[0].before, format_value(single_param(Page::PageA, 40).unwrap(), a.get(Page::PageA, 40)));
+        assert!(
+            d[0].label.starts_with("Cutoff") && d[0].label.ends_with("(A40)"),
+            "{}",
+            d[0].label
+        );
+        assert_eq!(
+            d[0].before,
+            format_value(
+                single_param(Page::PageA, 40).unwrap(),
+                a.get(Page::PageA, 40)
+            )
+        );
         assert_eq!(d[1].offset, 128 + 22);
         assert_eq!(d[1].label, "B22 (undocumented)");
         assert_eq!(d[1].section, None);

@@ -6,7 +6,9 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::address::{parse_address, parse_set_address, parse_value, ParamAddress};
 use crate::probe::DestinationSlot;
-use crate::settings::{parse_bank_letter, parse_channel, parse_device, parse_part, DeviceId, Part, Target};
+use crate::settings::{
+    parse_bank_letter, parse_channel, parse_device, parse_part, DeviceId, Part, Target,
+};
 
 /// Headless tool for live sessions with the Access Virus Rack (OS 2.00).
 #[derive(Debug, Parser)]
@@ -58,7 +60,11 @@ pub struct ConnArgs {
 
 impl ConnArgs {
     pub fn target(&self) -> Target {
-        Target { device: self.device, channel: self.channel, part: self.part }
+        Target {
+            device: self.device,
+            channel: self.channel,
+            part: self.part,
+        }
     }
 
     /// The port, device, channel and part options as they'd be typed again, for printing
@@ -103,7 +109,11 @@ pub struct ProbeArgs {
     #[arg(long, value_name = "N", default_value_t = 3)]
     pub stop_after_rejected: u32,
     /// Where the original edit buffer is saved before probing.
-    #[arg(long, value_name = "FILE", default_value = "probe_editbuffer_backup.syx")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        default_value = "probe_editbuffer_backup.syx"
+    )]
     pub backup_file: PathBuf,
 }
 
@@ -284,16 +294,31 @@ mod tests {
 
     #[test]
     fn global_options_parse_anywhere_with_defaults() {
-        let cli = Cli::try_parse_from(["virus", "set", "A10", "-5", "--device", "omni", "--part", "3"]).unwrap();
-        assert_eq!(cli.conn.target(), Target { device: DeviceId(0x10), channel: 0, part: Part::Multi(2) });
+        let cli = Cli::try_parse_from([
+            "virus", "set", "A10", "-5", "--device", "omni", "--part", "3",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.conn.target(),
+            Target {
+                device: DeviceId(0x10),
+                channel: 0,
+                part: Part::Multi(2)
+            }
+        );
         match cli.command {
-            Command::Set { param, value, .. } => assert_eq!((param, value), (ParamAddress::a(10), 59)),
+            Command::Set { param, value, .. } => {
+                assert_eq!((param, value), (ParamAddress::a(10), 59))
+            }
             other => panic!("unexpected {other:?}"),
         }
         let cli = Cli::try_parse_from(["virus", "--in", "UM", "fetch"]).unwrap();
         assert_eq!(cli.conn.target(), Target::default());
         assert_eq!(cli.conn.timeout_ms, 3000);
-        assert!(Cli::try_parse_from(["virus", "get-bank", "A"]).is_err(), "--out-file is required");
+        assert!(
+            Cli::try_parse_from(["virus", "get-bank", "A"]).is_err(),
+            "--out-file is required"
+        );
         assert!(Cli::try_parse_from(["virus", "--device", "0", "ports"]).is_err());
     }
 
@@ -301,8 +326,14 @@ mod tests {
     fn panic_uses_the_global_channel_or_all_channels() {
         let cli = Cli::try_parse_from(["virus", "panic", "--channel", "11"]).unwrap();
         assert_eq!(cli.conn.channel, 10);
-        assert!(matches!(cli.command, Command::Panic { all_channels: false }));
-        let cli = Cli::try_parse_from(["virus", "panic", "--all-channels", "--out", "mioXC"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Panic {
+                all_channels: false
+            }
+        ));
+        let cli =
+            Cli::try_parse_from(["virus", "panic", "--all-channels", "--out", "mioXC"]).unwrap();
         assert!(matches!(cli.command, Command::Panic { all_channels: true }));
         assert!(Cli::try_parse_from(["virus", "panic", "--channel", "17"]).is_err());
     }
@@ -310,13 +341,22 @@ mod tests {
     #[test]
     fn set_takes_page_c_and_send_hex_takes_split_or_quoted_bytes() {
         let cli = Cli::try_parse_from(["virus", "set", "C32", "1"]).unwrap();
-        assert!(matches!(cli.command, Command::Set { param, value: 1, .. } if param == ParamAddress::c(32)));
+        assert!(
+            matches!(cli.command, Command::Set { param, value: 1, .. } if param == ParamAddress::c(32))
+        );
         assert!(Cli::try_parse_from(["virus", "probe-values", "C32"]).is_err());
 
         let cli = Cli::try_parse_from(["virus", "send-hex", "F0 00", "20", "F7", "--yes"]).unwrap();
         match cli.command {
-            Command::SendHex { hex, yes, listen_ms } => {
-                assert_eq!((hex.join(" "), yes, listen_ms), ("F0 00 20 F7".to_owned(), true, 1000));
+            Command::SendHex {
+                hex,
+                yes,
+                listen_ms,
+            } => {
+                assert_eq!(
+                    (hex.join(" "), yes, listen_ms),
+                    ("F0 00 20 F7".to_owned(), true, 1000)
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -325,17 +365,28 @@ mod tests {
 
     #[test]
     fn repeat_options_reproduce_ports_and_device() {
-        let cli = Cli::try_parse_from(["virus", "--in", "UM-ONE", "--out", "UM-ONE", "--device", "omni", "ports"]).unwrap();
-        assert_eq!(cli.conn.repeat_options(), " --in \"UM-ONE\" --out \"UM-ONE\" --device omni");
+        let cli = Cli::try_parse_from([
+            "virus", "--in", "UM-ONE", "--out", "UM-ONE", "--device", "omni", "ports",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.conn.repeat_options(),
+            " --in \"UM-ONE\" --out \"UM-ONE\" --device omni"
+        );
         let cli = Cli::try_parse_from(["virus", "ports"]).unwrap();
         assert_eq!(cli.conn.repeat_options(), "");
     }
 
     #[test]
     fn repeat_options_keep_the_channel_and_multi_part() {
-        let cli = Cli::try_parse_from(["virus", "fetch", "--channel", "11", "--part", "3"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["virus", "fetch", "--channel", "11", "--part", "3"]).unwrap();
         assert_eq!(cli.conn.repeat_options(), " --channel 11 --part 3");
         let cli = Cli::try_parse_from(["virus", "fetch", "--part", "single"]).unwrap();
-        assert_eq!(cli.conn.repeat_options(), "", "the single buffer is the default");
+        assert_eq!(
+            cli.conn.repeat_options(),
+            "",
+            "the single buffer is the default"
+        );
     }
 }

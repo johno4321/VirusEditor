@@ -76,7 +76,9 @@ pub fn auto_pick_port(names: &[String]) -> Option<String> {
 pub fn base_port_name(name: &str) -> String {
     let lower = name.trim().to_lowercase();
     match lower.split_once("- ") {
-        Some((digits, rest)) if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) => {
+        Some((digits, rest))
+            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) =>
+        {
             rest.trim_start().to_owned()
         }
         _ => lower,
@@ -90,7 +92,10 @@ pub fn find_port_or_renamed(wanted: &str, available: &[String]) -> Option<String
         return Some(exact.clone());
     }
     let base = base_port_name(wanted);
-    available.iter().find(|n| base_port_name(n) == base).cloned()
+    available
+        .iter()
+        .find(|n| base_port_name(n) == base)
+        .cloned()
 }
 
 /// When the worker re-enumerates ports, and whether the lists changed since last time (R10).
@@ -125,7 +130,10 @@ impl PortWatch {
 
     /// Records the current lists and returns whether they differ from the last ones recorded.
     pub fn changed(&mut self, inputs: &[String], outputs: &[String]) -> bool {
-        let same = self.last.as_ref().is_some_and(|(i, o)| i == inputs && o == outputs);
+        let same = self
+            .last
+            .as_ref()
+            .is_some_and(|(i, o)| i == inputs && o == outputs);
         if !same {
             self.last = Some((inputs.to_vec(), outputs.to_vec()));
         }
@@ -203,19 +211,40 @@ mod tests {
     #[test]
     fn renamed_port_is_found_by_base_name() {
         let available = names(&["Other", "2- mioXC MIDI OUT"]);
-        assert_eq!(find_port_or_renamed("mioXC MIDI OUT", &available), Some("2- mioXC MIDI OUT".into()));
-        assert_eq!(find_port_or_renamed("3- mioxc midi out", &available), Some("2- mioXC MIDI OUT".into()));
+        assert_eq!(
+            find_port_or_renamed("mioXC MIDI OUT", &available),
+            Some("2- mioXC MIDI OUT".into())
+        );
+        assert_eq!(
+            find_port_or_renamed("3- mioxc midi out", &available),
+            Some("2- mioXC MIDI OUT".into())
+        );
         assert_eq!(find_port_or_renamed("mioXC MIDI IN", &available), None);
         let both = names(&["2- mioXC MIDI OUT", "mioXC MIDI OUT"]);
-        assert_eq!(find_port_or_renamed("mioXC MIDI OUT", &both), Some("mioXC MIDI OUT".into()));
+        assert_eq!(
+            find_port_or_renamed("mioXC MIDI OUT", &both),
+            Some("mioXC MIDI OUT".into())
+        );
     }
 
     #[test]
     fn auto_pick_prefers_virus_then_the_only_real_port() {
-        assert_eq!(auto_pick_port(&names(&["GS Synth", "Virus A", "Virus B"])), Some("Virus A".into()));
-        assert_eq!(auto_pick_port(&names(&["Microsoft GS Wavetable Synth", "mioXC MIDI OUT"])), Some("mioXC MIDI OUT".into()));
-        assert_eq!(auto_pick_port(&names(&["mioXC MIDI OUT", "loopMIDI"])), None);
-        assert_eq!(auto_pick_port(&names(&["Microsoft GS Wavetable Synth"])), None);
+        assert_eq!(
+            auto_pick_port(&names(&["GS Synth", "Virus A", "Virus B"])),
+            Some("Virus A".into())
+        );
+        assert_eq!(
+            auto_pick_port(&names(&["Microsoft GS Wavetable Synth", "mioXC MIDI OUT"])),
+            Some("mioXC MIDI OUT".into())
+        );
+        assert_eq!(
+            auto_pick_port(&names(&["mioXC MIDI OUT", "loopMIDI"])),
+            None
+        );
+        assert_eq!(
+            auto_pick_port(&names(&["Microsoft GS Wavetable Synth"])),
+            None
+        );
     }
 
     #[test]

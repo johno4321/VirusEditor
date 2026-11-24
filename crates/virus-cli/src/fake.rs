@@ -13,7 +13,12 @@ use crate::transport::Transport;
 
 /// A [`Synth`] over a fake with the default target, a short timeout and no settle pause.
 pub fn synth(fake: FakeVirus) -> Synth<FakeVirus> {
-    Synth::new(fake, Target::default(), Duration::from_millis(20), Duration::ZERO)
+    Synth::new(
+        fake,
+        Target::default(),
+        Duration::from_millis(20),
+        Duration::ZERO,
+    )
 }
 
 pub struct FakeVirus {
@@ -46,7 +51,9 @@ pub fn pattern(seed: u8) -> [u8; 256] {
 
 impl FakeVirus {
     pub fn new(device: u8) -> Self {
-        let banks = (1..=4u8).map(|b| (b, (0..128u8).map(|p| pattern(b * 31 + p)).collect())).collect();
+        let banks = (1..=4u8)
+            .map(|b| (b, (0..128u8).map(|p| pattern(b * 31 + p)).collect()))
+            .collect();
         let mut edit_buffers = HashMap::new();
         edit_buffers.insert(0x40, *Patch::init().as_bytes());
         for part in 0..16u8 {
@@ -86,7 +93,11 @@ impl FakeVirus {
         }
         let device = self.device;
         match parsed {
-            SysExMessage::SingleRequest { bank: 0, program: part, .. } => {
+            SysExMessage::SingleRequest {
+                bank: 0,
+                program: part,
+                ..
+            } => {
                 if let Some(data) = self.edit_buffers.get(&part).copied() {
                     self.reply(encode_program_dump(device, 0, part, &data));
                 }
@@ -100,30 +111,58 @@ impl FakeVirus {
                 let dumps: Vec<Vec<u8>> = self
                     .banks
                     .get(&bank)
-                    .map(|b| b.iter().enumerate().map(|(p, d)| encode_program_dump(device, bank, p as u8, d)).collect())
+                    .map(|b| {
+                        b.iter()
+                            .enumerate()
+                            .map(|(p, d)| encode_program_dump(device, bank, p as u8, d))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 for dump in dumps {
                     self.reply(dump);
                 }
             }
             SysExMessage::SingleDump { .. } if self.ignore_dumps => {}
-            SysExMessage::SingleDump { bank: 0, program: part, data, .. } => {
+            SysExMessage::SingleDump {
+                bank: 0,
+                program: part,
+                data,
+                ..
+            } => {
                 self.edit_buffers.insert(part, *data);
             }
-            SysExMessage::SingleDump { bank, program, data, .. } => {
+            SysExMessage::SingleDump {
+                bank,
+                program,
+                data,
+                ..
+            } => {
                 if let Some(slots) = self.banks.get_mut(&bank) {
                     slots[program as usize & 0x7F] = *data;
                 }
             }
-            SysExMessage::ParamChange { page, part, param, value, .. } => {
-                let Some(base) = page.dump_offset() else { return };
-                let value = self.max_values.get(&(page, param)).map_or(value, |&max| value.min(max));
+            SysExMessage::ParamChange {
+                page,
+                part,
+                param,
+                value,
+                ..
+            } => {
+                let Some(base) = page.dump_offset() else {
+                    return;
+                };
+                let value = self
+                    .max_values
+                    .get(&(page, param))
+                    .map_or(value, |&max| value.min(max));
                 if let Some(buffer) = self.edit_buffers.get_mut(&part) {
                     buffer[base + param as usize] = value;
                 }
             }
             SysExMessage::GlobalRequest { .. } => {
-                self.reply(vec![0xF0, 0x00, 0x20, 0x33, 0x01, device, 0x12, 0x00, 0x01, 0xF7]);
+                self.reply(vec![
+                    0xF0, 0x00, 0x20, 0x33, 0x01, device, 0x12, 0x00, 0x01, 0xF7,
+                ]);
             }
             _ => {}
         }
@@ -152,7 +191,11 @@ impl Transport for FakeVirus {
 
     fn recv(&mut self, _timeout: Duration) -> Option<MidiEvent> {
         match self.queue.pop_front() {
-            None if self.chatter => Some(MidiEvent::ControlChange { channel: 0, controller: 40, value: 64 }),
+            None if self.chatter => Some(MidiEvent::ControlChange {
+                channel: 0,
+                controller: 40,
+                value: 64,
+            }),
             event => event,
         }
     }

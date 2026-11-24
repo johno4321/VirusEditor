@@ -18,8 +18,8 @@ use crate::files::{write_syx, LoadedFile};
 use crate::midi_link::{select_port, MidiLink};
 use crate::ops::{diff, list_addresses, to_incoming, verify_bank, Synth};
 use crate::probe::{
-    destination_plan, range, run_probe, suggested_max, value_plan, LinePrompter, ProbeEvent, ProbeFile,
-    ProbeOptions, ProbePlan, Prompter,
+    destination_plan, range, run_probe, suggested_max, value_plan, LinePrompter, ProbeEvent,
+    ProbeFile, ProbeOptions, ProbePlan, Prompter,
 };
 use crate::selftest::{all_passed, format_report, run_selftest, SelftestOptions};
 use crate::settings::bank_label;
@@ -34,46 +34,114 @@ pub fn run(cli: Cli) -> Outcome {
         Command::Ports => ports(conn),
         Command::Monitor { seconds } => monitor(conn, seconds),
         Command::Fetch { out_file, brief } => fetch(conn, out_file.as_deref(), brief),
-        Command::Send { file, program, from_bank, allow_bad_checksum, verify } => {
-            send(conn, &file, program, from_bank, allow_bad_checksum, verify)
-        }
-        Command::GetBank { bank, out_file, to_library, db, allow_partial } => {
-            get_bank(conn, bank, &out_file, to_library.then_some(db), allow_partial)
-        }
-        Command::PutBank { bank, file, yes, gap_ms, from_bank, allow_partial, allow_bad_checksum, no_backup, verify } => {
-            put_bank(
-                conn,
-                bank,
-                &file,
-                PutOptions { yes, gap_ms, from_bank, allow_partial, allow_bad_checksum, no_backup, verify },
-            )
-        }
-        Command::Set { param, value, force, verify } => set(conn, param, value, force, verify),
-        Command::SendHex { hex, yes, listen_ms } => send_hex(conn, &hex.join(" "), yes, listen_ms),
+        Command::Send {
+            file,
+            program,
+            from_bank,
+            allow_bad_checksum,
+            verify,
+        } => send(conn, &file, program, from_bank, allow_bad_checksum, verify),
+        Command::GetBank {
+            bank,
+            out_file,
+            to_library,
+            db,
+            allow_partial,
+        } => get_bank(
+            conn,
+            bank,
+            &out_file,
+            to_library.then_some(db),
+            allow_partial,
+        ),
+        Command::PutBank {
+            bank,
+            file,
+            yes,
+            gap_ms,
+            from_bank,
+            allow_partial,
+            allow_bad_checksum,
+            no_backup,
+            verify,
+        } => put_bank(
+            conn,
+            bank,
+            &file,
+            PutOptions {
+                yes,
+                gap_ms,
+                from_bank,
+                allow_partial,
+                allow_bad_checksum,
+                no_backup,
+                verify,
+            },
+        ),
+        Command::Set {
+            param,
+            value,
+            force,
+            verify,
+        } => set(conn, param, value, force, verify),
+        Command::SendHex {
+            hex,
+            yes,
+            listen_ms,
+        } => send_hex(conn, &hex.join(" "), yes, listen_ms),
         Command::Panic { all_channels } => panic_command(conn, all_channels),
-        Command::ProbeDestinations { slot, from, to, out_file, probe } => {
+        Command::ProbeDestinations {
+            slot,
+            from,
+            to,
+            out_file,
+            probe,
+        } => {
             let plan = destination_plan(slot, range(from, to)?);
             probe_command(conn, &plan, &out_file, &probe)
         }
-        Command::ProbeValues { param, from, to, out_file, probe } => {
-            let plan = value_plan(param, range(from, to.unwrap_or_else(|| suggested_max(param)))?)?;
+        Command::ProbeValues {
+            param,
+            from,
+            to,
+            out_file,
+            probe,
+        } => {
+            let plan = value_plan(
+                param,
+                range(from, to.unwrap_or_else(|| suggested_max(param)))?,
+            )?;
             let out_file = out_file.unwrap_or_else(|| PathBuf::from(format!("q3_{param}.json")));
             probe_command(conn, &plan, &out_file, &probe)
         }
         Command::ProbeTable { file, name } => {
-            let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let text =
+                std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             print!("{}", ProbeFile::from_json(&text)?.rust_table(&name));
             Ok(true)
         }
-        Command::Selftest { bank, skip_bank, skip_global } => selftest(
+        Command::Selftest {
+            bank,
+            skip_bank,
+            skip_global,
+        } => selftest(
             conn,
-            &SelftestOptions { bank: (!skip_bank).then_some(bank), global_request: !skip_global },
+            &SelftestOptions {
+                bank: (!skip_bank).then_some(bank),
+                global_request: !skip_global,
+            },
         ),
     }
 }
 
 fn open(conn: &ConnArgs) -> Result<Synth<MidiLink>, String> {
-    let link = MidiLink::open(conn.input.as_deref(), conn.output.as_deref(), true, true, conn.verbose)?;
+    let link = MidiLink::open(
+        conn.input.as_deref(),
+        conn.output.as_deref(),
+        true,
+        true,
+        conn.verbose,
+    )?;
     eprintln!(
         "in: {} | out: {} | device {} | {} | channel {}",
         link.input.as_deref().unwrap_or("-"),
@@ -88,10 +156,15 @@ fn open(conn: &ConnArgs) -> Result<Synth<MidiLink>, String> {
         Duration::from_millis(conn.timeout_ms),
         Duration::from_millis(conn.settle_ms),
     )
-    .with_quiet(Duration::from_millis(conn.quiet_ms), Duration::from_millis(conn.bank_quiet_ms));
+    .with_quiet(
+        Duration::from_millis(conn.quiet_ms),
+        Duration::from_millis(conn.bank_quiet_ms),
+    );
     if conn.verbose {
         synth.on_stale = Some(Box::new(|n| {
-            eprintln!("dropped {n} stale message(s) while waiting for a quiet line before the request")
+            eprintln!(
+                "dropped {n} stale message(s) while waiting for a quiet line before the request"
+            )
         }));
     }
     Ok(synth)
@@ -101,8 +174,20 @@ fn ports(conn: &ConnArgs) -> Outcome {
     let inputs = list_input_ports()?;
     let outputs = list_output_ports()?;
     for (title, names, pattern, kind, flag) in [
-        ("MIDI inputs", &inputs, conn.input.as_deref(), "input", "--in"),
-        ("MIDI outputs", &outputs, conn.output.as_deref(), "output", "--out"),
+        (
+            "MIDI inputs",
+            &inputs,
+            conn.input.as_deref(),
+            "input",
+            "--in",
+        ),
+        (
+            "MIDI outputs",
+            &outputs,
+            conn.output.as_deref(),
+            "output",
+            "--out",
+        ),
     ] {
         let virus = find_virus_ports(names);
         println!("{title}:");
@@ -134,7 +219,9 @@ fn monitor(conn: &ConnArgs, seconds: Option<u64>) -> Outcome {
     let start = Instant::now();
     let end = seconds.map(|s| start + Duration::from_secs(s));
     while end.is_none_or(|end| Instant::now() < end) {
-        if let Some(event) = crate::transport::Transport::recv(&mut link, Duration::from_millis(200)) {
+        if let Some(event) =
+            crate::transport::Transport::recv(&mut link, Duration::from_millis(200))
+        {
             if let Some(line) = describe(&event, &target) {
                 println!("{:>9.3}s  {line}", start.elapsed().as_secs_f64());
             }
@@ -153,10 +240,21 @@ fn fetch(conn: &ConnArgs, out_file: Option<&Path>, brief: bool) -> Outcome {
     } else {
         print!("{summary}");
     }
-    println!("Checksum:      {}", if dump.checksum_ok { "ok" } else { "WRONG (the synth sent a bad checksum)" });
+    println!(
+        "Checksum:      {}",
+        if dump.checksum_ok {
+            "ok"
+        } else {
+            "WRONG (the synth sent a bad checksum)"
+        }
+    );
     if let Some(path) = out_file {
         write_syx(path, &[&dump.frame]).map_err(|e| format!("{}: {e}", path.display()))?;
-        println!("Saved the dump as received ({} bytes) to {}", dump.frame.len(), path.display());
+        println!(
+            "Saved the dump as received ({} bytes) to {}",
+            dump.frame.len(),
+            path.display()
+        );
     }
     Ok(dump.checksum_ok)
 }
@@ -185,7 +283,10 @@ fn send(
         );
     }
     synth.send_edit_buffer_as_stored(&dump.data, dump.checksum_ok)?;
-    println!("Sent '{name}' to the edit buffer ({}). It is not stored until you STORE it on the synth.", conn.part);
+    println!(
+        "Sent '{name}' to the edit buffer ({}). It is not stored until you STORE it on the synth.",
+        conn.part
+    );
     if verify {
         let back = synth.fetch().map_err(|e| e.to_string())?;
         let differences = diff(&dump.data, &back.data);
@@ -209,12 +310,20 @@ fn progress_line(label: &str, done: usize, total: usize) {
 }
 
 /// Requests a bank and writes it. Returns the received dumps' count and any problem.
-fn receive_bank(synth: &mut Synth<MidiLink>, bank: u8, out_file: &Path, allow_partial: bool) -> Result<crate::transport::BankCollector, String> {
+fn receive_bank(
+    synth: &mut Synth<MidiLink>,
+    bank: u8,
+    out_file: &Path,
+    allow_partial: bool,
+) -> Result<crate::transport::BankCollector, String> {
     let label = format!("bank {}", bank_label(bank));
     let (collector, error) = synth.get_bank(bank, |n| progress_line(&label, n, 128));
     eprintln!();
     if collector.duplicates() > 0 {
-        eprintln!("note: {} program(s) arrived more than once (last one kept)", collector.duplicates());
+        eprintln!(
+            "note: {} program(s) arrived more than once (last one kept)",
+            collector.duplicates()
+        );
     }
     let bad = collector.bad_checksums();
     if !bad.is_empty() {
@@ -224,15 +333,32 @@ fn receive_bank(synth: &mut Synth<MidiLink>, bank: u8, out_file: &Path, allow_pa
         if !allow_partial || collector.count() == 0 {
             return Err(format!("{label} incomplete, nothing written: {error}"));
         }
-        eprintln!("warning: {label} incomplete ({} of 128); writing what arrived: {error}", collector.count());
+        eprintln!(
+            "warning: {label} incomplete ({} of 128); writing what arrived: {error}",
+            collector.count()
+        );
     }
-    let frames: Vec<&[u8]> = collector.dumps().iter().map(|d| d.frame.as_slice()).collect();
+    let frames: Vec<&[u8]> = collector
+        .dumps()
+        .iter()
+        .map(|d| d.frame.as_slice())
+        .collect();
     write_syx(out_file, &frames).map_err(|e| format!("{}: {e}", out_file.display()))?;
-    println!("Saved {} dump(s) of {label} to {}", frames.len(), out_file.display());
+    println!(
+        "Saved {} dump(s) of {label} to {}",
+        frames.len(),
+        out_file.display()
+    );
     Ok(collector)
 }
 
-fn get_bank(conn: &ConnArgs, bank: u8, out_file: &Path, library: Option<Option<PathBuf>>, allow_partial: bool) -> Outcome {
+fn get_bank(
+    conn: &ConnArgs,
+    bank: u8,
+    out_file: &Path,
+    library: Option<Option<PathBuf>>,
+    allow_partial: bool,
+) -> Outcome {
     if bank > 4 {
         eprintln!("note: bank {} (bb=0x{bank:02X}) addressing is undocumented (open question Q2); recording whatever arrives.", bank_label(bank));
     }
@@ -252,7 +378,11 @@ fn get_bank(conn: &ConnArgs, bank: u8, out_file: &Path, library: Option<Option<P
         let report = db
             .import_single_dumps(&to_incoming(&collector.dumps()), ImportTarget::Bank(id))
             .map_err(|e| e.to_string())?;
-        println!("Library: {} patch(es) saved as bank '{name}' in {}", report.imported, path.display());
+        println!(
+            "Library: {} patch(es) saved as bank '{name}' in {}",
+            report.imported,
+            path.display()
+        );
     }
     Ok(collector.count() == 128 && collector.bad_checksums().is_empty())
 }
@@ -304,8 +434,11 @@ fn put_bank(conn: &ConnArgs, bank: u8, file: &Path, options: PutOptions) -> Outc
             selection.bad_checksums
         );
     }
-    let backup_command =
-        format!("virus{} get-bank {letter} --out-file backup_bank_{letter}_{}.syx", conn.repeat_options(), now_stamp());
+    let backup_command = format!(
+        "virus{} get-bank {letter} --out-file backup_bank_{letter}_{}.syx",
+        conn.repeat_options(),
+        now_stamp()
+    );
     if !options.yes {
         println!(
             "This overwrites RAM bank {letter} on the Virus with {} program(s) from {} (file bank {}). It cannot be undone.",
@@ -323,15 +456,20 @@ fn put_bank(conn: &ConnArgs, bank: u8, file: &Path, options: PutOptions) -> Outc
     if !options.no_backup {
         let backup = PathBuf::from(format!("backup_bank_{letter}_{}.syx", now_stamp()));
         eprintln!("Backing up bank {letter} first…");
-        receive_bank(&mut synth, bank, &backup, false).map_err(|e| format!("backup failed, nothing was sent: {e}"))?;
+        receive_bank(&mut synth, bank, &backup, false)
+            .map_err(|e| format!("backup failed, nothing was sent: {e}"))?;
     } else {
         eprintln!("No automatic backup (--no-backup). Manual backup command:\n  {backup_command}");
     }
     let label = format!("sending to bank {letter}");
     let gap = Duration::from_millis(options.gap_ms);
-    synth.put_bank(bank, &selection.programs, &selection.bad_checksums, gap, &mut |n, total| {
-        progress_line(&label, n, total)
-    })?;
+    synth.put_bank(
+        bank,
+        &selection.programs,
+        &selection.bad_checksums,
+        gap,
+        &mut |n, total| progress_line(&label, n, total),
+    )?;
     eprintln!();
     println!(
         "Sent {} program(s) to bank {letter} with {} ms gaps. Check the Virus display for checksum or MIDI buffer errors.",
@@ -348,7 +486,10 @@ fn put_bank(conn: &ConnArgs, bank: u8, file: &Path, options: PutOptions) -> Outc
         }
         let mismatched = verify_bank(&selection.programs, &collector);
         if mismatched.is_empty() {
-            println!("Verify: all {} program(s) read back byte-identical.", selection.programs.len());
+            println!(
+                "Verify: all {} program(s) read back byte-identical.",
+                selection.programs.len()
+            );
         } else {
             println!("Verify: programs {mismatched:?} differ from what was sent.");
             if !selection.bad_checksums.is_empty() {
@@ -375,17 +516,27 @@ fn set(conn: &ConnArgs, param: ParamAddress, value: u8, force: bool, verify: boo
     }
     if let Some(reason) = param.edit_warning() {
         if !force {
-            return Err(format!("{param} is {reason}; use --force to send it anyway"));
+            return Err(format!(
+                "{param} is {reason}; use --force to send it anyway"
+            ));
         }
         eprintln!("warning: {param} is {reason}");
     }
     let mut synth = open(conn)?;
     synth.set_param(param, value)?;
-    println!("Sent {param} {} = {} to {}", param.name(), param.describe_value(value), conn.part);
+    println!(
+        "Sent {param} {} = {} to {}",
+        param.name(),
+        param.describe_value(value),
+        conn.part
+    );
     if verify {
         let back = synth.fetch().map_err(|e| e.to_string())?;
         let read = back.data[param.offset()];
-        println!("Verify: edit buffer holds {param} = {}", param.describe_value(read));
+        println!(
+            "Verify: edit buffer holds {param} = {}",
+            param.describe_value(read)
+        );
         return Ok(read == value);
     }
     Ok(true)
@@ -397,7 +548,11 @@ fn send_hex(conn: &ConnArgs, text: &str, yes: bool, listen_ms: u64) -> Outcome {
     let target = conn.target();
     let meaning = describe(&virus_midi::MidiEvent::SysEx(message.clone()), &target)
         .unwrap_or_else(|| "not a Virus message this tool can decode".to_owned());
-    println!("Message ({} bytes): {}\n  = {meaning}", message.len(), crate::messages::hex(&message));
+    println!(
+        "Message ({} bytes): {}\n  = {meaning}",
+        message.len(),
+        crate::messages::hex(&message)
+    );
     if !yes {
         println!("Nothing sent. Raw messages bypass every safety check of this tool; re-run with --yes to send it.");
         return Ok(false);
@@ -421,8 +576,15 @@ fn panic_command(conn: &ConnArgs, all_channels: bool) -> Outcome {
     for message in crate::messages::panic_messages(conn.channel, all_channels) {
         link.send(&message)?;
     }
-    let scope = if all_channels { "all 16 channels".to_owned() } else { format!("channel {}", conn.channel + 1) };
-    println!("Sent All Notes Off and All Sound Off on {scope} to {}.", link.output.as_deref().unwrap_or("-"));
+    let scope = if all_channels {
+        "all 16 channels".to_owned()
+    } else {
+        format!("channel {}", conn.channel + 1)
+    };
+    println!(
+        "Sent All Notes Off and All Sound Off on {scope} to {}.",
+        link.output.as_deref().unwrap_or("-")
+    );
     Ok(true)
 }
 
@@ -437,15 +599,25 @@ impl Prompter for NoPrompt {
 
 fn probe_command(conn: &ConnArgs, plan: &ProbePlan, out_file: &Path, args: &ProbeArgs) -> Outcome {
     let file = if args.resume {
-        let text = std::fs::read_to_string(out_file).map_err(|e| format!("--resume: {}: {e}", out_file.display()))?;
+        let text = std::fs::read_to_string(out_file)
+            .map_err(|e| format!("--resume: {}: {e}", out_file.display()))?;
         let file = ProbeFile::from_json(&text)?;
         if file.param != plan.param.to_string() || file.kind != plan.kind {
-            return Err(format!("{} holds a {} probe of {}, not {}", out_file.display(), file.kind, file.param, plan.param));
+            return Err(format!(
+                "{} holds a {} probe of {}, not {}",
+                out_file.display(),
+                file.kind,
+                file.param,
+                plan.param
+            ));
         }
         file
     } else {
         if out_file.exists() {
-            return Err(format!("{} exists; use --resume to continue it or --out-file for a new file", out_file.display()));
+            return Err(format!(
+                "{} exists; use --resume to continue it or --out-file for a new file",
+                out_file.display()
+            ));
         }
         ProbeFile::new(plan, conn.device.0, conn.part.raw())
     };
@@ -453,12 +625,26 @@ fn probe_command(conn: &ConnArgs, plan: &ProbePlan, out_file: &Path, args: &Prob
     let options = ProbeOptions {
         interactive,
         readback: !args.no_readback,
-        stop_after_rejected: if args.no_readback { 0 } else { args.stop_after_rejected },
+        stop_after_rejected: if args.no_readback {
+            0
+        } else {
+            args.stop_after_rejected
+        },
     };
 
-    println!("Probing {} ({}) over {} value(s); results → {}", plan.param, plan.label, plan.values.len(), out_file.display());
+    println!(
+        "Probing {} ({}) over {} value(s); results → {}",
+        plan.param,
+        plan.label,
+        plan.values.len(),
+        out_file.display()
+    );
     for (address, value) in &plan.setup {
-        println!("  setup: {address} {} = {}", address.name(), address.describe_value(*value));
+        println!(
+            "  setup: {address} {} = {}",
+            address.name(),
+            address.describe_value(*value)
+        );
     }
     if interactive {
         println!("On the Virus, bring {} onto the display now.", plan.look_at);
@@ -483,8 +669,12 @@ fn probe_command(conn: &ConnArgs, plan: &ProbePlan, out_file: &Path, args: &Prob
         &options,
         prompter,
         &mut |original| {
-            write_syx(&backup_file, &[&original.frame]).map_err(|e| format!("{}: {e}", backup_file.display()))?;
-            println!("Backed up the original edit buffer to {}", backup_file.display());
+            write_syx(&backup_file, &[&original.frame])
+                .map_err(|e| format!("{}: {e}", backup_file.display()))?;
+            println!(
+                "Backed up the original edit buffer to {}",
+                backup_file.display()
+            );
             println!(
                 "The sound is restored at the end, even after q. If you stop with Ctrl+C instead, the edit buffer \
                  stays changed; restore it with:\n  {restore_command}"
@@ -499,7 +689,12 @@ fn probe_command(conn: &ConnArgs, plan: &ProbePlan, out_file: &Path, args: &Prob
         &mut |event| print_probe_event(&event),
     )?;
 
-    let answered = outcome.file.results.iter().filter(|r| r.display.is_some()).count();
+    let answered = outcome
+        .file
+        .results
+        .iter()
+        .filter(|r| r.display.is_some())
+        .count();
     println!(
         "{} value(s) recorded, {answered} with a display reading, saved to {}",
         outcome.file.results.len(),
@@ -517,7 +712,11 @@ fn probe_command(conn: &ConnArgs, plan: &ProbePlan, out_file: &Path, args: &Prob
 /// The command that sends a saved edit buffer back to the same synth and edit buffer (part).
 fn send_back_command(conn: &ConnArgs, file: &Path) -> String {
     let path = file.display().to_string();
-    let path = if path.contains(char::is_whitespace) { format!("\"{path}\"") } else { path };
+    let path = if path.contains(char::is_whitespace) {
+        format!("\"{path}\"")
+    } else {
+        path
+    };
     format!("virus{} send {path}", conn.repeat_options())
 }
 
@@ -531,11 +730,18 @@ fn print_probe_event(event: &ProbeEvent) {
             r.readback.map_or("-".to_owned(), |v| v.to_string()),
             r.display.as_deref().unwrap_or("-"),
             r.printed_hint.as_deref().unwrap_or("-"),
-            r.note.as_deref().map_or(String::new(), |n| format!("  [{n}]"))
+            r.note
+                .as_deref()
+                .map_or(String::new(), |n| format!("  [{n}]"))
         ),
         ProbeEvent::Stopped(reason) => println!("Stopped: {reason}"),
-        ProbeEvent::Restored { identical: true, .. } => println!("Edit buffer restored (read back byte-identical)."),
-        ProbeEvent::Restored { identical: false, differences } => {
+        ProbeEvent::Restored {
+            identical: true, ..
+        } => println!("Edit buffer restored (read back byte-identical)."),
+        ProbeEvent::Restored {
+            identical: false,
+            differences,
+        } => {
             println!("Edit buffer restored, but read back differs at {differences}")
         }
     }
@@ -543,12 +749,13 @@ fn print_probe_event(event: &ProbeEvent) {
 
 fn selftest(conn: &ConnArgs, options: &SelftestOptions) -> Outcome {
     let mut synth = open(conn)?;
-    let checks = run_selftest(&mut synth, options, &mut |check| eprintln!("[{}] {}", check.status, check.name));
+    let checks = run_selftest(&mut synth, options, &mut |check| {
+        eprintln!("[{}] {}", check.status, check.name)
+    });
     println!();
     print!("{}", format_report(&checks));
     Ok(all_passed(&checks))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -556,7 +763,9 @@ mod tests {
     use clap::Parser;
 
     fn conn(args: &[&str]) -> ConnArgs {
-        Cli::try_parse_from(["virus"].iter().chain(args).chain(&["ports"])).unwrap().conn
+        Cli::try_parse_from(["virus"].iter().chain(args).chain(&["ports"]))
+            .unwrap()
+            .conn
     }
 
     #[test]
@@ -570,6 +779,9 @@ mod tests {
 
     #[test]
     fn the_restore_command_quotes_a_backup_path_with_spaces() {
-        assert_eq!(send_back_command(&conn(&[]), Path::new("my backup.syx")), "virus send \"my backup.syx\"");
+        assert_eq!(
+            send_back_command(&conn(&[]), Path::new("my backup.syx")),
+            "virus send \"my backup.syx\""
+        );
     }
 }

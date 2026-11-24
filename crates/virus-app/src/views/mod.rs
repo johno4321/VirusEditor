@@ -35,15 +35,24 @@ pub struct Notice {
 
 impl Notice {
     pub fn info(text: impl Into<String>) -> Self {
-        Self { text: text.into(), level: Level::Info }
+        Self {
+            text: text.into(),
+            level: Level::Info,
+        }
     }
 
     pub fn warning(text: impl Into<String>) -> Self {
-        Self { text: text.into(), level: Level::Warning }
+        Self {
+            text: text.into(),
+            level: Level::Warning,
+        }
     }
 
     pub fn error(text: impl Into<String>) -> Self {
-        Self { text: text.into(), level: Level::Error }
+        Self {
+            text: text.into(),
+            level: Level::Error,
+        }
     }
 
     pub fn colour(&self) -> Color32 {

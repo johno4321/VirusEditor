@@ -59,7 +59,10 @@ fn run(renderer: Renderer, store: SettingsStore, loaded: Loaded) -> eframe::Resu
     if let Some(window) = &loaded.settings.window {
         viewport = window.apply(viewport);
     }
-    let mut native_options = eframe::NativeOptions { viewport, ..Default::default() };
+    let mut native_options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
     renderer::configure(&mut native_options, renderer);
 
     eframe::run_native(

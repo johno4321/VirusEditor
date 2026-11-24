@@ -50,7 +50,11 @@ pub struct History {
 pub fn changes_between(before: &Patch, after: &Patch) -> Vec<ByteChange> {
     (0..PATCH_TOTAL_LEN)
         .filter(|&i| before.as_bytes()[i] != after.as_bytes()[i])
-        .map(|i| ByteChange { offset: i, before: before.as_bytes()[i], after: after.as_bytes()[i] })
+        .map(|i| ByteChange {
+            offset: i,
+            before: before.as_bytes()[i],
+            after: after.as_bytes()[i],
+        })
         .collect()
 }
 
@@ -66,7 +70,10 @@ pub fn page_number(offset: usize) -> (Page, u8) {
 /// Writes `(offset, value)` pairs through [`Session::edit`] and returns one parameter change per
 /// changed byte. Only for changes the caller has limited to sound parameters (section paste);
 /// undo, redo and compare use [`apply_step`].
-pub fn apply_values(session: &mut Session, values: impl IntoIterator<Item = (usize, u8)>) -> Vec<Vec<u8>> {
+pub fn apply_values(
+    session: &mut Session,
+    values: impl IntoIterator<Item = (usize, u8)>,
+) -> Vec<Vec<u8>> {
     values
         .into_iter()
         .filter_map(|(offset, value)| {
@@ -82,7 +89,10 @@ pub fn apply_values(session: &mut Session, values: impl IntoIterator<Item = (usi
 /// normal edit. Otherwise (performance controllers such as A64 Hold Pedal, undocumented bytes,
 /// or a whole other patch) the session takes the new bytes and one edit-buffer dump
 /// (`10 00 pp`) is returned; its A0 is the session's current one.
-pub fn apply_step(session: &mut Session, values: impl IntoIterator<Item = (usize, u8)>) -> Vec<Vec<u8>> {
+pub fn apply_step(
+    session: &mut Session,
+    values: impl IntoIterator<Item = (usize, u8)>,
+) -> Vec<Vec<u8>> {
     let mut target = session.patch().clone();
     for (offset, value) in values {
         let (page, number) = page_number(offset);
@@ -125,14 +135,23 @@ impl History {
     /// Records the change `before → after`. Does nothing if the bytes are equal. With a `key`,
     /// consecutive records of the same key within [`COALESCE_GAP`] (and not [`seal`](Self::seal)ed)
     /// merge into the newest step; a merge that ends back at the start removes the step.
-    pub fn record(&mut self, before: &Patch, after: &Patch, label: &str, key: Option<CoalesceKey>, now: f64) {
+    pub fn record(
+        &mut self,
+        before: &Patch,
+        after: &Patch,
+        label: &str,
+        key: Option<CoalesceKey>,
+        now: f64,
+    ) {
         let changes = changes_between(before, after);
         if changes.is_empty() {
             return;
         }
         self.redo.clear();
         let mergeable = match (key, self.open) {
-            (Some(k), Some((open_key, at))) => k == open_key && now - at <= COALESCE_GAP && !self.undo.is_empty(),
+            (Some(k), Some((open_key, at))) => {
+                k == open_key && now - at <= COALESCE_GAP && !self.undo.is_empty()
+            }
             _ => false,
         };
         if mergeable {
@@ -151,7 +170,10 @@ impl History {
                 return;
             }
         } else {
-            self.undo.push(Step { label: label.to_owned(), changes });
+            self.undo.push(Step {
+                label: label.to_owned(),
+                changes,
+            });
             if self.undo.len() > MAX_STEPS {
                 self.undo.remove(0);
             }
@@ -167,7 +189,9 @@ impl History {
     /// Reverts the newest step through `session`; returns the messages to send.
     pub fn undo(&mut self, session: &mut Session) -> Vec<Vec<u8>> {
         self.open = None;
-        let Some(step) = self.undo.pop() else { return Vec::new() };
+        let Some(step) = self.undo.pop() else {
+            return Vec::new();
+        };
         let messages = apply_step(session, step.changes.iter().map(|c| (c.offset, c.before)));
         self.redo.push(step);
         messages
@@ -175,7 +199,9 @@ impl History {
 
     pub fn redo(&mut self, session: &mut Session) -> Vec<Vec<u8>> {
         self.open = None;
-        let Some(step) = self.redo.pop() else { return Vec::new() };
+        let Some(step) = self.redo.pop() else {
+            return Vec::new();
+        };
         let messages = apply_step(session, step.changes.iter().map(|c| (c.offset, c.after)));
         self.undo.push(step);
         messages
@@ -185,10 +211,13 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use virus_syx::{read_sysex_file, parse_sysex, SysExMessage};
+    use virus_syx::{parse_sysex, read_sysex_file, SysExMessage};
 
     fn factory(program: usize) -> Patch {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/factory/Bank_A.syx");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/factory/Bank_A.syx"
+        );
         let frames = read_sysex_file(path).expect("factory bank");
         match parse_sysex(&frames[program]).expect("single dump") {
             SysExMessage::SingleDump { data, .. } => Patch::from_bytes(&data),
@@ -203,7 +232,14 @@ mod tests {
     }
 
     /// Edits one parameter like the app does: before/after snapshot around `Session::edit`.
-    fn edit(h: &mut History, s: &mut Session, offset: usize, value: u8, key: Option<u32>, now: f64) {
+    fn edit(
+        h: &mut History,
+        s: &mut Session,
+        offset: usize,
+        value: u8,
+        key: Option<u32>,
+        now: f64,
+    ) {
         let before = s.patch().clone();
         let (page, number) = page_number(offset);
         s.edit(page, number, value);
@@ -235,10 +271,20 @@ mod tests {
         let start = factory(3);
         let mut s = session_with(start.clone());
         let mut h = History::default();
-        edit(&mut h, &mut s, 40, start.get(Page::PageA, 40) ^ 0x10, None, 0.0);
+        edit(
+            &mut h,
+            &mut s,
+            40,
+            start.get(Page::PageA, 40) ^ 0x10,
+            None,
+            0.0,
+        );
 
         let messages = h.undo(&mut s);
-        assert_eq!(messages, vec![s.param_message(Page::PageA, 40, start.get(Page::PageA, 40))]);
+        assert_eq!(
+            messages,
+            vec![s.param_message(Page::PageA, 40, start.get(Page::PageA, 40))]
+        );
     }
 
     #[test]
@@ -246,7 +292,14 @@ mod tests {
         let start = factory(3);
         let mut s = session_with(start.clone());
         let mut h = History::default();
-        edit(&mut h, &mut s, 128 + 22, start.get(Page::PageB, 22) ^ 0x01, None, 0.0);
+        edit(
+            &mut h,
+            &mut s,
+            128 + 22,
+            start.get(Page::PageB, 22) ^ 0x01,
+            None,
+            0.0,
+        );
 
         let messages = h.undo(&mut s);
         assert_eq!(s.patch(), &start);
@@ -256,7 +309,9 @@ mod tests {
     /// `count` documented sound parameters (not the name), each changed by one step.
     fn change_sound_params(patch: &Patch, count: usize) -> Patch {
         let mut changed = patch.clone();
-        let sound = virus_syx::SINGLE_PARAMS.iter().filter(|d| d.is_sound() && d.section != "Name" && d.page != Page::PageC);
+        let sound = virus_syx::SINGLE_PARAMS
+            .iter()
+            .filter(|d| d.is_sound() && d.section != "Name" && d.page != Page::PageC);
         for def in sound.take(count) {
             changed.set(def.page, def.number, patch.get(def.page, def.number) ^ 0x01);
         }
@@ -288,7 +343,10 @@ mod tests {
         let messages = h.undo(&mut s);
         assert_eq!(s.patch(), &start);
         assert_eq!(messages.len(), MAX_PARAM_CHANGES);
-        assert!(messages.iter().all(|m| m[6] == 0x70 || m[6] == 0x71), "parameter changes only");
+        assert!(
+            messages.iter().all(|m| m[6] == 0x70 || m[6] == 0x71),
+            "parameter changes only"
+        );
     }
 
     #[test]
@@ -323,7 +381,11 @@ mod tests {
         h.undo(&mut s);
         assert_eq!(s.patch().get(Page::PageA, 40), 50);
         h.undo(&mut s);
-        assert_eq!(s.patch().get(Page::PageA, 40), 40, "the drag was one step: 4 edits → first value kept as before");
+        assert_eq!(
+            s.patch().get(Page::PageA, 40),
+            40,
+            "the drag was one step: 4 edits → first value kept as before"
+        );
         h.undo(&mut s);
         assert_eq!(s.patch(), &start);
     }
@@ -334,7 +396,14 @@ mod tests {
         let original = start.get(Page::PageA, 40);
         let mut s = session_with(start);
         let mut h = History::default();
-        edit(&mut h, &mut s, 40, original.wrapping_add(5) & 0x7F, Some(40), 0.0);
+        edit(
+            &mut h,
+            &mut s,
+            40,
+            original.wrapping_add(5) & 0x7F,
+            Some(40),
+            0.0,
+        );
         edit(&mut h, &mut s, 40, original, Some(40), 0.1);
         assert!(!h.can_undo());
     }

@@ -26,12 +26,22 @@ fn single_dumps(path: &str) -> Vec<Dump> {
     read_sysex_file(path)
         .expect("factory file readable")
         .into_iter()
-        .filter_map(|frame| match parse_sysex(&frame).expect("factory frame parses") {
-            SysExMessage::SingleDump { bank, program, checksum_ok, .. } => {
-                Some(Dump { frame, bank, program, checksum_ok })
-            }
-            _ => None,
-        })
+        .filter_map(
+            |frame| match parse_sysex(&frame).expect("factory frame parses") {
+                SysExMessage::SingleDump {
+                    bank,
+                    program,
+                    checksum_ok,
+                    ..
+                } => Some(Dump {
+                    frame,
+                    bank,
+                    program,
+                    checksum_ok,
+                }),
+                _ => None,
+            },
+        )
         .collect()
 }
 
@@ -49,10 +59,18 @@ fn assert_bank(path: &str, bank: u8, bad_checksums: &[u8]) -> Vec<Dump> {
         let expected = if i == 0x0A { 0x0D } else { i as u8 };
         assert_eq!(dump.program, expected);
     }
-    let bad: Vec<u8> = dumps.iter().filter(|d| !d.checksum_ok).map(|d| d.program).collect();
+    let bad: Vec<u8> = dumps
+        .iter()
+        .filter(|d| !d.checksum_ok)
+        .map(|d| d.program)
+        .collect();
     assert_eq!(bad, bad_checksums);
     for dump in dumps.iter().filter(|d| !d.checksum_ok) {
-        assert!(explained_by_lf_to_cr(&dump.frame), "program {}", dump.program);
+        assert!(
+            explained_by_lf_to_cr(&dump.frame),
+            "program {}",
+            dump.program
+        );
     }
     dumps
 }
@@ -63,7 +81,11 @@ fn explained_by_lf_to_cr(frame: &[u8]) -> bool {
     let calculated = calculate_checksum(region) as i32;
     let crs = region.iter().filter(|&&b| b == 0x0D).count() as i32;
     let stored = frame[265] as i32;
-    let candidates: &[i32] = if stored == 0x0D { &[0x0D, 0x0A] } else { &[stored] };
+    let candidates: &[i32] = if stored == 0x0D {
+        &[0x0D, 0x0A]
+    } else {
+        &[stored]
+    };
     candidates
         .iter()
         .any(|&cs| (0..=crs).any(|k| (calculated - 3 * k).rem_euclid(128) == cs))
@@ -78,9 +100,20 @@ fn assert_round_trip(dumps: &[Dump]) {
         if dump.checksum_ok {
             assert_eq!(exported, dump.frame, "program {}", dump.program);
         } else {
-            assert_eq!(exported[..265], dump.frame[..265], "program {}", dump.program);
+            assert_eq!(
+                exported[..265],
+                dump.frame[..265],
+                "program {}",
+                dump.program
+            );
             assert_eq!(exported[266..], dump.frame[266..]);
-            assert!(matches!(parse_sysex(&exported), Ok(SysExMessage::SingleDump { checksum_ok: true, .. })));
+            assert!(matches!(
+                parse_sysex(&exported),
+                Ok(SysExMessage::SingleDump {
+                    checksum_ok: true,
+                    ..
+                })
+            ));
         }
     }
 }
@@ -90,10 +123,14 @@ fn bank_a_decodes_and_round_trips() {
     let dumps = assert_bank(
         factory_file!("OSR_FactoryPatches_Bank_A.mid"),
         1,
-        &[3, 5, 13, 23, 26, 33, 35, 36, 42, 49, 53, 54, 62, 64, 66, 92, 94, 100, 116, 117],
+        &[
+            3, 5, 13, 23, 26, 33, 35, 36, 42, 49, 53, 54, 62, 64, 66, 92, 94, 100, 116, 117,
+        ],
     );
-    let patches: Vec<(Patch, DumpTarget)> =
-        dumps.iter().map(|d| Patch::from_sysex(&d.frame).unwrap()).collect();
+    let patches: Vec<(Patch, DumpTarget)> = dumps
+        .iter()
+        .map(|d| Patch::from_sysex(&d.frame).unwrap())
+        .collect();
 
     assert!(patches.iter().all(|(p, _)| p.sound_version() == 6));
     let names: Vec<String> = patches[..3].iter().map(|(p, _)| p.name()).collect();
@@ -101,7 +138,13 @@ fn bank_a_decodes_and_round_trips() {
     assert_eq!(patches[1].0.category1(), Category::Bass);
     assert_eq!(patches[2].0.category1(), Category::Arpeggiator);
     assert_eq!(patches[2].0.category2(), Category::Acid);
-    assert_eq!(patches[5].1, DumpTarget::Bank { bank: SingleBank::A, program: 5 });
+    assert_eq!(
+        patches[5].1,
+        DumpTarget::Bank {
+            bank: SingleBank::A,
+            program: 5
+        }
+    );
 
     assert_round_trip(&dumps);
 }
@@ -128,11 +171,15 @@ fn total_dump_message_counts() {
     let mut bad_checksums = 0;
     for frame in extract_sysex_frames(&bytes) {
         match parse_sysex(&frame).expect("frame parses") {
-            SysExMessage::SingleDump { bank, checksum_ok, .. } => {
+            SysExMessage::SingleDump {
+                bank, checksum_ok, ..
+            } => {
                 singles[bank as usize] += 1;
                 bad_checksums += usize::from(!checksum_ok);
             }
-            SysExMessage::MultiDump { bank, checksum_ok, .. } => {
+            SysExMessage::MultiDump {
+                bank, checksum_ok, ..
+            } => {
                 multis[bank as usize] += 1;
                 bad_checksums += usize::from(!checksum_ok);
             }

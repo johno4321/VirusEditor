@@ -80,7 +80,8 @@ impl<'a> Reader<'a> {
     }
 
     fn u32_be(&mut self) -> Option<u32> {
-        self.take(4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        self.take(4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
     }
 
     /// Data of an `F0`/continuation event. Some writers (including the one that produced the
@@ -112,7 +113,10 @@ impl<'a> Reader<'a> {
 /// Parses the SMF chunk structure. If any track doesn't parse cleanly (e.g. lengths corrupted
 /// by a text-mode transfer), falls back to scanning the whole file for `F0 … F7` frames.
 fn extract_from_smf(bytes: &[u8]) -> Vec<Vec<u8>> {
-    let mut reader = Reader { data: bytes, pos: 0 };
+    let mut reader = Reader {
+        data: bytes,
+        pos: 0,
+    };
     let mut frames = Vec::new();
     let mut clean = true;
     while let (Some(id), Some(len)) = (reader.take(4), reader.u32_be()) {
@@ -138,7 +142,10 @@ fn scan_smf_sysex_events(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == SYSEX_START {
-            let mut reader = Reader { data: bytes, pos: i + 1 };
+            let mut reader = Reader {
+                data: bytes,
+                pos: i + 1,
+            };
             if reader.varlen().is_some() {
                 let start = reader.pos;
                 if let Some(len) = bytes[start..].iter().position(|&b| b >= 0x80) {
@@ -160,7 +167,10 @@ fn scan_smf_sysex_events(bytes: &[u8]) -> Vec<Vec<u8>> {
 /// Parses one `MTrk` chunk, appending complete SysEx frames. Returns false if the track is
 /// malformed (it stops at the first bad event).
 fn parse_track(track: &[u8], frames: &mut Vec<Vec<u8>>) -> bool {
-    let mut reader = Reader { data: track, pos: 0 };
+    let mut reader = Reader {
+        data: track,
+        pos: 0,
+    };
     let mut running_status: Option<u8> = None;
     let mut pending: Option<Vec<u8>> = None;
     // Raw bytes inside F7 "escape" events may themselves contain complete SysEx frames.
@@ -275,15 +285,25 @@ mod tests {
     #[test]
     fn smf_sysex_with_overlong_declared_length_ends_at_f7() {
         // As in the factory .mid files: the declared length exceeds the data actually present.
-        let track = [0x00, 0xF0, 0x05, 0x7D, 0xF7, 0x00, 0xF0, 0x02, 0x7E, 0xF7, 0x00, 0xFF, 0x2F, 0x00];
-        assert_eq!(extract_sysex_frames(&smf(&track)), vec![vec![0xF0, 0x7D, 0xF7], vec![0xF0, 0x7E, 0xF7]]);
+        let track = [
+            0x00, 0xF0, 0x05, 0x7D, 0xF7, 0x00, 0xF0, 0x02, 0x7E, 0xF7, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        assert_eq!(
+            extract_sysex_frames(&smf(&track)),
+            vec![vec![0xF0, 0x7D, 0xF7], vec![0xF0, 0x7E, 0xF7]]
+        );
     }
 
     #[test]
     fn malformed_smf_falls_back_to_event_scanning() {
         // 0xF4 is not a valid SMF event; the track structure can't be parsed past it.
-        let track = [0x00, 0xF4, 0x00, 0xF0, 0x82, 0x01, 0x10, 0x11, 0xF7, 0x00, 0xFF, 0x2F, 0x00];
-        assert_eq!(extract_sysex_frames(&smf(&track)), vec![vec![0xF0, 0x10, 0x11, 0xF7]]);
+        let track = [
+            0x00, 0xF4, 0x00, 0xF0, 0x82, 0x01, 0x10, 0x11, 0xF7, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        assert_eq!(
+            extract_sysex_frames(&smf(&track)),
+            vec![vec![0xF0, 0x10, 0x11, 0xF7]]
+        );
     }
 
     #[test]
@@ -311,6 +331,9 @@ mod tests {
             0x55, 0xF7, // stray bytes ignored
             0xF0, 0x05, 0x90, 0xF7, // aborted by a channel status byte
         ];
-        assert_eq!(extract_sysex_frames(&stream), vec![vec![0xF0, 0x03, 0x04, 0xF7]]);
+        assert_eq!(
+            extract_sysex_frames(&stream),
+            vec![vec![0xF0, 0x03, 0x04, 0xF7]]
+        );
     }
 }

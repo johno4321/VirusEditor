@@ -18,7 +18,13 @@ pub const MULTI_DUMP_LEN: usize = 267;
 pub fn multi_name(data: &[u8; MULTI_LEN]) -> String {
     data[MULTI_NAME_OFFSET..MULTI_NAME_OFFSET + MULTI_NAME_LEN]
         .iter()
-        .map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '?' })
+        .map(|&b| {
+            if (0x20..0x7F).contains(&b) {
+                b as char
+            } else {
+                '?'
+            }
+        })
         .collect::<String>()
         .trim_end_matches(' ')
         .to_string()
@@ -49,12 +55,16 @@ mod tests {
     #[test]
     fn name_and_frame_layout() {
         let mut data = [0x40u8; MULTI_LEN];
-        data[MULTI_NAME_OFFSET..MULTI_NAME_OFFSET + MULTI_NAME_LEN].copy_from_slice(b"Seq\x01      ");
+        data[MULTI_NAME_OFFSET..MULTI_NAME_OFFSET + MULTI_NAME_LEN]
+            .copy_from_slice(b"Seq\x01      ");
         assert_eq!(multi_name(&data), "Seq?");
 
         let frame = encode_multi_dump(0x10, 1, 5, &data);
         assert_eq!(frame.len(), MULTI_DUMP_LEN);
-        assert_eq!(&frame[..9], &[0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x11, 0x01, 0x05]);
+        assert_eq!(
+            &frame[..9],
+            &[0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x11, 0x01, 0x05]
+        );
         assert_eq!(&frame[9..265], &data[..]);
         let expected = (frame[5..265].iter().map(|&b| b as u32).sum::<u32>() & 0x7F) as u8;
         assert_eq!((frame[265], frame[266]), (expected, 0xF7));

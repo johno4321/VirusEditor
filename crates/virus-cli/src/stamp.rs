@@ -7,12 +7,21 @@ pub fn stamp(unix_seconds: u64) -> String {
     let days = (unix_seconds / 86_400) as i64;
     let secs = unix_seconds % 86_400;
     let (y, m, d) = civil_from_days(days);
-    format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", secs / 3600, secs % 3600 / 60, secs % 60)
+    format!(
+        "{y:04}{m:02}{d:02}-{:02}{:02}{:02}",
+        secs / 3600,
+        secs % 3600 / 60,
+        secs % 60
+    )
 }
 
 /// `stamp` for now.
 pub fn now_stamp() -> String {
-    stamp(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()))
+    stamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+    )
 }
 
 /// Days since 1970-01-01 → (year, month, day), proleptic Gregorian (H. Hinnant's algorithm).

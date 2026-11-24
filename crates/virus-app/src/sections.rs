@@ -15,7 +15,9 @@ const A0_OFFSET: usize = 0;
 pub fn section_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = Vec::new();
     for def in SINGLE_PARAMS {
-        if is_copyable(def.section, def.is_sound(), def.dump_offset()) && !names.contains(&def.section) {
+        if is_copyable(def.section, def.is_sound(), def.dump_offset())
+            && !names.contains(&def.section)
+        {
             names.push(def.section);
         }
     }
@@ -44,8 +46,14 @@ pub struct SectionClip {
 
 /// Copies `section` from `patch`; `None` for an unknown or non-copyable section.
 pub fn copy(patch: &Patch, section: &str) -> Option<SectionClip> {
-    let values: Vec<(usize, u8)> = section_offsets(section).into_iter().map(|o| (o, patch.as_bytes()[o])).collect();
-    (!values.is_empty()).then(|| SectionClip { section: section.to_owned(), values })
+    let values: Vec<(usize, u8)> = section_offsets(section)
+        .into_iter()
+        .map(|o| (o, patch.as_bytes()[o]))
+        .collect();
+    (!values.is_empty()).then(|| SectionClip {
+        section: section.to_owned(),
+        values,
+    })
 }
 
 /// The section as in [`Patch::init`].
@@ -55,7 +63,11 @@ pub fn init_clip(section: &str) -> Option<SectionClip> {
 
 /// The `(offset, value)` pairs that would change `current` when `clip` is pasted.
 pub fn changes(current: &Patch, clip: &SectionClip) -> Vec<(usize, u8)> {
-    clip.values.iter().copied().filter(|&(o, v)| current.as_bytes()[o] != v).collect()
+    clip.values
+        .iter()
+        .copied()
+        .filter(|&(o, v)| current.as_bytes()[o] != v)
+        .collect()
 }
 
 /// Number of bytes a paste would change.
@@ -70,7 +82,10 @@ mod tests {
     use virus_syx::{parse_sysex, read_sysex_file, SysExMessage};
 
     fn bank_a() -> Vec<Patch> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/factory/Bank_A.syx");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/factory/Bank_A.syx"
+        );
         read_sysex_file(path)
             .expect("factory bank")
             .iter()
@@ -111,7 +126,11 @@ mod tests {
                 let pasted = paste(dst, &clip);
                 for i in 0..256 {
                     if !allowed.contains(&i) {
-                        assert_eq!(pasted.as_bytes()[i], dst.as_bytes()[i], "{section} touched offset {i}");
+                        assert_eq!(
+                            pasted.as_bytes()[i],
+                            dst.as_bytes()[i],
+                            "{section} touched offset {i}"
+                        );
                     } else {
                         assert_eq!(pasted.as_bytes()[i], src.as_bytes()[i]);
                     }
@@ -139,10 +158,20 @@ mod tests {
         let init = Patch::init();
         let allowed = section_offsets("Filters");
         for i in 0..256 {
-            let expected = if allowed.contains(&i) { init.as_bytes()[i] } else { target.as_bytes()[i] };
+            let expected = if allowed.contains(&i) {
+                init.as_bytes()[i]
+            } else {
+                target.as_bytes()[i]
+            };
             assert_eq!(reset.as_bytes()[i], expected, "offset {i}");
         }
-        assert_eq!(changes_between(target, &reset).iter().filter(|c| !allowed.contains(&c.offset)).count(), 0);
+        assert_eq!(
+            changes_between(target, &reset)
+                .iter()
+                .filter(|c| !allowed.contains(&c.offset))
+                .count(),
+            0
+        );
     }
 
     #[test]

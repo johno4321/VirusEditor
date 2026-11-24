@@ -9,7 +9,14 @@ use crate::session::sanitize_name;
 use crate::widgets::{EnvelopeCurve, EnvelopeParams, FilterCurve, FilterParams};
 
 /// Sections drawn elsewhere: the name/category header, the modulation tab, or not editable.
-const SECTIONS_ELSEWHERE: &[&str] = &["Internal", "Performance", "Name", "Category", "Assign", "Definable"];
+const SECTIONS_ELSEWHERE: &[&str] = &[
+    "Internal",
+    "Performance",
+    "Name",
+    "Category",
+    "Assign",
+    "Definable",
+];
 
 const NAME_OFFSET: usize = 128 + 112;
 const NAME_LEN: usize = 10;
@@ -32,7 +39,10 @@ pub fn editor_sections() -> Vec<(&'static str, Vec<&'static ParamDef>)> {
 /// Parameters shown in the editor header (name characters and categories).
 #[cfg(test)]
 pub fn header_params() -> Vec<(Page, u8)> {
-    (112..=121).chain(123..=124).map(|n| (Page::PageB, n)).collect()
+    (112..=121)
+        .chain(123..=124)
+        .map(|n| (Page::PageB, n))
+        .collect()
 }
 
 #[derive(Default)]
@@ -48,24 +58,32 @@ impl EditorView {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add(FilterCurve::new(FilterParams::from_patch(patch)));
-            ui.add(EnvelopeCurve::new("Filter Envelope", EnvelopeParams::filter(patch)));
-            ui.add(EnvelopeCurve::new("Amp Envelope", EnvelopeParams::amp(patch)));
+            ui.add(EnvelopeCurve::new(
+                "Filter Envelope",
+                EnvelopeParams::filter(patch),
+            ));
+            ui.add(EnvelopeCurve::new(
+                "Amp Envelope",
+                EnvelopeParams::amp(patch),
+            ));
         });
         ui.add_space(4.0);
 
         let sections = editor_sections();
         let total: usize = sections.iter().map(|(_, defs)| defs.len()).sum();
-        ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.columns(2, |columns| {
-                let mut drawn = 0;
-                for (name, defs) in &sections {
-                    // Fill the left column with roughly half of the controls.
-                    let column = usize::from(drawn * 2 >= total);
-                    drawn += defs.len();
-                    section(&mut columns[column], name, defs, patch, edits);
-                }
+        ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.columns(2, |columns| {
+                    let mut drawn = 0;
+                    for (name, defs) in &sections {
+                        // Fill the left column with roughly half of the controls.
+                        let column = usize::from(drawn * 2 >= total);
+                        drawn += defs.len();
+                        section(&mut columns[column], name, defs, patch, edits);
+                    }
+                });
             });
-        });
     }
 
     fn header(&mut self, ui: &mut Ui, patch: &Patch, edits: &mut Vec<Edit>) {
@@ -90,7 +108,8 @@ impl EditorView {
                 // (e.g. a trailing space typed before the next letter).
                 let mut preview = patch.clone();
                 preview.set_name(&self.name_buffer);
-                self.name_bytes.copy_from_slice(&preview.as_bytes()[NAME_OFFSET..NAME_OFFSET + NAME_LEN]);
+                self.name_bytes
+                    .copy_from_slice(&preview.as_bytes()[NAME_OFFSET..NAME_OFFSET + NAME_LEN]);
                 if self.name_bytes != bytes {
                     edits.push(Edit::Name(self.name_buffer.clone()));
                 }
@@ -105,12 +124,20 @@ impl EditorView {
             }
             ui.separator();
             ui.label(RichText::new(format!("Sound Version {}", patch.sound_version())).color(DIM))
-                .on_hover_text("A0 is owned by the synth and never changed by the editor (SPEC §5.2).");
+                .on_hover_text(
+                    "A0 is owned by the synth and never changed by the editor (SPEC §5.2).",
+                );
         });
     }
 }
 
-fn section(ui: &mut Ui, name: &str, defs: &[&'static ParamDef], patch: &Patch, edits: &mut Vec<Edit>) {
+fn section(
+    ui: &mut Ui,
+    name: &str,
+    defs: &[&'static ParamDef],
+    patch: &Patch,
+    edits: &mut Vec<Edit>,
+) {
     crate::theme::section(ui, name, None, |ui| {
         ui.horizontal_wrapped(|ui| {
             for def in defs {
@@ -151,7 +178,11 @@ mod tests {
     #[test]
     fn performance_and_internal_params_are_not_in_the_editor() {
         for (_, defs) in editor_sections() {
-            assert!(defs.iter().all(|d| d.class == ParamClass::Sound), "{:?}", defs);
+            assert!(
+                defs.iter().all(|d| d.class == ParamClass::Sound),
+                "{:?}",
+                defs
+            );
         }
     }
 }

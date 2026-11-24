@@ -63,7 +63,10 @@ impl BatchQueue {
         if !self.active {
             return None;
         }
-        let summary = BatchSummary { sent: self.sent, dropped: self.queue.len() };
+        let summary = BatchSummary {
+            sent: self.sent,
+            dropped: self.queue.len(),
+        };
         self.queue.clear();
         self.active = false;
         self.sent = 0;
@@ -110,7 +113,10 @@ impl BatchQueue {
     /// Sending the popped message failed: the rest of the batch is dropped.
     pub fn failed(&mut self) -> BatchSummary {
         let summary = self.clear().unwrap_or_default();
-        BatchSummary { dropped: summary.dropped + 1, ..summary }
+        BatchSummary {
+            dropped: summary.dropped + 1,
+            ..summary
+        }
     }
 }
 
@@ -181,7 +187,13 @@ mod tests {
         assert_eq!(q.sent(t0, 1), None);
         let later = t0 + wire_time(1);
         q.pop_due(later);
-        assert_eq!(q.sent(later, 1), Some(BatchSummary { sent: 2, dropped: 0 }));
+        assert_eq!(
+            q.sent(later, 1),
+            Some(BatchSummary {
+                sent: 2,
+                dropped: 0
+            })
+        );
         assert!(q.is_empty());
         assert_eq!(q.clear(), None);
     }
@@ -194,7 +206,13 @@ mod tests {
         q.pop_due(t0);
         q.sent(t0, 1);
         q.pop_due(t0 + wire_time(1));
-        assert_eq!(q.failed(), BatchSummary { sent: 1, dropped: 2 });
+        assert_eq!(
+            q.failed(),
+            BatchSummary {
+                sent: 1,
+                dropped: 2
+            }
+        );
         assert!(q.is_empty());
     }
 
@@ -206,7 +224,13 @@ mod tests {
         q.push(vec![vec![3]], Duration::ZERO);
         q.pop_due(t0);
         q.sent(t0, 1);
-        assert_eq!(q.clear(), Some(BatchSummary { sent: 1, dropped: 2 }));
+        assert_eq!(
+            q.clear(),
+            Some(BatchSummary {
+                sent: 1,
+                dropped: 2
+            })
+        );
         assert_eq!(q.clear(), None);
 
         q.push(vec![vec![4]], Duration::ZERO);

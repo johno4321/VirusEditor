@@ -27,7 +27,10 @@ pub struct ParamFlags {
 }
 
 impl ParamFlags {
-    pub const NONE: Self = Self { multi_single: false, non_part_sensitive: false };
+    pub const NONE: Self = Self {
+        multi_single: false,
+        non_part_sensitive: false,
+    };
 }
 
 /// How a raw 0..127 byte is presented.
@@ -69,7 +72,9 @@ pub struct ParamDef {
 impl ParamDef {
     /// Offset of this parameter in the 256-byte single dump; `None` for Page C.
     pub fn dump_offset(&self) -> Option<usize> {
-        self.page.dump_offset().map(|base| base + self.number as usize)
+        self.page
+            .dump_offset()
+            .map(|base| base + self.number as usize)
     }
 
     pub fn is_sound(&self) -> bool {
@@ -121,7 +126,9 @@ pub fn format_kind(kind: ValueKind, raw: u8) -> String {
             None => format!("#{raw}"),
         },
         ValueKind::Note => {
-            const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+            const NAMES: [&str; 12] = [
+                "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+            ];
             format!("{}{}", NAMES[raw as usize % 12], raw as i32 / 12 - 1)
         }
         ValueKind::NameChar => match raw {
@@ -133,7 +140,9 @@ pub fn format_kind(kind: ValueKind, raw: u8) -> String {
 
 /// Looks up a documented Page A / Page B single parameter.
 pub fn single_param(page: Page, number: u8) -> Option<&'static ParamDef> {
-    SINGLE_PARAMS.iter().find(|def| def.page == page && def.number == number)
+    SINGLE_PARAMS
+        .iter()
+        .find(|def| def.page == page && def.number == number)
 }
 
 /// True only for documented sound parameters (class `a`/`b`); false for performance
@@ -157,7 +166,9 @@ pub const WAVE_SELECT_NAMES: [&str; 64] = [
     "Wave 58", "Wave 59", "Wave 60", "Wave 61", "Wave 62", "Wave 63", "Wave 64",
 ];
 pub const SUB_OSC_SHAPE_NAMES: [&str; 2] = ["Square", "Triangle"];
-pub const SATURATION_CURVE_NAMES: [&str; 7] = ["Off", "Light", "Soft", "Middle", "Hard", "Digital", "Shaper"];
+pub const SATURATION_CURVE_NAMES: [&str; 7] = [
+    "Off", "Light", "Soft", "Middle", "Hard", "Digital", "Shaper",
+];
 pub const FILTER_MODE_NAMES: [&str; 4] = ["LP", "HP", "BP", "BS"];
 pub const FILTER_ROUTING_NAMES: [&str; 4] = ["Ser4", "Ser6", "Par4", "Split"];
 pub const LFO_SHAPE_NAMES: [&str; 6] = ["Sine", "Tri", "Saw", "Square", "S&H", "S&G"];
@@ -172,8 +183,11 @@ pub const INPUT_MODE_NAMES: [&str; 4] = ["Off", "Dynamic", "Static", "ToEffects"
 pub const INPUT_SELECT_NAMES: [&str; 3] = ["In1 L", "In1 L+R", "In1 R"];
 /// Partial list; factory data uses values up to 29 (Q3).
 pub const DELAY_REVERB_MODE_NAMES: [&str; 4] = ["Off", "Delay", "Reverb", "Rev+Feedb1"];
-pub const ARP_MODE_NAMES: [&str; 7] = ["Off", "Up", "Down", "Up&Down", "AsPlayed", "Random", "Chord"];
-pub const LFO3_DESTINATION_NAMES: [&str; 7] = ["Osc1", "Osc1+2", "Osc2", "PW1", "PW1+2", "PW2", "SyncPhase"];
+pub const ARP_MODE_NAMES: [&str; 7] = [
+    "Off", "Up", "Down", "Up&Down", "AsPlayed", "Random", "Chord",
+];
+pub const LFO3_DESTINATION_NAMES: [&str; 7] =
+    ["Osc1", "Osc1+2", "Osc2", "PW1", "PW1+2", "PW2", "SyncPhase"];
 pub const SMOOTH_MODE_NAMES: [&str; 4] = ["Off", "On", "Auto", "Note"];
 pub const BENDER_SCALE_NAMES: [&str; 2] = ["Linear", "Exponential"];
 pub const ENV_POLARITY_NAMES: [&str; 2] = ["Negative", "Positive"];
@@ -188,46 +202,217 @@ pub const FILTER_SELECT_NAMES: [&str; 3] = ["Filt1", "Filt2", "Filt1+2"];
 /// mapping (factory patches use values up to 114). Use for display hints only; always
 /// store and show the raw value.
 pub const UNVERIFIED_ASSIGN_DESTINATION_NAMES: &[&str] = &[
-    "Off", "PatchVol", "ChannelVol", "Panorama", "Transpose", "Portamento", "Osc1Shape",
-    "Osc1PlsWdh", "Osc1WavSel", "Osc1Pitch", "Osc1Keyflw", "Osc2Shape", "Osc2PlsWdh",
-    "Osc2WavSel", "Osc2Pitch", "Osc2Detune", "Osc2FmAmt", "Osc2EnvAmt", "FmEnvAmt", "Osc2Keyflw",
-    "OscBalance", "SubOscVol", "OscMainVol", "NoiseVol", "Cutoff", "Cutoff2", "Filt1Reso",
-    "Filt2Reso", "Flt1EnvAmt", "Flt2EnvAmt", "Flt1Keyflw", "Flt2Keyflw", "FltBalance",
-    "FltAttack", "FltDecay", "FltSustain", "FltSusTime", "FltRelease", "AmpAttack", "AmpDecay",
-    "AmpSustain", "AmpSusTime", "AmpRelease", "Lfo1Rate", "Lfo1Cont", "Lfo1>Osc1", "Lfo1>Osc2",
-    "Lfo1>PlsWd", "Lfo1>Reso", "Lfo1>FltGn", "Lfo2Rate", "Lfo2Cont", "Lfo2>Shape", "Lfo2>Fm",
-    "Lfo2>Cut1", "Lfo2>Cut2", "Lfo2>Pan", "Lfo3Rate", "Lfo3OscAmt", "UniDetune", "UniSpread",
-    "UniLfoPhs", "ChorusMix", "ChorusRate", "ChorusDpth", "ChorusDly", "ChorusFeed", "EffectSend",
-    "DelayTime", "DelayFeed", "DelayRate", "DelayDepth", "Osc1ShpVel", "Osc2ShpVel", "PlsWhdVel",
-    "FmAmtVel", "Flt1EnvVel", "Flt2EnvVel", "Reso1Vel", "Reso2Vel", "AmpVel", "PanVel",
-    "Ass1Amt1", "Ass2Amt1", "Ass2Amt2", "Ass3Amt1", "Ass3Amt2", "Ass3Amt3", "OscInitPhs",
-    "PunchInt", "RingMod", "NoiseColor", "DelayColor", "ABoostInt", "ABoostTune", "Lfo1AssAmt",
-    "Lfo2AssAmt", "RevbDecay", "RevDamping", "RevbColor", "RevPredely", "RevFeedbck",
-    "ArpNoteLen", "ArpSwing", "ArpPattern",
+    "Off",
+    "PatchVol",
+    "ChannelVol",
+    "Panorama",
+    "Transpose",
+    "Portamento",
+    "Osc1Shape",
+    "Osc1PlsWdh",
+    "Osc1WavSel",
+    "Osc1Pitch",
+    "Osc1Keyflw",
+    "Osc2Shape",
+    "Osc2PlsWdh",
+    "Osc2WavSel",
+    "Osc2Pitch",
+    "Osc2Detune",
+    "Osc2FmAmt",
+    "Osc2EnvAmt",
+    "FmEnvAmt",
+    "Osc2Keyflw",
+    "OscBalance",
+    "SubOscVol",
+    "OscMainVol",
+    "NoiseVol",
+    "Cutoff",
+    "Cutoff2",
+    "Filt1Reso",
+    "Filt2Reso",
+    "Flt1EnvAmt",
+    "Flt2EnvAmt",
+    "Flt1Keyflw",
+    "Flt2Keyflw",
+    "FltBalance",
+    "FltAttack",
+    "FltDecay",
+    "FltSustain",
+    "FltSusTime",
+    "FltRelease",
+    "AmpAttack",
+    "AmpDecay",
+    "AmpSustain",
+    "AmpSusTime",
+    "AmpRelease",
+    "Lfo1Rate",
+    "Lfo1Cont",
+    "Lfo1>Osc1",
+    "Lfo1>Osc2",
+    "Lfo1>PlsWd",
+    "Lfo1>Reso",
+    "Lfo1>FltGn",
+    "Lfo2Rate",
+    "Lfo2Cont",
+    "Lfo2>Shape",
+    "Lfo2>Fm",
+    "Lfo2>Cut1",
+    "Lfo2>Cut2",
+    "Lfo2>Pan",
+    "Lfo3Rate",
+    "Lfo3OscAmt",
+    "UniDetune",
+    "UniSpread",
+    "UniLfoPhs",
+    "ChorusMix",
+    "ChorusRate",
+    "ChorusDpth",
+    "ChorusDly",
+    "ChorusFeed",
+    "EffectSend",
+    "DelayTime",
+    "DelayFeed",
+    "DelayRate",
+    "DelayDepth",
+    "Osc1ShpVel",
+    "Osc2ShpVel",
+    "PlsWhdVel",
+    "FmAmtVel",
+    "Flt1EnvVel",
+    "Flt2EnvVel",
+    "Reso1Vel",
+    "Reso2Vel",
+    "AmpVel",
+    "PanVel",
+    "Ass1Amt1",
+    "Ass2Amt1",
+    "Ass2Amt2",
+    "Ass3Amt1",
+    "Ass3Amt2",
+    "Ass3Amt3",
+    "OscInitPhs",
+    "PunchInt",
+    "RingMod",
+    "NoiseColor",
+    "DelayColor",
+    "ABoostInt",
+    "ABoostTune",
+    "Lfo1AssAmt",
+    "Lfo2AssAmt",
+    "RevbDecay",
+    "RevDamping",
+    "RevbColor",
+    "RevPredely",
+    "RevFeedbck",
+    "ArpNoteLen",
+    "ArpSwing",
+    "ArpPattern",
 ];
 
 /// Definable knob destination names in the order printed in the OSR15 addendum.
 ///
 /// UNVERIFIED (Q1): OS 1.50 re-sorted this list in the UI; the raw mapping is unconfirmed.
 pub const UNVERIFIED_DEFINABLE_DESTINATION_NAMES: &[&str] = &[
-    "Off", "ModWheel", "Breath", "Contr3", "Foot", "Data", "Balance", "Contr9", "Expression",
-    "Contr12", "Contr13", "Contr14", "Contr15", "Contr16", "PatchVolume", "ChannelVolume",
-    "Panorama", "Transpose", "Portamento", "UnisonDetune", "UnisonPanSprd", "UnisonLfoPhase",
-    "ChorusMix", "ChorusRate", "ChorusDepth", "ChorusDelay", "ChorusFeedback", "EffectSend",
-    "DelayTime(ms)", "DelayFeedback", "DelayRate", "DelayDepth", "Osc1WavSelect",
-    "Osc1PulseWidth", "Osc1Semitone", "Osc1Keyfollow", "Osc2WavSelect", "Osc2PulseWidth",
-    "Osc2EnvAmount", "FmEnvAmount", "Osc2Keyfollow", "NoiseVolume", "Filt1Resonance",
-    "Filt2Resonance", "Filt1EnvAmount", "Filt2EnvAmount", "Filt1Keyfollow", "Filt2Keyfollow",
-    "Lfo1Symmetry", "Lfo1>Osc1", "Lfo1>Osc2", "Lfo1>PulsWidth", "Lfo1>Resonance",
-    "Lfo1>FiltGain", "Lfo2Symmetry", "Lfo2>Shape", "Lfo2>FmAmount", "Lfo2>Cutoff1",
-    "Lfo2>Cutoff2", "Lfo2>Panorama", "Lfo3Rate", "Lfo3OscAmount", "Osc1ShapeVel", "Osc2ShapeVel",
-    "PulsWidthVel", "FmAmountVel", "Filt1EnvVel", "Filt2EnvVel", "Resonance1Vel",
-    "Resonance2Vel", "AmplifierVel", "PanoramaVel", "Assign1Amt1", "Assign2Amt1", "Assign2Amt2",
-    "Assign3Amt1", "Assign3Amt2", "Assign3Amt3", "ClockTempo", "InputThru", "OscInitPhase",
-    "PunchIntensity", "Ringmodulator", "NoiseColor", "DelayColor", "AnalogBoostInt",
-    "AnalogBstTune", "Lfo1AssignAmt", "Lfo2AssignAmt", "RevDecayTime", "ReverbDamping",
-    "ReverbColor", "ReverbFeedback", "ArpMode", "ArpPattern", "ArpClock", "ArpNoteLength",
-    "ArpSwing", "ArpOctaves", "ArpHold",
+    "Off",
+    "ModWheel",
+    "Breath",
+    "Contr3",
+    "Foot",
+    "Data",
+    "Balance",
+    "Contr9",
+    "Expression",
+    "Contr12",
+    "Contr13",
+    "Contr14",
+    "Contr15",
+    "Contr16",
+    "PatchVolume",
+    "ChannelVolume",
+    "Panorama",
+    "Transpose",
+    "Portamento",
+    "UnisonDetune",
+    "UnisonPanSprd",
+    "UnisonLfoPhase",
+    "ChorusMix",
+    "ChorusRate",
+    "ChorusDepth",
+    "ChorusDelay",
+    "ChorusFeedback",
+    "EffectSend",
+    "DelayTime(ms)",
+    "DelayFeedback",
+    "DelayRate",
+    "DelayDepth",
+    "Osc1WavSelect",
+    "Osc1PulseWidth",
+    "Osc1Semitone",
+    "Osc1Keyfollow",
+    "Osc2WavSelect",
+    "Osc2PulseWidth",
+    "Osc2EnvAmount",
+    "FmEnvAmount",
+    "Osc2Keyfollow",
+    "NoiseVolume",
+    "Filt1Resonance",
+    "Filt2Resonance",
+    "Filt1EnvAmount",
+    "Filt2EnvAmount",
+    "Filt1Keyfollow",
+    "Filt2Keyfollow",
+    "Lfo1Symmetry",
+    "Lfo1>Osc1",
+    "Lfo1>Osc2",
+    "Lfo1>PulsWidth",
+    "Lfo1>Resonance",
+    "Lfo1>FiltGain",
+    "Lfo2Symmetry",
+    "Lfo2>Shape",
+    "Lfo2>FmAmount",
+    "Lfo2>Cutoff1",
+    "Lfo2>Cutoff2",
+    "Lfo2>Panorama",
+    "Lfo3Rate",
+    "Lfo3OscAmount",
+    "Osc1ShapeVel",
+    "Osc2ShapeVel",
+    "PulsWidthVel",
+    "FmAmountVel",
+    "Filt1EnvVel",
+    "Filt2EnvVel",
+    "Resonance1Vel",
+    "Resonance2Vel",
+    "AmplifierVel",
+    "PanoramaVel",
+    "Assign1Amt1",
+    "Assign2Amt1",
+    "Assign2Amt2",
+    "Assign3Amt1",
+    "Assign3Amt2",
+    "Assign3Amt3",
+    "ClockTempo",
+    "InputThru",
+    "OscInitPhase",
+    "PunchIntensity",
+    "Ringmodulator",
+    "NoiseColor",
+    "DelayColor",
+    "AnalogBoostInt",
+    "AnalogBstTune",
+    "Lfo1AssignAmt",
+    "Lfo2AssignAmt",
+    "RevDecayTime",
+    "ReverbDamping",
+    "ReverbColor",
+    "ReverbFeedback",
+    "ArpMode",
+    "ArpPattern",
+    "ArpClock",
+    "ArpNoteLength",
+    "ArpSwing",
+    "ArpOctaves",
+    "ArpHold",
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -243,9 +428,18 @@ pub struct AssignLayout {
 
 /// Assign 1 (1 destination), Assign 2 (2) and Assign 3 (3): B64–B78.
 pub const ASSIGN_LAYOUT: [AssignLayout; 3] = [
-    AssignLayout { source: 64, targets: &[(65, 66)] },
-    AssignLayout { source: 67, targets: &[(68, 69), (70, 71)] },
-    AssignLayout { source: 72, targets: &[(73, 74), (75, 76), (77, 78)] },
+    AssignLayout {
+        source: 64,
+        targets: &[(65, 66)],
+    },
+    AssignLayout {
+        source: 67,
+        targets: &[(68, 69), (70, 71)],
+    },
+    AssignLayout {
+        source: 72,
+        targets: &[(73, 74), (75, 76), (77, 78)],
+    },
 ];
 
 /// LFO1 / LFO2 assign (destination, amount): B79/B80 and B81/B82.
@@ -263,23 +457,62 @@ const fn def(
     class: ParamClass,
     kind: ValueKind,
 ) -> ParamDef {
-    ParamDef { page, number, name, section, class, flags: ParamFlags::NONE, kind, min: 0, max: 127 }
+    ParamDef {
+        page,
+        number,
+        name,
+        section,
+        class,
+        flags: ParamFlags::NONE,
+        kind,
+        min: 0,
+        max: 127,
+    }
 }
 
 const fn uni(page: Page, number: u8, name: &'static str, section: &'static str) -> ParamDef {
-    def(page, number, name, section, ParamClass::Sound, ValueKind::Unipolar)
+    def(
+        page,
+        number,
+        name,
+        section,
+        ParamClass::Sound,
+        ValueKind::Unipolar,
+    )
 }
 
 const fn bip(page: Page, number: u8, name: &'static str, section: &'static str) -> ParamDef {
-    def(page, number, name, section, ParamClass::Sound, ValueKind::Bipolar)
+    def(
+        page,
+        number,
+        name,
+        section,
+        ParamClass::Sound,
+        ValueKind::Bipolar,
+    )
 }
 
 const fn tog(page: Page, number: u8, name: &'static str, section: &'static str) -> ParamDef {
-    def(page, number, name, section, ParamClass::Sound, ValueKind::Toggle).range(0, 1)
+    def(
+        page,
+        number,
+        name,
+        section,
+        ParamClass::Sound,
+        ValueKind::Toggle,
+    )
+    .range(0, 1)
 }
 
 const fn raw(page: Page, number: u8, name: &'static str, section: &'static str) -> ParamDef {
-    def(page, number, name, section, ParamClass::Sound, ValueKind::Raw)
+    def(
+        page,
+        number,
+        name,
+        section,
+        ParamClass::Sound,
+        ValueKind::Raw,
+    )
 }
 
 const fn choice(
@@ -289,16 +522,38 @@ const fn choice(
     section: &'static str,
     texts: &'static [&'static str],
 ) -> ParamDef {
-    def(page, number, name, section, ParamClass::Sound, ValueKind::Choice(texts))
-        .range(0, texts.len() as u8 - 1)
+    def(
+        page,
+        number,
+        name,
+        section,
+        ParamClass::Sound,
+        ValueKind::Choice(texts),
+    )
+    .range(0, texts.len() as u8 - 1)
 }
 
 const fn perf(page: Page, number: u8, name: &'static str) -> ParamDef {
-    def(page, number, name, "Performance", ParamClass::Performance, ValueKind::Unipolar)
+    def(
+        page,
+        number,
+        name,
+        "Performance",
+        ParamClass::Performance,
+        ValueKind::Unipolar,
+    )
 }
 
 const fn name_char(number: u8, name: &'static str) -> ParamDef {
-    def(B, number, name, "Name", ParamClass::Sound, ValueKind::NameChar).range(32, 127)
+    def(
+        B,
+        number,
+        name,
+        "Name",
+        ParamClass::Sound,
+        ValueKind::NameChar,
+    )
+    .range(32, 127)
 }
 
 const A: Page = Page::PageA;
@@ -307,7 +562,14 @@ const B: Page = Page::PageB;
 /// Every documented Page A and Page B row of the OS 2.0 Single Dump table, sorted by page and number.
 pub static SINGLE_PARAMS: &[ParamDef] = &[
     // ----- Page A -----
-    def(A, 0, "Sound Version", "Internal", ParamClass::Internal, ValueKind::Raw),
+    def(
+        A,
+        0,
+        "Sound Version",
+        "Internal",
+        ParamClass::Internal,
+        ValueKind::Raw,
+    ),
     perf(A, 1, "Modulation Wheel"),
     perf(A, 2, "Breath Controller"),
     perf(A, 3, "Contr 3"),
@@ -342,7 +604,13 @@ pub static SINGLE_PARAMS: &[ParamDef] = &[
     perf(A, 32, "Bank Select").range(0, 3),
     bip(A, 33, "Osc Balance", "Oscillators"),
     uni(A, 34, "Suboscillator Volume", "Oscillators"),
-    choice(A, 35, "Suboscillator Shape", "Oscillators", &SUB_OSC_SHAPE_NAMES),
+    choice(
+        A,
+        35,
+        "Suboscillator Shape",
+        "Oscillators",
+        &SUB_OSC_SHAPE_NAMES,
+    ),
     uni(A, 36, "Osc Mainvolume", "Oscillators"),
     uni(A, 37, "Noise Volume", "Oscillators"),
     uni(A, 38, "Ringmodulator Volume", "Oscillators"),
@@ -356,7 +624,13 @@ pub static SINGLE_PARAMS: &[ParamDef] = &[
     bip(A, 46, "Filter1 Keyfollow", "Filters"),
     bip(A, 47, "Filter2 Keyfollow", "Filters"),
     bip(A, 48, "Filter Balance", "Filters"),
-    choice(A, 49, "Saturation Curve", "Filters", &SATURATION_CURVE_NAMES),
+    choice(
+        A,
+        49,
+        "Saturation Curve",
+        "Filters",
+        &SATURATION_CURVE_NAMES,
+    ),
     choice(A, 51, "Filter1 Mode", "Filters", &FILTER_MODE_NAMES),
     choice(A, 52, "Filter2 Mode", "Filters", &FILTER_MODE_NAMES),
     choice(A, 53, "Filter Routing", "Filters", &FILTER_ROUTING_NAMES),
@@ -412,13 +686,25 @@ pub static SINGLE_PARAMS: &[ParamDef] = &[
     uni(A, 108, "Chorus Delay", "Effects"),
     bip(A, 109, "Chorus Feedback", "Effects"),
     choice(A, 110, "Chorus Lfo Shape", "Effects", &LFO_SHAPE_NAMES),
-    choice(A, 112, "Delay/Reverb Mode", "Effects", &DELAY_REVERB_MODE_NAMES),
+    choice(
+        A,
+        112,
+        "Delay/Reverb Mode",
+        "Effects",
+        &DELAY_REVERB_MODE_NAMES,
+    ),
     uni(A, 113, "Effect Send", "Effects").ms(),
     uni(A, 114, "Delay Time", "Effects").ms().np(),
     uni(A, 115, "Delay Feedback", "Effects").ms().np(),
-    uni(A, 116, "Delay Rate / Reverb Decay Time", "Effects").ms().np(),
-    uni(A, 117, "Delay Depth / Reverb Room Size", "Effects").ms().np(),
-    uni(A, 118, "Delay Lfo Shape / Reverb Damping", "Effects").ms().np(),
+    uni(A, 116, "Delay Rate / Reverb Decay Time", "Effects")
+        .ms()
+        .np(),
+    uni(A, 117, "Delay Depth / Reverb Room Size", "Effects")
+        .ms()
+        .np(),
+    uni(A, 118, "Delay Lfo Shape / Reverb Damping", "Effects")
+        .ms()
+        .np(),
     bip(A, 119, "Delay Color", "Effects").ms().np(),
     perf(A, 123, "All Notes Off"),
     // ----- Page B -----
@@ -445,10 +731,29 @@ pub static SINGLE_PARAMS: &[ParamDef] = &[
     bip(B, 26, "Bender Range Up", "Common"),
     bip(B, 27, "Bender Range Down", "Common"),
     choice(B, 28, "Bender Scale", "Common", &BENDER_SCALE_NAMES),
-    choice(B, 30, "Filter1 Env Polarity", "Filters", &ENV_POLARITY_NAMES),
-    choice(B, 31, "Filter2 Env Polarity", "Filters", &ENV_POLARITY_NAMES),
+    choice(
+        B,
+        30,
+        "Filter1 Env Polarity",
+        "Filters",
+        &ENV_POLARITY_NAMES,
+    ),
+    choice(
+        B,
+        31,
+        "Filter2 Env Polarity",
+        "Filters",
+        &ENV_POLARITY_NAMES,
+    ),
     tog(B, 32, "Filter2 Cutoff Link", "Filters"),
-    def(B, 33, "Filter Keytrack Base", "Filters", ParamClass::Sound, ValueKind::Note),
+    def(
+        B,
+        33,
+        "Filter Keytrack Base",
+        "Filters",
+        ParamClass::Sound,
+        ValueKind::Note,
+    ),
     uni(B, 35, "Osc Init Phase", "Oscillators"),
     uni(B, 36, "Punch Intensity", "Amp Env"),
     choice(B, 39, "Vocoder Mode", "Vocoder", &VOCODER_MODE_NAMES).range(0, 12),

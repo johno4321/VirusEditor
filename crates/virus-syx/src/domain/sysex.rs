@@ -135,15 +135,25 @@ pub enum SyxError {
     UnsupportedProduct(u8),
     MessageTooShort,
     /// A message with a known fixed size had the wrong length.
-    InvalidPayloadLength { expected: usize, found: usize },
+    InvalidPayloadLength {
+        expected: usize,
+        found: usize,
+    },
     /// A valid message that is not a single dump was given where one was required.
-    NotASingleDump { command: u8 },
+    NotASingleDump {
+        command: u8,
+    },
     /// Single dump bank byte outside `00..=04` (banks E–H addressing is undocumented).
     UnsupportedBank(u8),
     /// A byte between `F0` and `F7` is 0x80 or higher, which MIDI forbids inside SysEx.
-    InvalidDataByte { offset: usize, value: u8 },
+    InvalidDataByte {
+        offset: usize,
+        value: u8,
+    },
     /// A valid message that is not a multi dump was given where one was required.
-    NotAMultiDump { command: u8 },
+    NotAMultiDump {
+        command: u8,
+    },
     /// Multi dump bank byte other than `00` (edit buffer) or `01` (multi bank).
     UnsupportedMultiBank(u8),
 }
@@ -158,19 +168,29 @@ impl fmt::Display for SyxError {
             Self::UnsupportedProduct(id) => write!(f, "Unsupported Product ID: 0x{id:02X}"),
             Self::MessageTooShort => write!(f, "SysEx message is too short"),
             Self::InvalidPayloadLength { expected, found } => {
-                write!(f, "Invalid message length (expected {expected} bytes, got {found})")
+                write!(
+                    f,
+                    "Invalid message length (expected {expected} bytes, got {found})"
+                )
             }
             Self::NotASingleDump { command } => {
                 write!(f, "Not a single dump (command 0x{command:02X})")
             }
-            Self::UnsupportedBank(bank) => write!(f, "Unsupported single bank number: 0x{bank:02X}"),
+            Self::UnsupportedBank(bank) => {
+                write!(f, "Unsupported single bank number: 0x{bank:02X}")
+            }
             Self::InvalidDataByte { offset, value } => {
-                write!(f, "Invalid SysEx data byte 0x{value:02X} at offset {offset} (must be below 0x80)")
+                write!(
+                    f,
+                    "Invalid SysEx data byte 0x{value:02X} at offset {offset} (must be below 0x80)"
+                )
             }
             Self::NotAMultiDump { command } => {
                 write!(f, "Not a multi dump (command 0x{command:02X})")
             }
-            Self::UnsupportedMultiBank(bank) => write!(f, "Unsupported multi bank number: 0x{bank:02X}"),
+            Self::UnsupportedMultiBank(bank) => {
+                write!(f, "Unsupported multi bank number: 0x{bank:02X}")
+            }
         }
     }
 }
@@ -196,14 +216,37 @@ pub enum SysExMessage {
         data: Box<[u8; 256]>,
         checksum_ok: bool,
     },
-    SingleRequest { device_id: u8, bank: u8, program: u8 },
-    MultiRequest { device_id: u8, bank: u8, program: u8 },
-    SingleBankRequest { device_id: u8, bank: u8 },
-    MultiBankRequest { device_id: u8, bank: u8 },
-    ArrangementRequest { device_id: u8 },
-    GlobalRequest { device_id: u8 },
-    TotalRequest { device_id: u8 },
-    ControllerDumpRequest { device_id: u8, part: u8 },
+    SingleRequest {
+        device_id: u8,
+        bank: u8,
+        program: u8,
+    },
+    MultiRequest {
+        device_id: u8,
+        bank: u8,
+        program: u8,
+    },
+    SingleBankRequest {
+        device_id: u8,
+        bank: u8,
+    },
+    MultiBankRequest {
+        device_id: u8,
+        bank: u8,
+    },
+    ArrangementRequest {
+        device_id: u8,
+    },
+    GlobalRequest {
+        device_id: u8,
+    },
+    TotalRequest {
+        device_id: u8,
+    },
+    ControllerDumpRequest {
+        device_id: u8,
+        part: u8,
+    },
     /// Parameter change on Page A (`0x70`), B (`0x71`) or C (`0x72`).
     /// `part` is `0x40` (Single buffer) or `0x00..=0x0F` (Multi part 1..16).
     ParamChange {
@@ -254,7 +297,10 @@ pub fn parse_sysex(msg: &[u8]) -> Result<SysExMessage, SyxError> {
         return Err(SyxError::MessageTooShort);
     }
     if let Some(offset) = msg[1..msg.len() - 1].iter().position(|&b| b >= 0x80) {
-        return Err(SyxError::InvalidDataByte { offset: offset + 1, value: msg[offset + 1] });
+        return Err(SyxError::InvalidDataByte {
+            offset: offset + 1,
+            value: msg[offset + 1],
+        });
     }
     if msg[1..4] != ACCESS_MANUFACTURER_ID {
         return Err(SyxError::NotAccessManufacturer);
@@ -275,7 +321,10 @@ pub fn parse_sysex(msg: &[u8]) -> Result<SysExMessage, SyxError> {
 
     let expected = command.frame_len();
     if msg.len() != expected {
-        return Err(SyxError::InvalidPayloadLength { expected, found: msg.len() });
+        return Err(SyxError::InvalidPayloadLength {
+            expected,
+            found: msg.len(),
+        });
     }
 
     Ok(match command {
@@ -284,27 +333,51 @@ pub fn parse_sysex(msg: &[u8]) -> Result<SysExMessage, SyxError> {
             let program = msg[8];
             let mut data = Box::new([0u8; DUMP_DATA_LEN]);
             data.copy_from_slice(&msg[9..9 + DUMP_DATA_LEN]);
-            let checksum_ok = calculate_checksum(&msg[5..9 + DUMP_DATA_LEN]) == msg[9 + DUMP_DATA_LEN];
+            let checksum_ok =
+                calculate_checksum(&msg[5..9 + DUMP_DATA_LEN]) == msg[9 + DUMP_DATA_LEN];
             if command == Command::SingleProgramDump {
-                SysExMessage::SingleDump { device_id, bank, program, data, checksum_ok }
+                SysExMessage::SingleDump {
+                    device_id,
+                    bank,
+                    program,
+                    data,
+                    checksum_ok,
+                }
             } else {
-                SysExMessage::MultiDump { device_id, bank, program, data, checksum_ok }
+                SysExMessage::MultiDump {
+                    device_id,
+                    bank,
+                    program,
+                    data,
+                    checksum_ok,
+                }
             }
         }
-        Command::SingleProgramRequest => {
-            SysExMessage::SingleRequest { device_id, bank: msg[7], program: msg[8] }
-        }
-        Command::MultiProgramRequest => {
-            SysExMessage::MultiRequest { device_id, bank: msg[7], program: msg[8] }
-        }
-        Command::SingleBankRequest => SysExMessage::SingleBankRequest { device_id, bank: msg[7] },
-        Command::MultiBankRequest => SysExMessage::MultiBankRequest { device_id, bank: msg[7] },
+        Command::SingleProgramRequest => SysExMessage::SingleRequest {
+            device_id,
+            bank: msg[7],
+            program: msg[8],
+        },
+        Command::MultiProgramRequest => SysExMessage::MultiRequest {
+            device_id,
+            bank: msg[7],
+            program: msg[8],
+        },
+        Command::SingleBankRequest => SysExMessage::SingleBankRequest {
+            device_id,
+            bank: msg[7],
+        },
+        Command::MultiBankRequest => SysExMessage::MultiBankRequest {
+            device_id,
+            bank: msg[7],
+        },
         Command::ArrangementRequest => SysExMessage::ArrangementRequest { device_id },
         Command::GlobalRequest => SysExMessage::GlobalRequest { device_id },
         Command::TotalRequest => SysExMessage::TotalRequest { device_id },
-        Command::ControllerDumpRequest => {
-            SysExMessage::ControllerDumpRequest { device_id, part: msg[8] }
-        }
+        Command::ControllerDumpRequest => SysExMessage::ControllerDumpRequest {
+            device_id,
+            part: msg[8],
+        },
         Command::ParamChangePageA | Command::ParamChangePageB | Command::ParamChangePageC => {
             SysExMessage::ParamChange {
                 device_id,
@@ -329,7 +402,13 @@ fn frame(device_id: u8, command: Command, args: &[u8]) -> Vec<u8> {
     msg
 }
 
-fn encode_dump(device_id: u8, command: Command, bank: u8, program: u8, data: &[u8; 256]) -> Vec<u8> {
+fn encode_dump(
+    device_id: u8,
+    command: Command,
+    bank: u8,
+    program: u8,
+    data: &[u8; 256],
+) -> Vec<u8> {
     let mut msg = Vec::with_capacity(DUMP_FRAME_LEN);
     msg.push(MIDI_SYSEX_START);
     msg.extend_from_slice(&ACCESS_MANUFACTURER_ID);
@@ -421,12 +500,24 @@ pub fn part_bank_from_c32(value: u8) -> Option<u8> {
 
 /// C33 Part Program Change.
 pub fn encode_part_program_change(device_id: u8, part: u8, value: u8) -> Vec<u8> {
-    encode_param_change(device_id, Page::PageC, part, PAGE_C_PART_PROGRAM_CHANGE, value)
+    encode_param_change(
+        device_id,
+        Page::PageC,
+        part,
+        PAGE_C_PART_PROGRAM_CHANGE,
+        value,
+    )
 }
 
 /// C105 Multi Program Change (part byte `00`).
 pub fn encode_multi_program_change(device_id: u8, value: u8) -> Vec<u8> {
-    encode_param_change(device_id, Page::PageC, 0x00, PAGE_C_MULTI_PROGRAM_CHANGE, value)
+    encode_param_change(
+        device_id,
+        Page::PageC,
+        0x00,
+        PAGE_C_MULTI_PROGRAM_CHANGE,
+        value,
+    )
 }
 
 /// Encodes a Single Dump (`10 bb ss [256] cs`) with a correct checksum.
@@ -447,14 +538,25 @@ mod tests {
     #[test]
     fn test_manual_example_param_change() {
         // Manual p. 206: set Cutoff (A40) of part 6 to 95.
-        let manual_frame = [0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x70, 0x05, 0x28, 0x5F, 0xF7];
+        let manual_frame = [
+            0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x70, 0x05, 0x28, 0x5F, 0xF7,
+        ];
 
         let parsed = parse_sysex(&manual_frame).expect("Manual frame must parse");
         assert_eq!(
             parsed,
-            SysExMessage::ParamChange { device_id: 0x10, page: Page::PageA, part: 5, param: 40, value: 95 }
+            SysExMessage::ParamChange {
+                device_id: 0x10,
+                page: Page::PageA,
+                part: 5,
+                param: 40,
+                value: 95
+            }
         );
-        assert_eq!(encode_param_change(0x10, Page::PageA, 0x05, 0x28, 0x5F), manual_frame);
+        assert_eq!(
+            encode_param_change(0x10, Page::PageA, 0x05, 0x28, 0x5F),
+            manual_frame
+        );
     }
 
     #[test]
@@ -465,7 +567,13 @@ mod tests {
         assert_eq!(dump[265], 35);
 
         match parse_sysex(&dump).unwrap() {
-            SysExMessage::SingleDump { device_id, bank, program, data, checksum_ok } => {
+            SysExMessage::SingleDump {
+                device_id,
+                bank,
+                program,
+                data,
+                checksum_ok,
+            } => {
                 assert_eq!((device_id, bank, program), (0x10, 1, 2));
                 assert_eq!(*data, dummy);
                 assert!(checksum_ok);
@@ -479,7 +587,9 @@ mod tests {
         let mut dump = encode_program_dump(0x10, 0x01, 0x02, &[1u8; 256]);
         dump[265] ^= 0x01;
         match parse_sysex(&dump).unwrap() {
-            SysExMessage::SingleDump { checksum_ok, data, .. } => {
+            SysExMessage::SingleDump {
+                checksum_ok, data, ..
+            } => {
                 assert!(!checksum_ok);
                 assert_eq!(*data, [1u8; 256]);
             }
@@ -489,52 +599,115 @@ mod tests {
 
     #[test]
     fn unknown_command_is_other() {
-        let msg = [0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x12, 0x01, 0x05, 0x06, 0xF7];
+        let msg = [
+            0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x12, 0x01, 0x05, 0x06, 0xF7,
+        ];
         assert_eq!(
             parse_sysex(&msg).unwrap(),
-            SysExMessage::Other { device_id: 0x10, command: 0x12, payload: vec![0x01, 0x05, 0x06] }
+            SysExMessage::Other {
+                device_id: 0x10,
+                command: 0x12,
+                payload: vec![0x01, 0x05, 0x06]
+            }
         );
     }
 
     #[test]
     fn fixed_size_messages_require_exact_length() {
         // F7 must sit right after the payload (extra byte before F7).
-        let long = [0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x70, 0x05, 0x28, 0x5F, 0x00, 0xF7];
-        assert!(matches!(parse_sysex(&long), Err(SyxError::InvalidPayloadLength { expected: 11, found: 12 })));
+        let long = [
+            0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x70, 0x05, 0x28, 0x5F, 0x00, 0xF7,
+        ];
+        assert!(matches!(
+            parse_sysex(&long),
+            Err(SyxError::InvalidPayloadLength {
+                expected: 11,
+                found: 12
+            })
+        ));
         let short = [0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x30, 0x01, 0xF7];
-        assert!(matches!(parse_sysex(&short), Err(SyxError::InvalidPayloadLength { .. })));
+        assert!(matches!(
+            parse_sysex(&short),
+            Err(SyxError::InvalidPayloadLength { .. })
+        ));
         let mut dump = encode_program_dump(0x10, 1, 0, &[0; 256]);
         dump.remove(100);
-        assert!(matches!(parse_sysex(&dump), Err(SyxError::InvalidPayloadLength { .. })));
+        assert!(matches!(
+            parse_sysex(&dump),
+            Err(SyxError::InvalidPayloadLength { .. })
+        ));
     }
 
     #[test]
     fn eight_bit_data_is_rejected() {
         let mut dump = encode_program_dump(0x10, 1, 0, &[0; 256]);
         dump[100] = 0x85;
-        assert_eq!(parse_sysex(&dump), Err(SyxError::InvalidDataByte { offset: 100, value: 0x85 }));
+        assert_eq!(
+            parse_sysex(&dump),
+            Err(SyxError::InvalidDataByte {
+                offset: 100,
+                value: 0x85
+            })
+        );
         let mut param = encode_param_change(0, Page::PageA, 0x40, 40, 1);
         param[9] = 0xFF;
-        assert!(matches!(parse_sysex(&param), Err(SyxError::InvalidDataByte { value: 0xFF, .. })));
+        assert!(matches!(
+            parse_sysex(&param),
+            Err(SyxError::InvalidDataByte { value: 0xFF, .. })
+        ));
     }
 
     #[test]
     fn requests_round_trip_through_parser() {
         let cases = [
-            (encode_multi_request(0, 1, 7), SysExMessage::MultiRequest { device_id: 0, bank: 1, program: 7 }),
-            (encode_multi_bank_request(0), SysExMessage::MultiBankRequest { device_id: 0, bank: 1 }),
-            (encode_arrangement_request(0), SysExMessage::ArrangementRequest { device_id: 0 }),
-            (encode_global_request(0), SysExMessage::GlobalRequest { device_id: 0 }),
-            (encode_controller_dump_request(0, 0x40), SysExMessage::ControllerDumpRequest { device_id: 0, part: 0x40 }),
+            (
+                encode_multi_request(0, 1, 7),
+                SysExMessage::MultiRequest {
+                    device_id: 0,
+                    bank: 1,
+                    program: 7,
+                },
+            ),
+            (
+                encode_multi_bank_request(0),
+                SysExMessage::MultiBankRequest {
+                    device_id: 0,
+                    bank: 1,
+                },
+            ),
+            (
+                encode_arrangement_request(0),
+                SysExMessage::ArrangementRequest { device_id: 0 },
+            ),
+            (
+                encode_global_request(0),
+                SysExMessage::GlobalRequest { device_id: 0 },
+            ),
+            (
+                encode_controller_dump_request(0, 0x40),
+                SysExMessage::ControllerDumpRequest {
+                    device_id: 0,
+                    part: 0x40,
+                },
+            ),
             (
                 encode_multi_program_change(0, 9),
-                SysExMessage::ParamChange { device_id: 0, page: Page::PageC, part: 0, param: 105, value: 9 },
+                SysExMessage::ParamChange {
+                    device_id: 0,
+                    page: Page::PageC,
+                    part: 0,
+                    param: 105,
+                    value: 9,
+                },
             ),
         ];
         for (encoded, expected) in cases {
             assert_eq!(parse_sysex(&encoded).unwrap(), expected);
         }
-        assert_eq!(encode_part_bank_change(0x10, 3, 1)[6..10], [0x72, 0x03, 0x20, 0x01]);
+        assert_eq!(
+            encode_part_bank_change(0x10, 3, 1)[6..10],
+            [0x72, 0x03, 0x20, 0x01]
+        );
     }
 
     #[test]

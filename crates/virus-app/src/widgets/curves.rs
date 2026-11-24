@@ -64,7 +64,13 @@ impl EnvelopeParams {
 
     fn read(patch: &Patch, first: u8) -> Self {
         let p = |i: u8| patch.get(Page::PageA, first + i);
-        Self { attack: p(0), decay: p(1), sustain: p(2), sustain_time: p(3), release: p(4) }
+        Self {
+            attack: p(0),
+            decay: p(1),
+            sustain: p(2),
+            sustain_time: p(3),
+            release: p(4),
+        }
     }
 }
 
@@ -75,7 +81,10 @@ pub struct FilterCurve {
 
 impl FilterCurve {
     pub fn new(params: FilterParams) -> Self {
-        Self { params, size: vec2(280.0, 110.0) }
+        Self {
+            params,
+            size: vec2(280.0, 110.0),
+        }
     }
 }
 
@@ -90,7 +99,11 @@ impl Widget for FilterCurve {
         let painter = ui.painter();
         let palette = theme::palette();
         painter.rect_filled(rect, egui::Rounding::same(4.0), theme::SCOPE_BG);
-        painter.rect_stroke(rect, egui::Rounding::same(4.0), Stroke::new(1.0_f32, palette.edge));
+        painter.rect_stroke(
+            rect,
+            egui::Rounding::same(4.0),
+            Stroke::new(1.0_f32, palette.edge),
+        );
 
         let log_span = 20_000.0_f32.log10() - 20.0_f32.log10();
         for f in [100.0_f32, 1_000.0, 10_000.0] {
@@ -104,7 +117,12 @@ impl Widget for FilterCurve {
         let p = self.params;
         let fc = |cutoff: u8| 30.0 * (18_000.0_f32 / 30.0).powf(f32::from(cutoff) / 127.0);
         let q = |reso: u8| 0.5 + f32::from(reso) / 127.0 * 8.0;
-        let (fc1, q1, fc2, q2) = (fc(p.cutoff1), q(p.resonance1), fc(p.cutoff2), q(p.resonance2));
+        let (fc1, q1, fc2, q2) = (
+            fc(p.cutoff1),
+            q(p.resonance1),
+            fc(p.cutoff2),
+            q(p.resonance2),
+        );
         const STEPS: usize = 64;
         let points = (0..=STEPS)
             .map(|i| {
@@ -118,12 +136,17 @@ impl Widget for FilterCurve {
                 };
                 let db = 20.0 * combined.max(0.0001).log10();
                 let y = ((12.0 - db) / 48.0).clamp(0.05, 0.95);
-                pos2(rect.min.x + t * rect.width(), rect.min.y + y * rect.height())
+                pos2(
+                    rect.min.x + t * rect.width(),
+                    rect.min.y + y * rect.height(),
+                )
             })
             .collect();
         painter.add(egui::Shape::line(points, Stroke::new(2.0_f32, palette.arc)));
 
-        let routing = ROUTING_NAMES.get(p.routing as usize).map_or_else(|| format!("#{}", p.routing), |s| (*s).to_owned());
+        let routing = ROUTING_NAMES
+            .get(p.routing as usize)
+            .map_or_else(|| format!("#{}", p.routing), |s| (*s).to_owned());
         painter.text(
             rect.min + vec2(8.0, 6.0),
             egui::Align2::LEFT_TOP,
@@ -155,7 +178,11 @@ pub struct EnvelopeCurve<'a> {
 
 impl<'a> EnvelopeCurve<'a> {
     pub fn new(label: &'a str, params: EnvelopeParams) -> Self {
-        Self { label, params, size: vec2(220.0, 110.0) }
+        Self {
+            label,
+            params,
+            size: vec2(220.0, 110.0),
+        }
     }
 }
 
@@ -167,7 +194,11 @@ impl Widget for EnvelopeCurve<'_> {
         }
         let painter = ui.painter();
         painter.rect_filled(rect, egui::Rounding::same(4.0), theme::SCOPE_BG);
-        painter.rect_stroke(rect, egui::Rounding::same(4.0), Stroke::new(1.0_f32, theme::palette().edge));
+        painter.rect_stroke(
+            rect,
+            egui::Rounding::same(4.0),
+            Stroke::new(1.0_f32, theme::palette().edge),
+        );
 
         let pad = 8.0;
         let (width, height) = (rect.width() - 2.0 * pad, rect.height() - 2.0 * pad - 10.0);
@@ -219,13 +250,29 @@ mod tests {
     #[test]
     fn filter_params_read_the_documented_bytes() {
         let mut patch = Patch::init();
-        for (n, v) in [(40, 100), (41, 30), (42, 11), (43, 12), (51, 1), (52, 2), (53, 3)] {
+        for (n, v) in [
+            (40, 100),
+            (41, 30),
+            (42, 11),
+            (43, 12),
+            (51, 1),
+            (52, 2),
+            (53, 3),
+        ] {
             patch.set(Page::PageA, n, v);
         }
         let params = FilterParams::from_patch(&patch);
         assert_eq!(
             params,
-            FilterParams { cutoff1: 100, cutoff2: 30, resonance1: 11, resonance2: 12, mode1: 1, mode2: 2, routing: 3 }
+            FilterParams {
+                cutoff1: 100,
+                cutoff2: 30,
+                resonance1: 11,
+                resonance2: 12,
+                mode1: 1,
+                mode2: 2,
+                routing: 3
+            }
         );
         patch.set(Page::PageB, 32, 1);
         assert_eq!(FilterParams::from_patch(&patch).cutoff2, 66);
@@ -239,7 +286,13 @@ mod tests {
         }
         assert_eq!(
             EnvelopeParams::filter(&patch),
-            EnvelopeParams { attack: 54, decay: 55, sustain: 56, sustain_time: 57, release: 58 }
+            EnvelopeParams {
+                attack: 54,
+                decay: 55,
+                sustain: 56,
+                sustain_time: 57,
+                release: 58
+            }
         );
         assert_eq!(EnvelopeParams::amp(&patch).release, 63);
     }

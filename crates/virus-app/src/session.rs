@@ -6,8 +6,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use virus_db::IncomingDump;
 use crate::library::queue_received;
+use virus_db::IncomingDump;
 use virus_midi::{auto_pick_port, find_port_or_renamed, MidiCommand, MidiEvent};
 use virus_syx::{
     encode_dump_request, encode_param_change, encode_single_bank_request, is_sound_param,
@@ -58,7 +58,11 @@ pub struct MidiSettings {
 
 impl Default for MidiSettings {
     fn default() -> Self {
-        Self { channel: 0, device_id: 0x00, part: EditPart::Single }
+        Self {
+            channel: 0,
+            device_id: 0x00,
+            part: EditPart::Single,
+        }
     }
 }
 
@@ -138,7 +142,8 @@ impl PacedSend {
         // until the bytes are out.
         let per_dump = gap + virus_midi::wire_time(DUMP_LEN) * 2;
         let from = self.batch_until.filter(|&t| t > now).unwrap_or(now);
-        self.batch_until = Some(from + per_dump * u32::try_from(count).unwrap_or(u32::MAX) + BATCH_END_SLACK);
+        self.batch_until =
+            Some(from + per_dump * u32::try_from(count).unwrap_or(u32::MAX) + BATCH_END_SLACK);
         self.batch_tail = gap + virus_midi::wire_time(DUMP_LEN);
     }
 
@@ -236,7 +241,10 @@ impl PacedSend {
     /// How long until queued messages can be sent, if any are waiting.
     pub fn next_wakeup(&self, now: Instant) -> Option<Duration> {
         let (_, front) = self.queue.front()?;
-        Some(self.ready_at(front, now).map_or(Duration::ZERO, |t| t.saturating_duration_since(now)))
+        Some(
+            self.ready_at(front, now)
+                .map_or(Duration::ZERO, |t| t.saturating_duration_since(now)),
+        )
     }
 }
 
@@ -248,7 +256,11 @@ pub enum Incoming {
     /// One parameter of the edited patch changed.
     ParamChanged { page: Page, number: u8, value: u8 },
     /// A single dump for a bank slot or another part, queued in [`Session::received`].
-    DumpQueued { bank: u8, program: u8, checksum_ok: bool },
+    DumpQueued {
+        bank: u8,
+        program: u8,
+        checksum_ok: bool,
+    },
     /// Not for the editor (other channel, performance controller, other part, other device…).
     Ignored,
 }
@@ -275,12 +287,16 @@ impl Session {
     /// Interprets one event from the MIDI worker (SPEC §1.4, §5.5).
     pub fn handle_midi(&mut self, event: &MidiEvent) -> Incoming {
         match *event {
-            MidiEvent::ControlChange { channel, controller, value } => {
-                self.apply_channel_param(channel, Page::PageA, controller, value)
-            }
-            MidiEvent::PolyPressure { channel, note, pressure } => {
-                self.apply_channel_param(channel, Page::PageB, note, pressure)
-            }
+            MidiEvent::ControlChange {
+                channel,
+                controller,
+                value,
+            } => self.apply_channel_param(channel, Page::PageA, controller, value),
+            MidiEvent::PolyPressure {
+                channel,
+                note,
+                pressure,
+            } => self.apply_channel_param(channel, Page::PageB, note, pressure),
             MidiEvent::SysEx(ref frame) => self.handle_sysex(frame),
             _ => Incoming::Ignored,
         }
@@ -298,7 +314,11 @@ impl Session {
             return Incoming::Ignored;
         }
         self.patch.set(page, number, value);
-        Incoming::ParamChanged { page, number, value: value & 0x7F }
+        Incoming::ParamChanged {
+            page,
+            number,
+            value: value & 0x7F,
+        }
     }
 
     fn handle_sysex(&mut self, frame: &[u8]) -> Incoming {
@@ -309,21 +329,52 @@ impl Session {
             return Incoming::Ignored;
         }
         match message {
-            SysExMessage::SingleDump { bank, program, data, checksum_ok, .. } => {
+            SysExMessage::SingleDump {
+                bank,
+                program,
+                data,
+                checksum_ok,
+                ..
+            } => {
                 if bank == 0 && program == self.settings.part.raw() {
                     self.patch = Patch::from_bytes(&data);
-                    Incoming::PatchLoaded { name: self.patch.name(), checksum_ok }
+                    Incoming::PatchLoaded {
+                        name: self.patch.name(),
+                        checksum_ok,
+                    }
                 } else {
-                    queue_received(&mut self.received, IncomingDump { bank, program, data: *data, checksum_ok });
-                    Incoming::DumpQueued { bank, program, checksum_ok }
+                    queue_received(
+                        &mut self.received,
+                        IncomingDump {
+                            bank,
+                            program,
+                            data: *data,
+                            checksum_ok,
+                        },
+                    );
+                    Incoming::DumpQueued {
+                        bank,
+                        program,
+                        checksum_ok,
+                    }
                 }
             }
-            SysExMessage::ParamChange { page, part, param, value, .. } => {
+            SysExMessage::ParamChange {
+                page,
+                part,
+                param,
+                value,
+                ..
+            } => {
                 if part != self.settings.part.raw() || !accepts_sysex_param(page, param) {
                     return Incoming::Ignored;
                 }
                 self.patch.set(page, param, value);
-                Incoming::ParamChanged { page, number: param, value: value & 0x7F }
+                Incoming::ParamChanged {
+                    page,
+                    number: param,
+                    value: value & 0x7F,
+                }
             }
             _ => Incoming::Ignored,
         }
@@ -355,7 +406,13 @@ impl Session {
 
     /// SysEx `7x pp nn vv` addressed to the edited part.
     pub fn param_message(&self, page: Page, number: u8, value: u8) -> Vec<u8> {
-        encode_param_change(self.settings.device_id, page, self.settings.part.raw(), number, value)
+        encode_param_change(
+            self.settings.device_id,
+            page,
+            self.settings.part.raw(),
+            number,
+            value,
+        )
     }
 
     /// Single request for the edited part's edit buffer (`30 00 pp`).
@@ -365,7 +422,12 @@ impl Session {
 
     /// Single dump of `patch` into the edited part's edit buffer (`10 00 pp`).
     pub fn edit_buffer_dump(&self, patch: &Patch) -> Vec<u8> {
-        patch.to_sysex(self.settings.device_id, DumpTarget::EditBuffer { part: self.settings.part.raw() })
+        patch.to_sysex(
+            self.settings.device_id,
+            DumpTarget::EditBuffer {
+                part: self.settings.part.raw(),
+            },
+        )
     }
 
     pub fn bank_request(&self, bank: SingleBank) -> Vec<u8> {
@@ -388,7 +450,10 @@ fn accepts_sysex_param(page: Page, number: u8) -> bool {
 
 /// Keeps printable ASCII (32..=126) only and at most 10 characters (SPEC §5.4).
 pub fn sanitize_name(name: &str) -> String {
-    name.chars().filter(|c| (' '..='~').contains(c)).take(NAME_LEN).collect()
+    name.chars()
+        .filter(|c| (' '..='~').contains(c))
+        .take(NAME_LEN)
+        .collect()
 }
 
 /// How often the app asks the worker to re-enumerate ports (R10).
@@ -515,9 +580,22 @@ struct PortSide<'a> {
 /// Decides which port `selected` should be and returns the command if that changes, or if the
 /// selected port is listed but not connected (and no connect is under way). A wanted name that
 /// cannot be found is kept; auto-connect remembers its pick only when nothing was wanted.
-fn reconcile(port: PortSide<'_>, available: &[String], auto: bool, side: Side) -> Option<MidiCommand> {
-    let PortSide { wanted, selected, connected, connecting } = port;
-    let target = match wanted.as_deref().and_then(|w| find_port_or_renamed(w, available)) {
+fn reconcile(
+    port: PortSide<'_>,
+    available: &[String],
+    auto: bool,
+    side: Side,
+) -> Option<MidiCommand> {
+    let PortSide {
+        wanted,
+        selected,
+        connected,
+        connecting,
+    } = port;
+    let target = match wanted
+        .as_deref()
+        .and_then(|w| find_port_or_renamed(w, available))
+    {
         Some(found) => Some(found),
         None if auto => {
             let pick = auto_pick_port(available);
@@ -604,10 +682,18 @@ mod tests {
     #[test]
     fn cc_on_synth_channel_sets_page_a_sound_param() {
         let mut s = session();
-        let event = MidiEvent::ControlChange { channel: 2, controller: 40, value: 33 };
+        let event = MidiEvent::ControlChange {
+            channel: 2,
+            controller: 40,
+            value: 33,
+        };
         assert_eq!(
             s.handle_midi(&event),
-            Incoming::ParamChanged { page: Page::PageA, number: 40, value: 33 }
+            Incoming::ParamChanged {
+                page: Page::PageA,
+                number: 40,
+                value: 33
+            }
         );
         assert_eq!(s.patch().get(Page::PageA, 40), 33);
     }
@@ -616,7 +702,11 @@ mod tests {
     fn cc_on_other_channel_is_ignored() {
         let mut s = session();
         let before = s.patch().clone();
-        let event = MidiEvent::ControlChange { channel: 3, controller: 40, value: 33 };
+        let event = MidiEvent::ControlChange {
+            channel: 3,
+            controller: 40,
+            value: 33,
+        };
         assert_eq!(s.handle_midi(&event), Incoming::Ignored);
         assert_eq!(s.patch(), &before);
     }
@@ -626,7 +716,11 @@ mod tests {
         let mut s = session();
         let before = s.patch().clone();
         for controller in [1, 7, 11, 64, 123, 0, 92] {
-            let event = MidiEvent::ControlChange { channel: 2, controller, value: 99 };
+            let event = MidiEvent::ControlChange {
+                channel: 2,
+                controller,
+                value: 99,
+            };
             assert_eq!(s.handle_midi(&event), Incoming::Ignored, "CC{controller}");
         }
         assert_eq!(s.patch(), &before);
@@ -635,12 +729,24 @@ mod tests {
     #[test]
     fn poly_pressure_sets_page_b_on_synth_channel_only() {
         let mut s = session();
-        let on_channel = MidiEvent::PolyPressure { channel: 2, note: 84, pressure: 3 };
+        let on_channel = MidiEvent::PolyPressure {
+            channel: 2,
+            note: 84,
+            pressure: 3,
+        };
         assert_eq!(
             s.handle_midi(&on_channel),
-            Incoming::ParamChanged { page: Page::PageB, number: 84, value: 3 }
+            Incoming::ParamChanged {
+                page: Page::PageB,
+                number: 84,
+                value: 3
+            }
         );
-        let off_channel = MidiEvent::PolyPressure { channel: 0, note: 84, pressure: 5 };
+        let off_channel = MidiEvent::PolyPressure {
+            channel: 0,
+            note: 84,
+            pressure: 5,
+        };
         assert_eq!(s.handle_midi(&off_channel), Incoming::Ignored);
         assert_eq!(s.patch().get(Page::PageB, 84), 3);
     }
@@ -649,7 +755,11 @@ mod tests {
     fn incoming_param_does_not_revert_other_edits() {
         let mut s = session();
         s.edit(Page::PageA, 42, 100).expect("edit");
-        let event = MidiEvent::ControlChange { channel: 2, controller: 40, value: 10 };
+        let event = MidiEvent::ControlChange {
+            channel: 2,
+            controller: 40,
+            value: 10,
+        };
         s.handle_midi(&event);
         assert_eq!(s.patch().get(Page::PageA, 42), 100);
         assert_eq!(s.patch().get(Page::PageA, 40), 10);
@@ -661,14 +771,24 @@ mod tests {
         let for_single = encode_param_change(0x00, Page::PageA, 0x40, 40, 11);
         assert_eq!(
             s.handle_midi(&MidiEvent::SysEx(for_single)),
-            Incoming::ParamChanged { page: Page::PageA, number: 40, value: 11 }
+            Incoming::ParamChanged {
+                page: Page::PageA,
+                number: 40,
+                value: 11
+            }
         );
         let for_part3 = encode_param_change(0x00, Page::PageA, 0x02, 40, 99);
-        assert_eq!(s.handle_midi(&MidiEvent::SysEx(for_part3.clone())), Incoming::Ignored);
+        assert_eq!(
+            s.handle_midi(&MidiEvent::SysEx(for_part3.clone())),
+            Incoming::Ignored
+        );
         assert_eq!(s.patch().get(Page::PageA, 40), 11);
 
         s.settings.part = EditPart::Multi(2);
-        assert!(matches!(s.handle_midi(&MidiEvent::SysEx(for_part3)), Incoming::ParamChanged { .. }));
+        assert!(matches!(
+            s.handle_midi(&MidiEvent::SysEx(for_part3)),
+            Incoming::ParamChanged { .. }
+        ));
         assert_eq!(s.patch().get(Page::PageA, 40), 99);
     }
 
@@ -676,7 +796,12 @@ mod tests {
     fn sysex_param_change_never_touches_performance_or_sound_version() {
         let mut s = session();
         let before = s.patch().clone();
-        for (page, param) in [(Page::PageA, 0), (Page::PageA, 1), (Page::PageA, 7), (Page::PageC, 40)] {
+        for (page, param) in [
+            (Page::PageA, 0),
+            (Page::PageA, 1),
+            (Page::PageA, 7),
+            (Page::PageC, 40),
+        ] {
             let msg = encode_param_change(0x00, page, 0x40, param, 5);
             assert_eq!(s.handle_midi(&MidiEvent::SysEx(msg)), Incoming::Ignored);
         }
@@ -687,7 +812,10 @@ mod tests {
     fn sysex_param_change_preserves_undocumented_bytes_sync() {
         let mut s = session();
         let msg = encode_param_change(0x00, Page::PageA, 0x40, 92, 17);
-        assert!(matches!(s.handle_midi(&MidiEvent::SysEx(msg)), Incoming::ParamChanged { .. }));
+        assert!(matches!(
+            s.handle_midi(&MidiEvent::SysEx(msg)),
+            Incoming::ParamChanged { .. }
+        ));
         assert_eq!(s.patch().get(Page::PageA, 92), 17);
     }
 
@@ -695,11 +823,20 @@ mod tests {
     fn sysex_from_other_device_is_ignored_unless_omni() {
         let mut s = session();
         let other = encode_param_change(0x05, Page::PageA, 0x40, 40, 1);
-        assert_eq!(s.handle_midi(&MidiEvent::SysEx(other.clone())), Incoming::Ignored);
+        assert_eq!(
+            s.handle_midi(&MidiEvent::SysEx(other.clone())),
+            Incoming::Ignored
+        );
         let omni = encode_param_change(DEVICE_ID_OMNI, Page::PageA, 0x40, 40, 1);
-        assert!(matches!(s.handle_midi(&MidiEvent::SysEx(omni)), Incoming::ParamChanged { .. }));
+        assert!(matches!(
+            s.handle_midi(&MidiEvent::SysEx(omni)),
+            Incoming::ParamChanged { .. }
+        ));
         s.settings.device_id = DEVICE_ID_OMNI;
-        assert!(matches!(s.handle_midi(&MidiEvent::SysEx(other)), Incoming::ParamChanged { .. }));
+        assert!(matches!(
+            s.handle_midi(&MidiEvent::SysEx(other)),
+            Incoming::ParamChanged { .. }
+        ));
     }
 
     #[test]
@@ -709,7 +846,13 @@ mod tests {
         bytes[128 + 125] = 77; // undocumented byte
         let patch = Patch::from_bytes(&bytes);
         let incoming = s.handle_midi(&dump(0x00, 0, 0x40, &patch));
-        assert_eq!(incoming, Incoming::PatchLoaded { name: "Smoog   OK".into(), checksum_ok: true });
+        assert_eq!(
+            incoming,
+            Incoming::PatchLoaded {
+                name: "Smoog   OK".into(),
+                checksum_ok: true
+            }
+        );
         assert_eq!(s.patch().as_bytes(), &bytes);
         assert!(s.received.is_empty());
     }
@@ -721,9 +864,16 @@ mod tests {
         let a5 = named("Bank A 5");
         assert_eq!(
             s.handle_midi(&dump(0x00, 1, 5, &a5)),
-            Incoming::DumpQueued { bank: 1, program: 5, checksum_ok: true }
+            Incoming::DumpQueued {
+                bank: 1,
+                program: 5,
+                checksum_ok: true
+            }
         );
-        assert!(matches!(s.handle_midi(&dump(0x00, 0, 3, &a5)), Incoming::DumpQueued { .. }));
+        assert!(matches!(
+            s.handle_midi(&dump(0x00, 0, 3, &a5)),
+            Incoming::DumpQueued { .. }
+        ));
         assert_eq!(s.patch(), &before);
         assert_eq!(s.received.len(), 2);
         assert_eq!(s.received[0].data, *a5.as_bytes());
@@ -732,11 +882,16 @@ mod tests {
     #[test]
     fn bad_checksum_dump_is_loaded_and_flagged() {
         let mut s = session();
-        let MidiEvent::SysEx(mut frame) = dump(0x00, 0, 0x40, &named("Broken")) else { unreachable!() };
+        let MidiEvent::SysEx(mut frame) = dump(0x00, 0, 0x40, &named("Broken")) else {
+            unreachable!()
+        };
         frame[265] ^= 1;
         assert_eq!(
             s.handle_midi(&MidiEvent::SysEx(frame)),
-            Incoming::PatchLoaded { name: "Broken".into(), checksum_ok: false }
+            Incoming::PatchLoaded {
+                name: "Broken".into(),
+                checksum_ok: false
+            }
         );
     }
 
@@ -787,7 +942,9 @@ mod tests {
         p.finish(end);
         assert!(!p.batch_running(end));
         assert_eq!(p.next_wakeup(end), Some(tail_150()));
-        assert!(p.drain_ready(end + tail_150() - Duration::from_micros(1)).is_empty());
+        assert!(p
+            .drain_ready(end + tail_150() - Duration::from_micros(1))
+            .is_empty());
         assert_eq!(p.drain_ready(end + tail_150()), vec![vec![2]]);
     }
 
@@ -799,7 +956,9 @@ mod tests {
         assert_eq!(p.submit(vec![2], t0), None);
         // 4 × (gap + twice a dump's wire time) + 2 s slack.
         let estimate = (ms(150) + virus_midi::wire_time(267) * 2) * 4 + ms(2000);
-        assert!(p.drain_ready(t0 + estimate - Duration::from_micros(1)).is_empty());
+        assert!(p
+            .drain_ready(t0 + estimate - Duration::from_micros(1))
+            .is_empty());
         assert_eq!(p.drain_ready(t0 + estimate), vec![vec![2]]);
         assert!(!p.batch_running(t0 + estimate));
     }
@@ -838,7 +997,10 @@ mod tests {
         let t0 = Instant::now();
         let mut p = PacedSend::default();
         let request = encode_dump_request(0x00, 0, 0x40);
-        assert_eq!(p.submit_tracked(request.clone(), t0), Submitted::Now(request));
+        assert_eq!(
+            p.submit_tracked(request.clone(), t0),
+            Submitted::Now(request)
+        );
     }
 
     #[test]
@@ -847,7 +1009,9 @@ mod tests {
         let mut p = PacedSend::default();
         let request = encode_dump_request(0x00, 0, 0x40);
         p.note_activity(t0);
-        let Submitted::Queued(ticket) = p.submit_tracked(request.clone(), t0) else { panic!("queued") };
+        let Submitted::Queued(ticket) = p.submit_tracked(request.clone(), t0) else {
+            panic!("queued")
+        };
         assert!(p.is_queued(ticket));
         assert!(p.drain_ready(t0 + ms(499)).is_empty());
         assert!(p.is_queued(ticket));
@@ -862,7 +1026,9 @@ mod tests {
         let request = encode_dump_request(0x00, 0, 0x40);
         let change = encode_param_change(0x00, Page::PageA, 0x40, 40, 11);
         p.note_activity(t0);
-        let Submitted::Queued(ticket) = p.submit_tracked(request, t0) else { panic!("queued") };
+        let Submitted::Queued(ticket) = p.submit_tracked(request, t0) else {
+            panic!("queued")
+        };
         assert_eq!(p.submit(change.clone(), t0), None);
         assert!(p.remove(ticket));
         assert!(!p.remove(ticket));
@@ -877,8 +1043,12 @@ mod tests {
         let mut p = PacedSend::default();
         p.note_activity(t0);
         let request = encode_dump_request(0x00, 0, 0x40);
-        let Submitted::Queued(first) = p.submit_tracked(request.clone(), t0) else { panic!("queued") };
-        let Submitted::Queued(second) = p.submit_tracked(request, t0) else { panic!("queued") };
+        let Submitted::Queued(first) = p.submit_tracked(request.clone(), t0) else {
+            panic!("queued")
+        };
+        let Submitted::Queued(second) = p.submit_tracked(request, t0) else {
+            panic!("queued")
+        };
         assert_ne!(first, second);
         p.remove(first);
         assert!(p.is_queued(second));
@@ -970,9 +1140,17 @@ mod tests {
         let mut s = session();
         s.settings.part = EditPart::Multi(0);
         let before = s.patch().clone();
-        let cc = MidiEvent::ControlChange { channel: 2, controller: 40, value: 99 };
+        let cc = MidiEvent::ControlChange {
+            channel: 2,
+            controller: 40,
+            value: 99,
+        };
         assert_eq!(s.handle_midi(&cc), Incoming::Ignored);
-        let pp = MidiEvent::PolyPressure { channel: 2, note: 40, pressure: 99 };
+        let pp = MidiEvent::PolyPressure {
+            channel: 2,
+            note: 40,
+            pressure: 99,
+        };
         assert_eq!(s.handle_midi(&pp), Incoming::Ignored);
         assert_eq!(s.patch(), &before);
         s.settings.part = EditPart::Single;
@@ -1022,7 +1200,10 @@ mod tests {
         let mut s = session();
         s.load_patch(named("Bass"));
         let messages = s.set_name("Bast");
-        assert_eq!(messages, vec![encode_param_change(0x00, Page::PageB, 0x40, 115, b't')]);
+        assert_eq!(
+            messages,
+            vec![encode_param_change(0x00, Page::PageB, 0x40, 115, b't')]
+        );
         let messages = s.set_name("Bäst Lead Extra");
         assert_eq!(s.patch().name(), "Bst Lead E");
         assert!(messages.iter().all(|m| m[9] <= 126));
@@ -1053,19 +1234,30 @@ mod tests {
     #[test]
     fn ports_auto_connect_to_virus_ports_by_name() {
         let mut ports = Ports::default();
-        let commands = ports.on_port_list(names(&["loopMIDI", "Virus In"]), names(&["GS Synth", "Virus Out"]));
+        let commands = ports.on_port_list(
+            names(&["loopMIDI", "Virus In"]),
+            names(&["GS Synth", "Virus Out"]),
+        );
         assert_eq!(
             commands,
-            vec![MidiCommand::ConnectInput("Virus In".into()), MidiCommand::ConnectOutput("Virus Out".into())]
+            vec![
+                MidiCommand::ConnectInput("Virus In".into()),
+                MidiCommand::ConnectOutput("Virus Out".into())
+            ]
         );
         assert_eq!(ports.selected_input.as_deref(), Some("Virus In"));
-        assert!(ports.on_port_list(ports.inputs.clone(), ports.outputs.clone()).is_empty());
+        assert!(ports
+            .on_port_list(ports.inputs.clone(), ports.outputs.clone())
+            .is_empty());
     }
 
     #[test]
     fn ports_clear_stale_selection_after_refresh() {
         let mut ports = Ports::default();
-        assert_eq!(ports.select_input(Some("USB MIDI".into())), MidiCommand::ConnectInput("USB MIDI".into()));
+        assert_eq!(
+            ports.select_input(Some("USB MIDI".into())),
+            MidiCommand::ConnectInput("USB MIDI".into())
+        );
         let commands = ports.on_port_list(names(&["Virus In"]), vec![]);
         assert_eq!(commands, vec![MidiCommand::DisconnectInput]);
         assert_eq!(ports.selected_input, None);
@@ -1075,7 +1267,9 @@ mod tests {
     fn manual_selection_disables_auto_connect() {
         let mut ports = Ports::default();
         assert_eq!(ports.select_output(None), MidiCommand::DisconnectOutput);
-        assert!(ports.on_port_list(names(&["Virus In"]), names(&["Virus Out"])).is_empty());
+        assert!(ports
+            .on_port_list(names(&["Virus In"]), names(&["Virus Out"]))
+            .is_empty());
     }
 
     #[test]
@@ -1083,10 +1277,15 @@ mod tests {
         let mut ports = Ports::default();
         ports.select_output(Some("mioXC MIDI OUT".into()));
         let commands = ports.on_port_list(vec![], names(&["2- mioXC MIDI OUT"]));
-        assert_eq!(commands, vec![MidiCommand::ConnectOutput("2- mioXC MIDI OUT".into())]);
+        assert_eq!(
+            commands,
+            vec![MidiCommand::ConnectOutput("2- mioXC MIDI OUT".into())]
+        );
         assert_eq!(ports.selected_output.as_deref(), Some("2- mioXC MIDI OUT"));
         assert_eq!(ports.wanted_output.as_deref(), Some("mioXC MIDI OUT"));
-        assert!(ports.on_port_list(vec![], names(&["2- mioXC MIDI OUT"])).is_empty());
+        assert!(ports
+            .on_port_list(vec![], names(&["2- mioXC MIDI OUT"]))
+            .is_empty());
     }
 
     #[test]
@@ -1095,11 +1294,17 @@ mod tests {
         ports.select_output(Some("mioXC MIDI OUT".into()));
         ports.on_port_list(vec![], names(&["mioXC MIDI OUT"]));
         ports.on_status(None, Some("mioXC MIDI OUT".into()));
-        assert_eq!(ports.on_port_list(vec![], vec![]), vec![MidiCommand::DisconnectOutput]);
+        assert_eq!(
+            ports.on_port_list(vec![], vec![]),
+            vec![MidiCommand::DisconnectOutput]
+        );
         assert_eq!(ports.selected_output, None);
         assert_eq!(ports.wanted_output.as_deref(), Some("mioXC MIDI OUT"));
         let back = ports.on_port_list(vec![], names(&["3- mioXC MIDI OUT"]));
-        assert_eq!(back, vec![MidiCommand::ConnectOutput("3- mioXC MIDI OUT".into())]);
+        assert_eq!(
+            back,
+            vec![MidiCommand::ConnectOutput("3- mioXC MIDI OUT".into())]
+        );
     }
 
     #[test]
@@ -1110,7 +1315,10 @@ mod tests {
         // A send failed: the worker closed the output and re-reports the unchanged list.
         ports.on_status(None, None);
         let commands = ports.on_port_list(vec![], names(&["mioXC MIDI OUT"]));
-        assert_eq!(commands, vec![MidiCommand::ConnectOutput("mioXC MIDI OUT".into())]);
+        assert_eq!(
+            commands,
+            vec![MidiCommand::ConnectOutput("mioXC MIDI OUT".into())]
+        );
         assert_eq!(ports.selected_output.as_deref(), Some("mioXC MIDI OUT"));
     }
 
@@ -1121,7 +1329,10 @@ mod tests {
         ports.on_status(None, Some("mioXC MIDI OUT".into()));
         ports.on_status(None, None);
         let commands = ports.on_port_list(vec![], names(&["2- mioXC MIDI OUT"]));
-        assert_eq!(commands, vec![MidiCommand::ConnectOutput("2- mioXC MIDI OUT".into())]);
+        assert_eq!(
+            commands,
+            vec![MidiCommand::ConnectOutput("2- mioXC MIDI OUT".into())]
+        );
         assert_eq!(ports.wanted_output.as_deref(), Some("mioXC MIDI OUT"));
     }
 
@@ -1130,8 +1341,12 @@ mod tests {
         let mut ports = Ports::default();
         ports.select_output(Some("mioXC MIDI OUT".into()));
         ports.on_status(None, Some("mioXC MIDI OUT".into()));
-        assert!(ports.on_port_list(vec![], names(&["mioXC MIDI OUT"])).is_empty());
-        assert!(ports.on_port_list(vec![], names(&["mioXC MIDI OUT"])).is_empty());
+        assert!(ports
+            .on_port_list(vec![], names(&["mioXC MIDI OUT"]))
+            .is_empty());
+        assert!(ports
+            .on_port_list(vec![], names(&["mioXC MIDI OUT"]))
+            .is_empty());
     }
 
     #[test]
@@ -1148,19 +1363,30 @@ mod tests {
         ports.select_output(Some("mioXC MIDI OUT".into()));
         ports.on_status(None, None); // e.g. the port is open in another program
         let retry = ports.on_port_list(vec![], names(&["mioXC MIDI OUT"]));
-        assert_eq!(retry, vec![MidiCommand::ConnectOutput("mioXC MIDI OUT".into())]);
-        assert!(ports.on_port_list(vec![], names(&["mioXC MIDI OUT"])).is_empty());
+        assert_eq!(
+            retry,
+            vec![MidiCommand::ConnectOutput("mioXC MIDI OUT".into())]
+        );
+        assert!(ports
+            .on_port_list(vec![], names(&["mioXC MIDI OUT"]))
+            .is_empty());
     }
 
     #[test]
     fn user_chosen_port_is_kept_when_auto_connect_would_pick_another() {
-        let mut ports = Ports { wanted_output: Some("UM-ONE".into()), ..Ports::default() };
+        let mut ports = Ports {
+            wanted_output: Some("UM-ONE".into()),
+            ..Ports::default()
+        };
         let commands = ports.on_port_list(vec![], names(&["UM-ONE", "Virus Out"]));
         assert_eq!(commands, vec![MidiCommand::ConnectOutput("UM-ONE".into())]);
         assert_eq!(ports.wanted_output.as_deref(), Some("UM-ONE"));
         // While it is missing, auto-connect may stand in, but the wish is not overwritten.
         let commands = ports.on_port_list(vec![], names(&["Virus Out"]));
-        assert_eq!(commands, vec![MidiCommand::ConnectOutput("Virus Out".into())]);
+        assert_eq!(
+            commands,
+            vec![MidiCommand::ConnectOutput("Virus Out".into())]
+        );
         assert_eq!(ports.wanted_output.as_deref(), Some("UM-ONE"));
         let commands = ports.on_port_list(vec![], names(&["UM-ONE", "Virus Out"]));
         assert_eq!(commands, vec![MidiCommand::ConnectOutput("UM-ONE".into())]);
@@ -1175,10 +1401,15 @@ mod tests {
         );
         assert_eq!(
             commands,
-            vec![MidiCommand::ConnectInput("mioXC MIDI IN".into()), MidiCommand::ConnectOutput("mioXC MIDI OUT".into())]
+            vec![
+                MidiCommand::ConnectInput("mioXC MIDI IN".into()),
+                MidiCommand::ConnectOutput("mioXC MIDI OUT".into())
+            ]
         );
         let mut ports = Ports::default();
-        assert!(ports.on_port_list(vec![], names(&["mioXC MIDI OUT", "loopMIDI"])).is_empty());
+        assert!(ports
+            .on_port_list(vec![], names(&["mioXC MIDI OUT", "loopMIDI"]))
+            .is_empty());
     }
 
     #[test]

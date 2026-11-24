@@ -4,18 +4,19 @@
 use egui::{Align, Button, ComboBox, Context, Layout, RichText, ScrollArea, TextEdit, Ui, Window};
 use std::time::Duration;
 use virus_db::{
-    BadChecksumPolicy, ImportTarget, IncomingDump, IncomingMultiDump, PatchDatabase, PatchSummary, SoundCategory,
+    BadChecksumPolicy, ImportTarget, IncomingDump, IncomingMultiDump, PatchDatabase, PatchSummary,
+    SoundCategory,
 };
 use virus_midi::DUMP_GAP_MS;
 use virus_syx::{Patch, SingleBank};
 
-use super::{Notice, accent, DANGER, DIM, WARN};
+use super::{accent, Notice, DANGER, DIM, WARN};
 use crate::comforts::LibrarySlot;
 use crate::dialogs::FileJobs;
 use crate::library::{
-    first_free_slot, flagged_count, import_as_new_banks, plan_store, sendable_count, slot_label, store_patch,
-    ImportOutcome, LibraryCache, LibraryQuery, MarkChecked, PendingImport, Removal, StorePlan, MARK_CHECKED_EXPLANATION,
-    STORES_FLAGGED,
+    first_free_slot, flagged_count, import_as_new_banks, plan_store, sendable_count, slot_label,
+    store_patch, ImportOutcome, LibraryCache, LibraryQuery, MarkChecked, PendingImport, Removal,
+    StorePlan, MARK_CHECKED_EXPLANATION, STORES_FLAGGED,
 };
 use crate::session::dump_batch_duration;
 
@@ -30,19 +31,36 @@ pub const TRANSPORT_REMINDER: &str = "Stop the clock/transport on your sequencer
 pub enum LibAction {
     /// `select`: the library slot, for "Select on synth" (F7) once the load has happened (E6).
     /// `flagged`: the patch comes from a flagged ⚠ slot or dump, so storing it keeps the flag.
-    Load { patch: Patch, origin: String, select: Option<LibrarySlot>, flagged: bool },
-    SendToEditBuffer { patch: Patch, origin: String, flagged: bool },
+    Load {
+        patch: Patch,
+        origin: String,
+        select: Option<LibrarySlot>,
+        flagged: bool,
+    },
+    SendToEditBuffer {
+        patch: Patch,
+        origin: String,
+        flagged: bool,
+    },
     RequestBank(SingleBank),
     /// `Skip` leaves patches flagged ⚠ out, `KeepInvalid` sends them as stored.
-    SendBank { bank_id: i64, policy: BadChecksumPolicy },
+    SendBank {
+        bank_id: i64,
+        policy: BadChecksumPolicy,
+    },
     CancelBatch,
     Notice(Notice),
     /// [comforts] The editor's own patch was stored in a library slot (clears "edited").
-    StoredEditor { label: String },
+    StoredEditor {
+        label: String,
+    },
     /// [F9] Multi edit-buffer dumps from a file import, for the Multi tab's list.
     LooseMultis(Vec<IncomingMultiDump>),
     /// "Fetch from synth first": request the edit buffer, adopt it, then store it in this slot.
-    FetchThenStore { bank_id: i64, program: u8 },
+    FetchThenStore {
+        bank_id: i64,
+        program: u8,
+    },
 }
 
 struct StoreDialog {
@@ -55,7 +73,10 @@ struct StoreDialog {
 }
 
 enum RowClick {
-    Select { program: Option<u8>, id: Option<i64> },
+    Select {
+        program: Option<u8>,
+        id: Option<i64>,
+    },
     Load(i64),
     Send(i64),
     Favourite(i64, bool),
@@ -108,7 +129,8 @@ pub struct LibrarianView {
 }
 
 /// [E6] Hover text for the store buttons while the editor compares.
-const LEAVE_COMPARE_FIRST: &str = "Leave Compare first: the editor is playing the original patch, not your edits.";
+const LEAVE_COMPARE_FIRST: &str =
+    "Leave Compare first: the editor is playing the original patch, not your edits.";
 
 impl LibrarianView {
     /// "Fetch from synth first" needs an output and no bank send in the way (CR-M6).
@@ -143,7 +165,12 @@ impl LibrarianView {
 
     fn selected_summary(&self) -> Option<&PatchSummary> {
         let id = self.selected_id?;
-        self.cache.slots.iter().flatten().chain(&self.cache.results).find(|s| s.id == id)
+        self.cache
+            .slots
+            .iter()
+            .flatten()
+            .chain(&self.cache.results)
+            .find(|s| s.id == id)
     }
 
     /// Opens the "store" dialog for the editor's patch (`None`) or an edit-buffer dump with its
@@ -151,12 +178,20 @@ impl LibrarianView {
     /// selected bank.
     pub fn open_store_dialog(&mut self, db: &PatchDatabase, dump: Option<(Patch, bool)>) {
         self.refresh(db);
-        let program = self.selected_program.or_else(|| first_free_slot(&self.cache.slots)).unwrap_or(0);
+        let program = self
+            .selected_program
+            .or_else(|| first_free_slot(&self.cache.slots))
+            .unwrap_or(0);
         let (patch, flagged) = match dump {
             Some((patch, flagged)) => (Some(patch), flagged),
             None => (None, false),
         };
-        self.store = Some(StoreDialog { patch, flagged, program, error: None });
+        self.store = Some(StoreDialog {
+            patch,
+            flagged,
+            program,
+            error: None,
+        });
     }
 
     /// Whether the patch in the Store dialog is flagged ⚠, so it is stored flagged (CR-H1).
@@ -179,11 +214,17 @@ impl LibrarianView {
         actions: &mut Vec<LibAction>,
     ) -> Result<(), String> {
         let flagged = self.store_flagged(dialog);
-        let id = store_patch(db, bank_id, dialog.program, patch, !flagged).map_err(|e| format!("Store failed: {e}"))?;
+        let id = store_patch(db, bank_id, dialog.program, patch, !flagged)
+            .map_err(|e| format!("Store failed: {e}"))?;
         let flag = if flagged { ", flagged ⚠" } else { "" };
-        actions.push(LibAction::Notice(Notice::info(format!("Stored '{}' to {label}{flag}.", patch.name()))));
+        actions.push(LibAction::Notice(Notice::info(format!(
+            "Stored '{}' to {label}{flag}.",
+            patch.name()
+        ))));
         if dialog.patch.is_none() {
-            actions.push(LibAction::StoredEditor { label: label.to_owned() }); // [comforts]
+            actions.push(LibAction::StoredEditor {
+                label: label.to_owned(),
+            }); // [comforts]
         }
         self.selected_program = Some(dialog.program);
         self.selected_id = Some(id);
@@ -197,9 +238,12 @@ impl LibrarianView {
 
     /// [E6] "Store editor patch here…", disabled while the editor compares.
     fn store_editor_button(&self, ui: &mut Ui) -> bool {
-        ui.add_enabled(!self.editor_comparing, Button::new("💾 Store editor patch here…"))
-            .on_disabled_hover_text(LEAVE_COMPARE_FIRST)
-            .clicked()
+        ui.add_enabled(
+            !self.editor_comparing,
+            Button::new("💾 Store editor patch here…"),
+        )
+        .on_disabled_hover_text(LEAVE_COMPARE_FIRST)
+        .clicked()
     }
 
     pub fn show(
@@ -211,12 +255,18 @@ impl LibrarianView {
     ) {
         self.refresh(db);
         self.pending_import_dialog(ui.ctx(), db, received, actions);
-        egui::SidePanel::left("librarian-banks").resizable(false).exact_width(250.0).show_inside(ui, |ui| {
-            ScrollArea::vertical().show(ui, |ui| self.left_panel(ui, db, received, actions));
-        });
-        egui::SidePanel::right("librarian-details").resizable(false).exact_width(250.0).show_inside(ui, |ui| {
-            self.details(ui, db, actions);
-        });
+        egui::SidePanel::left("librarian-banks")
+            .resizable(false)
+            .exact_width(250.0)
+            .show_inside(ui, |ui| {
+                ScrollArea::vertical().show(ui, |ui| self.left_panel(ui, db, received, actions));
+            });
+        egui::SidePanel::right("librarian-details")
+            .resizable(false)
+            .exact_width(250.0)
+            .show_inside(ui, |ui| {
+                self.details(ui, db, actions);
+            });
         egui::CentralPanel::default().show_inside(ui, |ui| self.patch_list(ui, db, actions));
     }
 
@@ -248,9 +298,17 @@ impl LibrarianView {
             self.select_bank(id);
         }
         // [CR-L2] user banks (backups, imports) can be deleted; the letter banks mirror the synth
-        let removal = self.query.bank_id.and_then(|id| self.cache.bank(id)).and_then(|b| Removal::bank(b, &self.cache.slots));
+        let removal = self
+            .query
+            .bank_id
+            .and_then(|id| self.cache.bank(id))
+            .and_then(|b| Removal::bank(b, &self.cache.slots));
         if let Some(removal) = removal {
-            if ui.small_button("🗑 Delete bank…").on_hover_text("Delete this user bank and its patches (asks first)").clicked() {
+            if ui
+                .small_button("🗑 Delete bank…")
+                .on_hover_text("Delete this user bank and its patches (asks first)")
+                .clicked()
+            {
                 self.removal = Some(removal);
             }
         }
@@ -268,7 +326,10 @@ impl LibrarianView {
             });
         }
         let idle = busy.is_none();
-        if ui.add_enabled(idle, Button::new("📂 Import .syx / .mid / .bin…")).clicked() {
+        if ui
+            .add_enabled(idle, Button::new("📂 Import .syx / .mid / .bin…"))
+            .clicked()
+        {
             self.start_import(&ui.ctx().clone(), actions);
         }
         ui.checkbox(&mut self.import_into_selected, "Import into the selected bank")
@@ -305,7 +366,11 @@ impl LibrarianView {
         ui.horizontal(|ui| {
             ui.label("Request bank");
             for bank in SingleBank::ALL {
-                if ui.small_button(bank.letter().to_string()).on_hover_text("Single bank request (32 bb)").clicked() {
+                if ui
+                    .small_button(bank.letter().to_string())
+                    .on_hover_text("Single bank request (32 bb)")
+                    .clicked()
+                {
                     actions.push(LibAction::RequestBank(bank));
                 }
             }
@@ -323,7 +388,9 @@ impl LibrarianView {
             .filter(|l| matches!(*l, "A" | "B"));
         let send = ui.add_enabled(ram_letter.is_some(), Button::new("📤 Send bank to synth…"));
         let send = if ram_letter.is_none() {
-            send.on_disabled_hover_text("Only library banks A and B can be sent: C and D are ROM on the synth.")
+            send.on_disabled_hover_text(
+                "Only library banks A and B can be sent: C and D are ROM on the synth.",
+            )
         } else {
             send
         };
@@ -333,7 +400,10 @@ impl LibrarianView {
             self.send_flagged = false;
         }
         let cancel = ui.add_enabled(self.batch_running, Button::new("⏹ Cancel sending"));
-        if cancel.on_disabled_hover_text("Nothing is being sent.").clicked() {
+        if cancel
+            .on_disabled_hover_text("Nothing is being sent.")
+            .clicked()
+        {
             actions.push(LibAction::CancelBatch);
         }
 
@@ -360,7 +430,11 @@ impl LibrarianView {
         received: &mut Vec<IncomingDump>,
         actions: &mut Vec<LibAction>,
     ) {
-        ui.label(RichText::new("Received from synth").strong().color(accent()));
+        ui.label(
+            RichText::new("Received from synth")
+                .strong()
+                .color(accent()),
+        );
         let mut banks: Vec<(u8, usize)> = Vec::new();
         for dump in received.iter() {
             match banks.iter_mut().find(|(b, _)| *b == dump.bank) {
@@ -373,8 +447,15 @@ impl LibrarianView {
             None if bank == 0 => "edit buffers".to_owned(),
             None => format!("bank byte {bank}"),
         };
-        let parts: Vec<String> = banks.iter().map(|&(b, n)| format!("{}: {n}", describe(b))).collect();
-        ui.label(format!("{} single dump(s) — {}", received.len(), parts.join(", ")));
+        let parts: Vec<String> = banks
+            .iter()
+            .map(|&(b, n)| format!("{}: {n}", describe(b)))
+            .collect();
+        ui.label(format!(
+            "{} single dump(s) — {}",
+            received.len(),
+            parts.join(", ")
+        ));
         let bad = received.iter().filter(|d| !d.checksum_ok).count();
         if bad > 0 {
             ui.colored_label(WARN, format!("⚠ {bad} with a wrong checksum"));
@@ -389,7 +470,9 @@ impl LibrarianView {
                 .clicked();
             into_slots = ui
                 .button("Import into library banks A–D")
-                .on_hover_text("Overwrites the library slots they came from (asks first if any are occupied).")
+                .on_hover_text(
+                    "Overwrites the library slots they came from (asks first if any are occupied).",
+                )
                 .clicked();
             if ui.button("Discard").clicked() {
                 received.clear();
@@ -406,13 +489,20 @@ impl LibrarianView {
             let result = import_as_new_banks(db, &name, received).map(|r| (r, name));
             self.finish_received(result, received, actions);
         } else if into_slots {
-            match PendingImport::from_dumps(db, "received from synth", received, ImportTarget::OriginalBanks) {
+            match PendingImport::from_dumps(
+                db,
+                "received from synth",
+                received,
+                ImportTarget::OriginalBanks,
+            ) {
                 Ok(pending) if pending.needs_confirmation() => {
                     self.pending_import = Some(pending);
                     self.pending_from_received = true;
                 }
                 Ok(pending) => {
-                    let result = pending.commit_overwrite(db).map(|o| (o.report, "banks A–D".to_owned()));
+                    let result = pending
+                        .commit_overwrite(db)
+                        .map(|o| (o.report, "banks A–D".to_owned()));
                     self.finish_received(result, received, actions);
                 }
                 Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
@@ -452,7 +542,9 @@ impl LibrarianView {
         received: &mut Vec<IncomingDump>,
         actions: &mut Vec<LibAction>,
     ) {
-        let Some(pending) = self.pending_import.take() else { return };
+        let Some(pending) = self.pending_import.take() else {
+            return;
+        };
         let mut open = true;
         let mut choice = None;
         let mut cancelled = false;
@@ -518,7 +610,11 @@ impl LibrarianView {
             self.pending_import = Some(pending);
             return;
         };
-        let name = if pending.label.is_empty() { "Imported".to_owned() } else { pending.label.clone() };
+        let name = if pending.label.is_empty() {
+            "Imported".to_owned()
+        } else {
+            pending.label.clone()
+        };
         let result = if overwrite {
             pending.commit_overwrite(db)
         } else {
@@ -531,11 +627,20 @@ impl LibrarianView {
         }
     }
 
-    fn finish_import(&mut self, label: &str, result: Result<ImportOutcome, String>, actions: &mut Vec<LibAction>) {
+    fn finish_import(
+        &mut self,
+        label: &str,
+        result: Result<ImportOutcome, String>,
+        actions: &mut Vec<LibAction>,
+    ) {
         match result {
             Ok(outcome) => {
                 let text = format!("{label}: {}", outcome.summary());
-                actions.push(LibAction::Notice(if outcome.has_warnings() { Notice::warning(text) } else { Notice::info(text) }));
+                actions.push(LibAction::Notice(if outcome.has_warnings() {
+                    Notice::warning(text)
+                } else {
+                    Notice::info(text)
+                }));
                 self.loose = outcome.report.loose.clone();
                 if let Some(multis) = outcome.multis.as_ref().filter(|m| !m.loose.is_empty()) {
                     actions.push(LibAction::LooseMultis(multis.loose.clone())); // [F9]
@@ -548,12 +653,18 @@ impl LibrarianView {
 
     fn loose_panel(&mut self, ui: &mut Ui, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
         ui.label(RichText::new("Edit-buffer dumps").strong().color(accent()))
-            .on_hover_text("Dumps with bank byte 00 are never put in a slot by their part number (SPEC §5.6).");
+            .on_hover_text(
+                "Dumps with bank byte 00 are never put in a slot by their part number (SPEC §5.6).",
+            );
         let mut store = None;
         let mut remove = None;
         for (index, dump) in self.loose.iter().enumerate() {
             let patch = Patch::from_bytes(&dump.data);
-            let part = if dump.program == 0x40 { "Single".to_owned() } else { format!("part {}", dump.program + 1) };
+            let part = if dump.program == 0x40 {
+                "Single".to_owned()
+            } else {
+                format!("part {}", dump.program + 1)
+            };
             ui.horizontal(|ui| {
                 let mut label = format!("{} ({part})", patch.name());
                 if !dump.checksum_ok {
@@ -573,7 +684,11 @@ impl LibrarianView {
                 if ui.small_button("Store…").clicked() {
                     store = Some((patch.clone(), !dump.checksum_ok));
                 }
-                if ui.small_button("✖").on_hover_text("Remove from this list").clicked() {
+                if ui
+                    .small_button("✖")
+                    .on_hover_text("Remove from this list")
+                    .clicked()
+                {
                     remove = Some(index);
                 }
             });
@@ -589,14 +704,27 @@ impl LibrarianView {
     fn patch_list(&mut self, ui: &mut Ui, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
         ui.horizontal(|ui| {
             ui.label("🔍");
-            ui.add(TextEdit::singleline(&mut self.query.search).hint_text("Search name or tags").desired_width(160.0));
-            let category_text = self.query.category.map_or("Any category".to_owned(), |c| c.to_string());
-            ComboBox::from_id_source("category-filter").selected_text(category_text).show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.query.category, None, "Any category");
-                for category in SoundCategory::ALL {
-                    ui.selectable_value(&mut self.query.category, Some(category), category.name());
-                }
-            });
+            ui.add(
+                TextEdit::singleline(&mut self.query.search)
+                    .hint_text("Search name or tags")
+                    .desired_width(160.0),
+            );
+            let category_text = self
+                .query
+                .category
+                .map_or("Any category".to_owned(), |c| c.to_string());
+            ComboBox::from_id_source("category-filter")
+                .selected_text(category_text)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.query.category, None, "Any category");
+                    for category in SoundCategory::ALL {
+                        ui.selectable_value(
+                            &mut self.query.category,
+                            Some(category),
+                            category.name(),
+                        );
+                    }
+                });
             ui.checkbox(&mut self.query.favorites_only, "★ only");
             if self.query.is_filtered() {
                 ui.checkbox(&mut self.query.this_bank_only, "This bank only");
@@ -615,15 +743,18 @@ impl LibrarianView {
         if self.query.is_filtered() {
             let rows = &self.cache.results;
             ui.label(RichText::new(format!("{} result(s)", rows.len())).color(DIM));
-            ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_height, rows.len(), |ui, range| {
-                for summary in &rows[range] {
-                    let label = slot_label(self.cache.bank(summary.bank_id), summary.program_number);
-                    let selected = self.selected_id == Some(summary.id);
-                    if let Some(c) = patch_row(ui, &label, Some(summary), selected) {
-                        click = Some(c);
+            ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show_rows(ui, row_height, rows.len(), |ui, range| {
+                    for summary in &rows[range] {
+                        let label =
+                            slot_label(self.cache.bank(summary.bank_id), summary.program_number);
+                        let selected = self.selected_id == Some(summary.id);
+                        if let Some(c) = patch_row(ui, &label, Some(summary), selected) {
+                            click = Some(c);
+                        }
                     }
-                }
-            });
+                });
         } else if self.cache.slots.is_empty() {
             ui.label(RichText::new("Select a bank.").color(DIM));
         } else {
@@ -638,29 +769,40 @@ impl LibrarianView {
                     ui.colored_label(WARN, format!("⚠ {flagged} flagged"));
                     if ui
                         .small_button("✔ Mark all as checked…")
-                        .on_hover_text("Clear the ⚠ flag of every flagged patch in this bank (asks first)")
+                        .on_hover_text(
+                            "Clear the ⚠ flag of every flagged patch in this bank (asks first)",
+                        )
                         .clicked()
                     {
-                        mark_bank = Some(MarkChecked::Bank { id: bank.id, name: bank.name.clone(), flagged });
+                        mark_bank = Some(MarkChecked::Bank {
+                            id: bank.id,
+                            name: bank.name.clone(),
+                            flagged,
+                        });
                     }
                 }
             });
             if mark_bank.is_some() {
                 self.mark_checked = mark_bank;
             }
-            ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_height, self.cache.slots.len(), |ui, range| {
-                for program in range {
-                    let slot = self.cache.slots[program].as_ref();
-                    let program = program as u8;
-                    let selected = self.selected_program == Some(program);
-                    if let Some(c) = patch_row(ui, &slot_label(bank, program), slot, selected) {
-                        click = Some(match c {
-                            RowClick::Select { id, .. } => RowClick::Select { program: Some(program), id },
-                            other => other,
-                        });
+            ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show_rows(ui, row_height, self.cache.slots.len(), |ui, range| {
+                    for program in range {
+                        let slot = self.cache.slots[program].as_ref();
+                        let program = program as u8;
+                        let selected = self.selected_program == Some(program);
+                        if let Some(c) = patch_row(ui, &slot_label(bank, program), slot, selected) {
+                            click = Some(match c {
+                                RowClick::Select { id, .. } => RowClick::Select {
+                                    program: Some(program),
+                                    id,
+                                },
+                                other => other,
+                            });
+                        }
                     }
-                }
-            });
+                });
         }
 
         match click {
@@ -672,7 +814,9 @@ impl LibrarianView {
             Some(RowClick::Send(id)) => load(db, id, true, actions),
             Some(RowClick::Favourite(id, favourite)) => {
                 if let Err(e) = db.set_favorite(id, favourite) {
-                    actions.push(LibAction::Notice(Notice::error(format!("Cannot change favourite: {e}"))));
+                    actions.push(LibAction::Notice(Notice::error(format!(
+                        "Cannot change favourite: {e}"
+                    ))));
                 }
             }
             None => {}
@@ -681,7 +825,11 @@ impl LibrarianView {
 
     fn details(&mut self, ui: &mut Ui, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
         ui.label(RichText::new("Selected").strong().color(accent()));
-        let bank = self.query.bank_id.and_then(|id| self.cache.bank(id)).cloned();
+        let bank = self
+            .query
+            .bank_id
+            .and_then(|id| self.cache.bank(id))
+            .cloned();
         let Some(summary) = self.selected_summary().cloned() else {
             match (self.selected_program, &bank) {
                 (Some(program), Some(bank)) if !self.query.is_filtered() => {
@@ -700,18 +848,33 @@ impl LibrarianView {
         let summary_bank = self.cache.bank(summary.bank_id).cloned();
         ui.label(RichText::new(&summary.name).monospace().size(16.0));
         ui.label(slot_label(summary_bank.as_ref(), summary.program_number));
-        ui.label(format!("Categories: {} / {}", summary.category1, summary.category2));
+        ui.label(format!(
+            "Categories: {} / {}",
+            summary.category1, summary.category2
+        ));
         if !summary.checksum_ok {
-            ui.colored_label(WARN, "⚠ Flagged: imported with a wrong checksum, or migrated from an old library.");
-            if ui.small_button("✔ Mark as checked…").on_hover_text("Clear the ⚠ flag (asks first)").clicked() {
+            ui.colored_label(
+                WARN,
+                "⚠ Flagged: imported with a wrong checksum, or migrated from an old library.",
+            );
+            if ui
+                .small_button("✔ Mark as checked…")
+                .on_hover_text("Clear the ⚠ flag (asks first)")
+                .clicked()
+            {
                 let label = slot_label(summary_bank.as_ref(), summary.program_number);
-                self.mark_checked = Some(MarkChecked::Patch { id: summary.id, label }); // [R9]
+                self.mark_checked = Some(MarkChecked::Patch {
+                    id: summary.id,
+                    label,
+                }); // [R9]
             }
         }
         let mut favourite = summary.favorite;
         if ui.checkbox(&mut favourite, "★ Favourite").changed() {
             if let Err(e) = db.set_favorite(summary.id, favourite) {
-                actions.push(LibAction::Notice(Notice::error(format!("Cannot change favourite: {e}"))));
+                actions.push(LibAction::Notice(Notice::error(format!(
+                    "Cannot change favourite: {e}"
+                ))));
             }
         }
 
@@ -724,32 +887,60 @@ impl LibrarianView {
         let dirty = self.tags_buffer != summary.tags;
         if ui.add_enabled(dirty, Button::new("Save tags")).clicked() {
             match db.set_tags(summary.id, self.tags_buffer.trim()) {
-                Ok(_) => actions.push(LibAction::Notice(Notice::info(format!("Tags of '{}' saved.", summary.name)))),
-                Err(e) => actions.push(LibAction::Notice(Notice::error(format!("Cannot save tags: {e}")))),
+                Ok(_) => actions.push(LibAction::Notice(Notice::info(format!(
+                    "Tags of '{}' saved.",
+                    summary.name
+                )))),
+                Err(e) => actions.push(LibAction::Notice(Notice::error(format!(
+                    "Cannot save tags: {e}"
+                )))),
             }
         }
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.button("Load").on_hover_text("Load into the editor (not sent)").clicked() {
+            if ui
+                .button("Load")
+                .on_hover_text("Load into the editor (not sent)")
+                .clicked()
+            {
                 load(db, summary.id, false, actions);
             }
-            if ui.button("Send").on_hover_text("Load and send to the synth's edit buffer").clicked() {
+            if ui
+                .button("Send")
+                .on_hover_text("Load and send to the synth's edit buffer")
+                .clicked()
+            {
                 load(db, summary.id, true, actions);
             }
-            if ui.button("🗑 Clear slot…").on_hover_text("Delete this patch from the library (asks first)").clicked() {
+            if ui
+                .button("🗑 Clear slot…")
+                .on_hover_text("Delete this patch from the library (asks first)")
+                .clicked()
+            {
                 let label = slot_label(summary_bank.as_ref(), summary.program_number);
-                self.removal = Some(Removal::Slot { id: summary.id, label, name: summary.name.clone() });
+                self.removal = Some(Removal::Slot {
+                    id: summary.id,
+                    label,
+                    name: summary.name.clone(),
+                });
             }
         });
-        if summary_bank.as_ref().map(|b| b.id) == self.query.bank_id && self.store_editor_button(ui) {
+        if summary_bank.as_ref().map(|b| b.id) == self.query.bank_id && self.store_editor_button(ui)
+        {
             self.selected_program = Some(summary.program_number);
             self.open_store_dialog(db, None);
         }
     }
 
     /// Modal-style windows: storing a patch (U4), sending a bank (L4), marking as checked (R9).
-    pub fn show_dialogs(&mut self, ctx: &Context, db: &PatchDatabase, editor_patch: &Patch, actions: &mut Vec<LibAction>) {
+    pub fn show_dialogs(
+        &mut self,
+        ctx: &Context,
+        db: &PatchDatabase,
+        editor_patch: &Patch,
+        actions: &mut Vec<LibAction>,
+    ) {
         if self.store.is_some() || self.confirm_send_bank.is_some() {
             self.refresh(db);
         }
@@ -762,21 +953,32 @@ impl LibrarianView {
 
     /// [CR-L2] Names what "Clear slot" / "Delete bank" would delete before doing it.
     fn removal_dialog(&mut self, ctx: &Context, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
-        let Some(request) = self.removal.take() else { return };
+        let Some(request) = self.removal.take() else {
+            return;
+        };
         let mut open = true;
         let mut answer = None;
-        Window::new(request.title()).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-            ui.set_max_width(400.0);
-            ui.label(request.question());
-            ui.horizontal(|ui| {
-                if ui.add(Button::new(RichText::new(format!("🗑 {}", request.title())).color(DANGER))).clicked() {
-                    answer = Some(true);
-                }
-                if ui.button("Cancel").clicked() {
-                    answer = Some(false);
-                }
+        Window::new(request.title())
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_max_width(400.0);
+                ui.label(request.question());
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(Button::new(
+                            RichText::new(format!("🗑 {}", request.title())).color(DANGER),
+                        ))
+                        .clicked()
+                    {
+                        answer = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        answer = Some(false);
+                    }
+                });
             });
-        });
         match answer {
             Some(true) => self.apply_removal(db, &request, actions),
             Some(false) => {}
@@ -785,7 +987,12 @@ impl LibrarianView {
         }
     }
 
-    fn apply_removal(&mut self, db: &PatchDatabase, request: &Removal, actions: &mut Vec<LibAction>) {
+    fn apply_removal(
+        &mut self,
+        db: &PatchDatabase,
+        request: &Removal,
+        actions: &mut Vec<LibAction>,
+    ) {
         match request.apply(db) {
             Ok(text) => {
                 match request {
@@ -804,23 +1011,34 @@ impl LibrarianView {
     }
 
     /// [R9] Explains what clearing the ⚠ flag means before doing it.
-    fn mark_checked_dialog(&mut self, ctx: &Context, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
-        let Some(request) = self.mark_checked.take() else { return };
+    fn mark_checked_dialog(
+        &mut self,
+        ctx: &Context,
+        db: &PatchDatabase,
+        actions: &mut Vec<LibAction>,
+    ) {
+        let Some(request) = self.mark_checked.take() else {
+            return;
+        };
         let mut open = true;
         let mut answer = None;
-        Window::new("Mark as checked").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-            ui.set_max_width(420.0);
-            ui.label(RichText::new(request.question()).strong());
-            ui.label(MARK_CHECKED_EXPLANATION);
-            ui.horizontal(|ui| {
-                if ui.button("✔ Mark as checked").clicked() {
-                    answer = Some(true);
-                }
-                if ui.button("Cancel").clicked() {
-                    answer = Some(false);
-                }
+        Window::new("Mark as checked")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(RichText::new(request.question()).strong());
+                ui.label(MARK_CHECKED_EXPLANATION);
+                ui.horizontal(|ui| {
+                    if ui.button("✔ Mark as checked").clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        answer = Some(false);
+                    }
+                });
             });
-        });
         match answer {
             Some(true) => actions.push(LibAction::Notice(match request.apply(db) {
                 Ok(text) => Notice::info(text),
@@ -832,8 +1050,16 @@ impl LibrarianView {
         }
     }
 
-    fn store_dialog(&mut self, ctx: &Context, db: &PatchDatabase, editor_patch: &Patch, actions: &mut Vec<LibAction>) {
-        let Some(mut dialog) = self.store.take() else { return };
+    fn store_dialog(
+        &mut self,
+        ctx: &Context,
+        db: &PatchDatabase,
+        editor_patch: &Patch,
+        actions: &mut Vec<LibAction>,
+    ) {
+        let Some(mut dialog) = self.store.take() else {
+            return;
+        };
         let patch = dialog.patch.clone().unwrap_or_else(|| editor_patch.clone());
         let mut open = true;
         let mut done = false;
@@ -933,14 +1159,25 @@ impl LibrarianView {
         }
     }
 
-    fn send_bank_dialog(&mut self, ctx: &Context, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
-        let Some(bank_id) = self.confirm_send_bank else { return };
+    fn send_bank_dialog(
+        &mut self,
+        ctx: &Context,
+        db: &PatchDatabase,
+        actions: &mut Vec<LibAction>,
+    ) {
+        let Some(bank_id) = self.confirm_send_bank else {
+            return;
+        };
         let Some(bank) = self.cache.bank(bank_id).cloned() else {
             self.confirm_send_bank = None;
             return;
         };
         let letter = bank.bank_letter.clone().unwrap_or_default();
-        let synth_bank = bank.bank_letter.as_deref().and_then(|l| SingleBank::ALL.into_iter().find(|b| b.letter().to_string() == l));
+        let synth_bank = bank.bank_letter.as_deref().and_then(|l| {
+            SingleBank::ALL
+                .into_iter()
+                .find(|b| b.letter().to_string() == l)
+        });
         // The bank being sent, even when another bank is selected in the list meanwhile (CR-L11).
         let slots = if self.query.bank_id == Some(bank_id) {
             Ok(self.cache.slots.clone())
@@ -949,7 +1186,11 @@ impl LibrarianView {
         };
         let (count, flagged, slots_error) = match &slots {
             Ok(slots) => (slots.iter().flatten().count(), flagged_count(slots), None),
-            Err(e) => (0, 0, Some(format!("Cannot read bank {letter} from the library: {e}"))),
+            Err(e) => (
+                0,
+                0,
+                Some(format!("Cannot read bank {letter} from the library: {e}")),
+            ),
         };
         let mut open = true;
         let mut close = false;
@@ -1016,35 +1257,82 @@ fn load(db: &PatchDatabase, id: i64, send: bool, actions: &mut Vec<LibAction>) {
             let origin = format!("library ({})", record.name);
             let flagged = !record.checksum_ok;
             actions.push(if send {
-                LibAction::SendToEditBuffer { patch, origin, flagged }
+                LibAction::SendToEditBuffer {
+                    patch,
+                    origin,
+                    flagged,
+                }
             } else {
-                let select = LibrarySlot { bank_id: record.bank_id, program: record.program_number };
-                LibAction::Load { patch, origin, select: Some(select), flagged }
+                let select = LibrarySlot {
+                    bank_id: record.bank_id,
+                    program: record.program_number,
+                };
+                LibAction::Load {
+                    patch,
+                    origin,
+                    select: Some(select),
+                    flagged,
+                }
             });
         }
-        Ok(None) => actions.push(LibAction::Notice(Notice::error("That patch no longer exists."))),
-        Err(e) => actions.push(LibAction::Notice(Notice::error(format!("Cannot load patch: {e}")))),
+        Ok(None) => actions.push(LibAction::Notice(Notice::error(
+            "That patch no longer exists.",
+        ))),
+        Err(e) => actions.push(LibAction::Notice(Notice::error(format!(
+            "Cannot load patch: {e}"
+        )))),
     }
 }
 
 /// One row of the slot table or the search results.
-fn patch_row(ui: &mut Ui, label: &str, slot: Option<&PatchSummary>, selected: bool) -> Option<RowClick> {
+fn patch_row(
+    ui: &mut Ui,
+    label: &str,
+    slot: Option<&PatchSummary>,
+    selected: bool,
+) -> Option<RowClick> {
     let mut click = None;
     ui.horizontal(|ui| {
-        ui.add_sized([62.0, 18.0], egui::Label::new(RichText::new(label).monospace().color(DIM)));
+        ui.add_sized(
+            [62.0, 18.0],
+            egui::Label::new(RichText::new(label).monospace().color(DIM)),
+        );
         let Some(summary) = slot else {
-            if ui.add_sized([150.0, 18.0], egui::SelectableLabel::new(selected, RichText::new("— empty —").color(DIM))).clicked() {
-                click = Some(RowClick::Select { program: None, id: None });
+            if ui
+                .add_sized(
+                    [150.0, 18.0],
+                    egui::SelectableLabel::new(selected, RichText::new("— empty —").color(DIM)),
+                )
+                .clicked()
+            {
+                click = Some(RowClick::Select {
+                    program: None,
+                    id: None,
+                });
             }
             return;
         };
-        let star = if summary.favorite { RichText::new("★").color(WARN) } else { RichText::new("☆").color(DIM) };
-        if ui.add(Button::new(star).frame(false)).on_hover_text("Favourite").clicked() {
+        let star = if summary.favorite {
+            RichText::new("★").color(WARN)
+        } else {
+            RichText::new("☆").color(DIM)
+        };
+        if ui
+            .add(Button::new(star).frame(false))
+            .on_hover_text("Favourite")
+            .clicked()
+        {
             click = Some(RowClick::Favourite(summary.id, !summary.favorite));
         }
-        let name = ui.add_sized([110.0, 18.0], egui::SelectableLabel::new(selected, RichText::new(&summary.name).monospace()));
+        let name = ui.add_sized(
+            [110.0, 18.0],
+            egui::SelectableLabel::new(selected, RichText::new(&summary.name).monospace()),
+        );
         if name.clicked() {
-            click = Some(RowClick::Select { program: Some(summary.program_number), id: Some(summary.id) });
+            click = Some(RowClick::Select {
+                program: Some(summary.program_number),
+                id: Some(summary.id),
+            });
         }
         if name.double_clicked() {
             click = Some(RowClick::Load(summary.id));
@@ -1053,18 +1341,33 @@ fn patch_row(ui: &mut Ui, label: &str, slot: Option<&PatchSummary>, selected: bo
             SoundCategory::Off => summary.category1.to_string(),
             c2 => format!("{} / {c2}", summary.category1),
         };
-        ui.add_sized([150.0, 18.0], egui::Label::new(RichText::new(categories).size(11.0)));
+        ui.add_sized(
+            [150.0, 18.0],
+            egui::Label::new(RichText::new(categories).size(11.0)),
+        );
         if !summary.checksum_ok {
-            ui.colored_label(WARN, "⚠").on_hover_text("Flagged: imported with a wrong checksum, or migrated from an old library");
+            ui.colored_label(WARN, "⚠").on_hover_text(
+                "Flagged: imported with a wrong checksum, or migrated from an old library",
+            );
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.small_button("Send").on_hover_text("Send to the synth's edit buffer").clicked() {
+            if ui
+                .small_button("Send")
+                .on_hover_text("Send to the synth's edit buffer")
+                .clicked()
+            {
                 click = Some(RowClick::Send(summary.id));
             }
-            if ui.small_button("Load").on_hover_text("Load into the editor").clicked() {
+            if ui
+                .small_button("Load")
+                .on_hover_text("Load into the editor")
+                .clicked()
+            {
                 click = Some(RowClick::Load(summary.id));
             }
-            ui.add(egui::Label::new(RichText::new(&summary.tags).color(DIM).size(11.0)).truncate(true));
+            ui.add(
+                egui::Label::new(RichText::new(&summary.tags).color(DIM).size(11.0)).truncate(true),
+            );
         });
     });
     click
@@ -1077,7 +1380,12 @@ mod tests {
     use super::*;
 
     fn bank_a(db: &PatchDatabase) -> i64 {
-        db.get_banks().unwrap().into_iter().find(|b| b.bank_letter.as_deref() == Some("A")).unwrap().id
+        db.get_banks()
+            .unwrap()
+            .into_iter()
+            .find(|b| b.bank_letter.as_deref() == Some("A"))
+            .unwrap()
+            .id
     }
 
     /// [E6] The synth selection rides inside the Load, so a held/cancelled replace can't send it.
@@ -1085,16 +1393,27 @@ mod tests {
     fn loading_a_library_patch_is_one_action_carrying_its_slot() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let a = bank_a(&db);
-        let id = db.save_patch(a, 9, Patch::init().as_bytes(), &PatchMeta::default(), true).unwrap();
+        let id = db
+            .save_patch(a, 9, Patch::init().as_bytes(), &PatchMeta::default(), true)
+            .unwrap();
         let mut actions = Vec::new();
         load(&db, id, false, &mut actions);
         match actions.as_slice() {
-            [LibAction::Load { select, .. }] => assert_eq!(*select, Some(LibrarySlot { bank_id: a, program: 9 })),
+            [LibAction::Load { select, .. }] => assert_eq!(
+                *select,
+                Some(LibrarySlot {
+                    bank_id: a,
+                    program: 9
+                })
+            ),
             other => panic!("unexpected {other:?}"),
         }
         actions.clear();
         load(&db, id, true, &mut actions);
-        assert!(matches!(actions.as_slice(), [LibAction::SendToEditBuffer { .. }]));
+        assert!(matches!(
+            actions.as_slice(),
+            [LibAction::SendToEditBuffer { .. }]
+        ));
     }
 
     /// [CR-H1] A flagged slot loads (and sends) as flagged, so the app stores it flagged.
@@ -1102,12 +1421,17 @@ mod tests {
     fn loading_a_flagged_slot_carries_the_flag() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let a = bank_a(&db);
-        let id = db.save_patch(a, 9, Patch::init().as_bytes(), &PatchMeta::default(), false).unwrap();
+        let id = db
+            .save_patch(a, 9, Patch::init().as_bytes(), &PatchMeta::default(), false)
+            .unwrap();
         let mut actions = Vec::new();
         load(&db, id, false, &mut actions);
         load(&db, id, true, &mut actions);
         assert!(matches!(actions[0], LibAction::Load { flagged: true, .. }));
-        assert!(matches!(actions[1], LibAction::SendToEditBuffer { flagged: true, .. }));
+        assert!(matches!(
+            actions[1],
+            LibAction::SendToEditBuffer { flagged: true, .. }
+        ));
     }
 
     fn view_on_bank_a(db: &PatchDatabase) -> LibrarianView {
@@ -1125,8 +1449,21 @@ mod tests {
         view.open_store_dialog(&db, Some((Patch::init(), true)));
         let dialog = view.store.take().unwrap();
         let mut actions = Vec::new();
-        view.store_now(&db, bank_a(&db), "A000", &dialog, &Patch::init(), &mut actions).unwrap();
-        assert!(!db.get_patch_by_slot(bank_a(&db), dialog.program).unwrap().unwrap().checksum_ok);
+        view.store_now(
+            &db,
+            bank_a(&db),
+            "A000",
+            &dialog,
+            &Patch::init(),
+            &mut actions,
+        )
+        .unwrap();
+        assert!(
+            !db.get_patch_by_slot(bank_a(&db), dialog.program)
+                .unwrap()
+                .unwrap()
+                .checksum_ok
+        );
         assert!(matches!(&actions[0], LibAction::Notice(n) if n.text.contains("flagged ⚠")));
     }
 
@@ -1139,9 +1476,24 @@ mod tests {
         view.open_store_dialog(&db, None);
         let dialog = view.store.take().unwrap();
         let mut actions = Vec::new();
-        view.store_now(&db, bank_a(&db), "A000", &dialog, &Patch::init(), &mut actions).unwrap();
-        assert!(!db.get_patch_by_slot(bank_a(&db), dialog.program).unwrap().unwrap().checksum_ok);
-        assert!(actions.iter().any(|a| matches!(a, LibAction::StoredEditor { .. })));
+        view.store_now(
+            &db,
+            bank_a(&db),
+            "A000",
+            &dialog,
+            &Patch::init(),
+            &mut actions,
+        )
+        .unwrap();
+        assert!(
+            !db.get_patch_by_slot(bank_a(&db), dialog.program)
+                .unwrap()
+                .unwrap()
+                .checksum_ok
+        );
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, LibAction::StoredEditor { .. })));
     }
 
     #[test]
@@ -1151,8 +1503,21 @@ mod tests {
         view.editor_flagged = true; // the editor's flag doesn't apply to a dump
         view.open_store_dialog(&db, Some((Patch::init(), false)));
         let dialog = view.store.take().unwrap();
-        view.store_now(&db, bank_a(&db), "A000", &dialog, &Patch::init(), &mut Vec::new()).unwrap();
-        assert!(db.get_patch_by_slot(bank_a(&db), dialog.program).unwrap().unwrap().checksum_ok);
+        view.store_now(
+            &db,
+            bank_a(&db),
+            "A000",
+            &dialog,
+            &Patch::init(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(
+            db.get_patch_by_slot(bank_a(&db), dialog.program)
+                .unwrap()
+                .unwrap()
+                .checksum_ok
+        );
     }
 
     /// [CR-L2] Deleting the selected user bank also clears the selection.
@@ -1176,33 +1541,57 @@ mod tests {
         let mut view = LibrarianView::default();
         assert_eq!(view.editor_store_blocked(None), None);
         view.editor_comparing = true;
-        assert!(view.editor_store_blocked(None).unwrap().contains("Leave Compare first"));
+        assert!(view
+            .editor_store_blocked(None)
+            .unwrap()
+            .contains("Leave Compare first"));
         let dump = Patch::init();
-        assert_eq!(view.editor_store_blocked(Some(&dump)), None, "an edit-buffer dump is not the editor patch");
+        assert_eq!(
+            view.editor_store_blocked(Some(&dump)),
+            None,
+            "an edit-buffer dump is not the editor patch"
+        );
     }
 
     /// [R9] Flagged patches show the per-patch and per-bank buttons and the dialog renders.
     #[test]
     fn flagged_patches_render_mark_as_checked_controls() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        let dump = IncomingDump { bank: 1, program: 0, data: *Patch::init().as_bytes(), checksum_ok: false };
-        db.import_single_dumps(&[dump], ImportTarget::OriginalBanks).unwrap();
+        let dump = IncomingDump {
+            bank: 1,
+            program: 0,
+            data: *Patch::init().as_bytes(),
+            checksum_ok: false,
+        };
+        db.import_single_dumps(&[dump], ImportTarget::OriginalBanks)
+            .unwrap();
         let a = bank_a(&db);
         let mut view = LibrarianView::default();
         view.set_bank_id(Some(a));
         view.refresh(&db);
         view.selected_program = Some(0);
         view.selected_id = view.cache.slots[0].as_ref().map(|s| s.id);
-        view.mark_checked = Some(MarkChecked::Bank { id: a, name: "Bank A".into(), flagged: 1 });
+        view.mark_checked = Some(MarkChecked::Bank {
+            id: a,
+            name: "Bank A".into(),
+            flagged: 1,
+        });
         let ctx = Context::default();
         let (mut received, mut actions) = (Vec::new(), Vec::new());
         for _ in 0..2 {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| view.show(ui, &db, &mut received, &mut actions));
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| view.show(ui, &db, &mut received, &mut actions));
                 view.show_dialogs(ctx, &db, &Patch::init(), &mut actions);
             });
         }
-        assert!(view.mark_checked.is_some(), "the dialog stays open until answered");
-        assert!(!db.get_patch_by_slot(a, 0).unwrap().unwrap().checksum_ok, "nothing changes without confirmation");
+        assert!(
+            view.mark_checked.is_some(),
+            "the dialog stays open until answered"
+        );
+        assert!(
+            !db.get_patch_by_slot(a, 0).unwrap().unwrap().checksum_ok,
+            "nothing changes without confirmation"
+        );
     }
 }

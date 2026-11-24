@@ -17,7 +17,9 @@ use crate::patch_data::{
     bank_byte_for_letter, encode_single_dump, first_eight_bit_offset, letter_for_bank_byte,
     patch_categories, patch_name, EDIT_BUFFER_BANK, PATCH_LEN, SINGLE_DUMP_CHECKSUM_INDEX,
 };
-use crate::schema::{CREATE_MULTI_TABLES_SQL, CREATE_TABLES_SQL, MIGRATE_V1_TO_V2_SQL, SCHEMA_VERSION};
+use crate::schema::{
+    CREATE_MULTI_TABLES_SQL, CREATE_TABLES_SQL, MIGRATE_V1_TO_V2_SQL, SCHEMA_VERSION,
+};
 
 /// Number of program slots in a bank.
 pub const BANK_SLOTS: usize = 128;
@@ -93,15 +95,9 @@ impl PatchDatabase {
     /// Writes a consistent copy of the database file `src` (including changes still in its
     /// WAL) to `dest`, which must not exist. `src` is opened but not migrated or modified.
     pub fn copy_file(src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()> {
-        let conn = Connection::open_with_flags(
-            src,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-        )?;
+        let conn = Connection::open_with_flags(src, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
-        conn.execute(
-            "VACUUM INTO ?1",
-            params![dest.as_ref().to_string_lossy()],
-        )?;
+        conn.execute("VACUUM INTO ?1", params![dest.as_ref().to_string_lossy()])?;
         Ok(())
     }
 
@@ -109,7 +105,8 @@ impl PatchDatabase {
     pub fn patch_count(&self) -> Result<usize> {
         Ok(self
             .conn
-            .query_row("SELECT COUNT(*) FROM patches", [], |r| r.get::<_, i64>(0))? as usize)
+            .query_row("SELECT COUNT(*) FROM patches", [], |r| r.get::<_, i64>(0))?
+            as usize)
     }
 
     /// Whether the library holds nothing worth keeping: no patches, no multis and no banks
@@ -590,9 +587,11 @@ impl PatchDatabase {
             let (key, bank_name, exists) =
                 match place(&self.conn, &forced, &mut bank_cache, dump.bank, false)? {
                     Some((id, name)) => (id, name, true),
-                    None if letter_for_bank_byte(dump.bank).is_some() => {
-                        (-i64::from(dump.bank), format!("Bank {}", letter_for_bank_byte(dump.bank).unwrap_or("?")), false)
-                    }
+                    None if letter_for_bank_byte(dump.bank).is_some() => (
+                        -i64::from(dump.bank),
+                        format!("Bank {}", letter_for_bank_byte(dump.bank).unwrap_or("?")),
+                        false,
+                    ),
                     None => {
                         plan.skipped += 1;
                         continue;

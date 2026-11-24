@@ -55,7 +55,11 @@ pub trait Collector {
 pub enum CollectError {
     /// Nothing relevant arrived for `idle` (the synth may be on another device ID, the cable
     /// may be wrong, or Dump Tx may be off).
-    Timeout { idle: Duration, missing: String, notes: Vec<String> },
+    Timeout {
+        idle: Duration,
+        missing: String,
+        notes: Vec<String>,
+    },
     /// The MIDI layer reported an error.
     Midi(String),
     /// Messages kept arriving for longer than the quiet-wait limit, so no request was sent.
@@ -142,7 +146,11 @@ pub fn exchange<T: Transport + ?Sized, C: Collector>(
         let remaining = deadline.saturating_duration_since(Instant::now());
         // Checked before `recv` too, so a stream of irrelevant events (knob CCs, MIDI clock)
         // can't keep the exchange waiting forever.
-        let event = if remaining.is_zero() { None } else { transport.recv(remaining) };
+        let event = if remaining.is_zero() {
+            None
+        } else {
+            transport.recv(remaining)
+        };
         let Some(event) = event else {
             return Err(CollectError::Timeout {
                 idle,
@@ -181,7 +189,13 @@ pub struct ReceivedDump {
 /// Parses a Virus single dump frame; `None` for anything else.
 fn single_dump(frame: &[u8]) -> Option<ReceivedDump> {
     match parse_sysex(frame).ok()? {
-        SysExMessage::SingleDump { device_id, bank, program, data, checksum_ok } => Some(ReceivedDump {
+        SysExMessage::SingleDump {
+            device_id,
+            bank,
+            program,
+            data,
+            checksum_ok,
+        } => Some(ReceivedDump {
             frame: frame.to_vec(),
             device_id,
             bank,
@@ -204,7 +218,12 @@ pub struct EditBufferCollector {
 
 impl EditBufferCollector {
     pub fn new(device: DeviceId, part: u8) -> Self {
-        Self { device, part, result: None, notes: Vec::new() }
+        Self {
+            device,
+            part,
+            result: None,
+            notes: Vec::new(),
+        }
     }
 
     pub fn result(&self) -> Option<&ReceivedDump> {
@@ -225,13 +244,20 @@ impl Collector for EditBufferCollector {
             return Feed::Ignored;
         };
         if !self.device.accepts(dump.device_id) {
-            self.notes.push(format!("single dump from device 0x{:02X} ignored", dump.device_id));
+            self.notes.push(format!(
+                "single dump from device 0x{:02X} ignored",
+                dump.device_id
+            ));
             return Feed::Ignored;
         }
         if dump.bank != 0 || dump.program != self.part {
             self.notes.push(format!(
                 "single dump for {} {} ignored (waiting for edit buffer part 0x{:02X})",
-                if dump.bank == 0 { "edit buffer part".to_owned() } else { format!("bank {}", bank_label(dump.bank)) },
+                if dump.bank == 0 {
+                    "edit buffer part".to_owned()
+                } else {
+                    format!("bank {}", bank_label(dump.bank))
+                },
                 dump.program,
                 self.part
             ));
@@ -295,11 +321,18 @@ impl BankCollector {
     }
 
     pub fn bad_checksums(&self) -> Vec<u8> {
-        self.slots.iter().flatten().filter(|d| !d.checksum_ok).map(|d| d.program).collect()
+        self.slots
+            .iter()
+            .flatten()
+            .filter(|d| !d.checksum_ok)
+            .map(|d| d.program)
+            .collect()
     }
 
     pub fn missing_programs(&self) -> Vec<u8> {
-        (0..BANK_SIZE as u8).filter(|&p| self.slots[p as usize].is_none()).collect()
+        (0..BANK_SIZE as u8)
+            .filter(|&p| self.slots[p as usize].is_none())
+            .collect()
     }
 
     /// Received dumps in program order.
@@ -317,7 +350,10 @@ impl Collector for BankCollector {
             return Feed::Ignored;
         };
         if !self.device.accepts(dump.device_id) {
-            self.notes.push(format!("single dump from device 0x{:02X} ignored", dump.device_id));
+            self.notes.push(format!(
+                "single dump from device 0x{:02X} ignored",
+                dump.device_id
+            ));
             return Feed::Ignored;
         }
         if dump.bank != self.bank || dump.program as usize >= BANK_SIZE {
@@ -380,7 +416,11 @@ pub struct FirstVirusMessage {
 
 impl FirstVirusMessage {
     pub fn new(device: DeviceId) -> Self {
-        Self { device, result: None, notes: Vec::new() }
+        Self {
+            device,
+            result: None,
+            notes: Vec::new(),
+        }
     }
 
     pub fn into_result(self) -> Option<Vec<u8>> {
@@ -397,7 +437,10 @@ impl Collector for FirstVirusMessage {
             return Feed::Ignored;
         };
         if !self.device.accepts(message.device_id()) {
-            self.notes.push(format!("message from device 0x{:02X} ignored", message.device_id()));
+            self.notes.push(format!(
+                "message from device 0x{:02X} ignored",
+                message.device_id()
+            ));
             return Feed::Ignored;
         }
         let is_request = frame.get(6).is_some_and(|c| (0x30..=0x37).contains(c));
@@ -429,7 +472,14 @@ mod tests {
     #[test]
     fn edit_buffer_collector_waits_for_its_part_and_device() {
         let mut c = EditBufferCollector::new(DeviceId(0), 0x40);
-        assert_eq!(c.feed(&MidiEvent::ControlChange { channel: 0, controller: 1, value: 2 }), Feed::Ignored);
+        assert_eq!(
+            c.feed(&MidiEvent::ControlChange {
+                channel: 0,
+                controller: 1,
+                value: 2
+            }),
+            Feed::Ignored
+        );
         assert_eq!(c.feed(&dump_event(0, 0, 0x00, 1)), Feed::Ignored);
         assert_eq!(c.feed(&dump_event(3, 0, 0x40, 1)), Feed::Ignored);
         assert_eq!(c.feed(&dump_event(0, 1, 0x40, 1)), Feed::Ignored);
@@ -452,13 +502,18 @@ mod tests {
         assert_eq!(c.duplicates(), 1);
         assert_eq!(c.missing_programs(), vec![127]);
         assert!(c.missing().contains("127 of 128"));
-        let MidiEvent::SysEx(mut bad) = dump_event(0, 1, 127, 9) else { unreachable!() };
+        let MidiEvent::SysEx(mut bad) = dump_event(0, 1, 127, 9) else {
+            unreachable!()
+        };
         bad[265] ^= 1;
         assert_eq!(c.feed(&MidiEvent::SysEx(bad)), Feed::Done);
         assert_eq!(c.count(), 128);
         assert_eq!(c.bad_checksums(), vec![127]);
         let dumps = c.dumps();
-        assert!(dumps.iter().enumerate().all(|(i, d)| d.program as usize == i));
+        assert!(dumps
+            .iter()
+            .enumerate()
+            .all(|(i, d)| d.program as usize == i));
     }
 
     #[test]
@@ -467,8 +522,15 @@ mod tests {
         let tail: Vec<MidiEvent> = (68..128).map(|p| dump_event(0, 1, p, 0)).collect();
         let mut t = Replay(tail.into(), Vec::new());
         let mut c = BankCollector::new(DeviceId(0), 1);
-        let err = exchange(&mut t, Some(&[0xF0, 0xF7]), &mut c, Duration::ZERO, Duration::from_millis(10), |_| {})
-            .unwrap_err();
+        let err = exchange(
+            &mut t,
+            Some(&[0xF0, 0xF7]),
+            &mut c,
+            Duration::ZERO,
+            Duration::from_millis(10),
+            |_| {},
+        )
+        .unwrap_err();
         assert_eq!(c.started_mid_stream(), Some(68));
         let text = err.to_string();
         assert!(text.contains("started at program 68, not 0"), "{text}");
@@ -483,7 +545,11 @@ mod tests {
             c.feed(&dump_event(0, 1, p, 0));
         }
         assert_eq!(c.started_mid_stream(), None);
-        assert!(c.missing().starts_with("bank A: 10 of 128 received"), "{}", c.missing());
+        assert!(
+            c.missing().starts_with("bank A: 10 of 128 received"),
+            "{}",
+            c.missing()
+        );
     }
 
     /// A transport that replays a fixed event list.
@@ -494,7 +560,12 @@ mod tests {
             self.1.push(message.to_vec());
             Ok(())
         }
-        fn send_paced(&mut self, _: &[Vec<u8>], _: Duration, _: &mut dyn FnMut(usize, usize)) -> Result<(), String> {
+        fn send_paced(
+            &mut self,
+            _: &[Vec<u8>],
+            _: Duration,
+            _: &mut dyn FnMut(usize, usize),
+        ) -> Result<(), String> {
             Ok(())
         }
         fn recv(&mut self, _: Duration) -> Option<MidiEvent> {
@@ -509,8 +580,15 @@ mod tests {
     fn exchange_times_out_with_notes_and_reports_midi_errors() {
         let mut t = Replay(vec![dump_event(0, 0, 0x03, 0)].into(), Vec::new());
         let mut c = EditBufferCollector::new(DeviceId(0), 0x40);
-        let err = exchange(&mut t, Some(&[0xF0, 0xF7]), &mut c, Duration::ZERO, Duration::from_millis(10), |_| {})
-            .unwrap_err();
+        let err = exchange(
+            &mut t,
+            Some(&[0xF0, 0xF7]),
+            &mut c,
+            Duration::ZERO,
+            Duration::from_millis(10),
+            |_| {},
+        )
+        .unwrap_err();
         assert_eq!(t.1, vec![vec![0xF0, 0xF7]]);
         match &err {
             CollectError::Timeout { notes, .. } => assert_eq!(notes.len(), 1),
@@ -521,7 +599,14 @@ mod tests {
         let mut t = Replay(vec![MidiEvent::Error("boom".into())].into(), Vec::new());
         let mut c = EditBufferCollector::new(DeviceId(0), 0x40);
         assert_eq!(
-            exchange(&mut t, None, &mut c, Duration::ZERO, Duration::from_millis(10), |_| {}),
+            exchange(
+                &mut t,
+                None,
+                &mut c,
+                Duration::ZERO,
+                Duration::from_millis(10),
+                |_| {}
+            ),
             Err(CollectError::Midi("boom".into()))
         );
     }
@@ -531,14 +616,27 @@ mod tests {
         // The rest of an interrupted bank A stream, still arriving when the next command starts.
         let stale: Vec<MidiEvent> = (68..72).map(|p| dump_event(0, 1, p, 0)).collect();
         let mut t = Replay(stale.into(), Vec::new());
-        assert_eq!(wait_quiet(&mut t, Duration::from_millis(5), Duration::from_secs(20)), Ok(4));
+        assert_eq!(
+            wait_quiet(&mut t, Duration::from_millis(5), Duration::from_secs(20)),
+            Ok(4)
+        );
         assert!(t.1.is_empty(), "nothing may be sent while the line is busy");
 
-        let mut t = Replay(vec![dump_event(0, 1, 68, 0), dump_event(0, 0, 0x40, 0)].into(), Vec::new());
+        let mut t = Replay(
+            vec![dump_event(0, 1, 68, 0), dump_event(0, 0, 0x40, 0)].into(),
+            Vec::new(),
+        );
         let mut c = EditBufferCollector::new(DeviceId(0), 0x40);
         // The edit-buffer answer arrives inside the quiet window, so it counts as stale too and the
         // collector waits for a fresh answer.
-        let err = exchange(&mut t, Some(&[0xF0, 0xF7]), &mut c, Duration::from_millis(5), Duration::from_millis(10), |_| {});
+        let err = exchange(
+            &mut t,
+            Some(&[0xF0, 0xF7]),
+            &mut c,
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+            |_| {},
+        );
         assert!(matches!(err, Err(CollectError::Timeout { .. })));
         assert_eq!(t.1, vec![vec![0xF0, 0xF7]]);
     }
@@ -551,11 +649,20 @@ mod tests {
             self.0.push(message.to_vec());
             Ok(())
         }
-        fn send_paced(&mut self, _: &[Vec<u8>], _: Duration, _: &mut dyn FnMut(usize, usize)) -> Result<(), String> {
+        fn send_paced(
+            &mut self,
+            _: &[Vec<u8>],
+            _: Duration,
+            _: &mut dyn FnMut(usize, usize),
+        ) -> Result<(), String> {
             Ok(())
         }
         fn recv(&mut self, _: Duration) -> Option<MidiEvent> {
-            Some(MidiEvent::ControlChange { channel: 0, controller: 40, value: 64 })
+            Some(MidiEvent::ControlChange {
+                channel: 0,
+                controller: 40,
+                value: 64,
+            })
         }
         fn discard_pending(&mut self) -> usize {
             0
@@ -577,7 +684,10 @@ mod tests {
 
     #[test]
     fn the_never_quiet_error_says_what_to_do() {
-        let err = CollectError::NeverQuiet { dropped: 412, waited: Duration::from_millis(20_400) };
+        let err = CollectError::NeverQuiet {
+            dropped: 412,
+            waited: Duration::from_millis(20_400),
+        };
         assert_eq!(
             err.to_string(),
             "the MIDI input never went quiet (412 messages in 20.4 s), so nothing was sent; \
@@ -587,15 +697,28 @@ mod tests {
 
     #[test]
     fn the_default_quiet_limit_is_ten_times_quiet_but_at_least_20_s() {
-        assert_eq!(default_quiet_limit(Duration::from_millis(500)), Duration::from_secs(20));
-        assert_eq!(default_quiet_limit(Duration::from_secs(3)), Duration::from_secs(30));
+        assert_eq!(
+            default_quiet_limit(Duration::from_millis(500)),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            default_quiet_limit(Duration::from_secs(3)),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]
     fn irrelevant_events_cannot_keep_an_exchange_waiting_forever() {
         let mut t = Chatter(Vec::new());
         let mut c = EditBufferCollector::new(DeviceId(0), 0x40);
-        let err = exchange(&mut t, Some(&[0xF0, 0xF7]), &mut c, Duration::ZERO, Duration::from_millis(10), |_| {});
+        let err = exchange(
+            &mut t,
+            Some(&[0xF0, 0xF7]),
+            &mut c,
+            Duration::ZERO,
+            Duration::from_millis(10),
+            |_| {},
+        );
         assert!(matches!(err, Err(CollectError::Timeout { .. })), "{err:?}");
     }
 }

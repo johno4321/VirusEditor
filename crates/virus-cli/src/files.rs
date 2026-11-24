@@ -32,9 +32,18 @@ impl LoadedFile {
         let mut file = Self::default();
         for frame in frames {
             match parse_sysex(frame) {
-                Ok(SysExMessage::SingleDump { bank, program, data, checksum_ok, .. }) => {
-                    file.singles.push(FileDump { bank, program, data: *data, checksum_ok })
-                }
+                Ok(SysExMessage::SingleDump {
+                    bank,
+                    program,
+                    data,
+                    checksum_ok,
+                    ..
+                }) => file.singles.push(FileDump {
+                    bank,
+                    program,
+                    data: *data,
+                    checksum_ok,
+                }),
                 _ => file.other += 1,
             }
         }
@@ -60,10 +69,20 @@ impl LoadedFile {
 
     /// Picks one single dump: the only one in the file, or the one for `program`
     /// (restricted to `from_bank` when the file holds several banks).
-    pub fn pick_single(&self, program: Option<u8>, from_bank: Option<u8>) -> Result<&FileDump, String> {
+    pub fn pick_single(
+        &self,
+        program: Option<u8>,
+        from_bank: Option<u8>,
+    ) -> Result<&FileDump, String> {
         let in_bank = |d: &&FileDump| from_bank.is_none_or(|b| d.bank == b);
         match program {
-            None => match self.singles.iter().filter(in_bank).collect::<Vec<_>>().as_slice() {
+            None => match self
+                .singles
+                .iter()
+                .filter(in_bank)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
                 [only] => Ok(only),
                 [] => Err("the file contains no single dump".to_owned()),
                 many => Err(format!(
@@ -83,7 +102,10 @@ impl LoadedFile {
                     [] => Err(format!("no bank dump for program {program} in the file")),
                     many => Err(format!(
                         "program {program} exists in banks {}; choose one with --from-bank",
-                        many.iter().map(|d| bank_label(d.bank)).collect::<Vec<_>>().join(", ")
+                        many.iter()
+                            .map(|d| bank_label(d.bank))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )),
                 }
             }
@@ -96,14 +118,27 @@ impl LoadedFile {
         let banks = self.banks();
         let source = match from_bank {
             Some(bank) if banks.contains_key(&bank) => bank,
-            Some(bank) => return Err(format!("the file contains no dumps for bank {}", bank_label(bank))),
+            Some(bank) => {
+                return Err(format!(
+                    "the file contains no dumps for bank {}",
+                    bank_label(bank)
+                ))
+            }
             None => match banks.keys().copied().collect::<Vec<_>>().as_slice() {
                 [only] => *only,
-                [] => return Err("the file contains no bank dumps (only edit-buffer dumps or none)".to_owned()),
+                [] => {
+                    return Err(
+                        "the file contains no bank dumps (only edit-buffer dumps or none)"
+                            .to_owned(),
+                    )
+                }
                 many => {
                     return Err(format!(
                         "the file contains banks {}; choose one with --from-bank",
-                        many.iter().map(|&b| bank_label(b)).collect::<Vec<_>>().join(", ")
+                        many.iter()
+                            .map(|&b| bank_label(b))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ))
                 }
             },
@@ -116,11 +151,18 @@ impl LoadedFile {
             }
         }
         if !duplicates.is_empty() {
-            return Err(format!("bank {} has duplicate or invalid programs {duplicates:?}", bank_label(source)));
+            return Err(format!(
+                "bank {} has duplicate or invalid programs {duplicates:?}",
+                bank_label(source)
+            ));
         }
         Ok(BankSelection {
             source_bank: source,
-            bad_checksums: programs.values().filter(|d| !d.checksum_ok).map(|d| d.program).collect(),
+            bad_checksums: programs
+                .values()
+                .filter(|d| !d.checksum_ok)
+                .map(|d| d.program)
+                .collect(),
             missing: (0..128u8).filter(|p| !programs.contains_key(p)).collect(),
             programs: programs.into_iter().map(|(p, d)| (p, d.data)).collect(),
         })
@@ -178,7 +220,10 @@ mod tests {
         let file = LoadedFile::from_bytes(&bytes);
         assert_eq!(file.other, 1);
         assert!(file.pick_bank(None).unwrap_err().contains("A, B"));
-        assert!(file.pick_single(Some(0), None).unwrap_err().contains("--from-bank"));
+        assert!(file
+            .pick_single(Some(0), None)
+            .unwrap_err()
+            .contains("--from-bank"));
         assert_eq!(file.pick_single(Some(0), Some(2)).unwrap().data, [2; 256]);
         let b = file.pick_bank(Some(2)).unwrap();
         assert_eq!(b.programs.len(), 2);

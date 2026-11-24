@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 use std::io::BufRead;
 
 use serde::{Deserialize, Serialize};
-use virus_syx::{ValueKind, UNVERIFIED_ASSIGN_DESTINATION_NAMES, UNVERIFIED_DEFINABLE_DESTINATION_NAMES};
+use virus_syx::{
+    ValueKind, UNVERIFIED_ASSIGN_DESTINATION_NAMES, UNVERIFIED_DEFINABLE_DESTINATION_NAMES,
+};
 
 use crate::address::ParamAddress;
 use crate::ops::{diff, list_addresses, Synth};
@@ -99,7 +101,9 @@ pub fn suggested_max(address: ParamAddress) -> u8 {
 /// The Q3 plan for one parameter over `values`. Refuses A0 and non-sound parameters.
 pub fn value_plan(address: ParamAddress, values: Vec<u8>) -> Result<ProbePlan, String> {
     if let Some(reason) = address.edit_warning() {
-        return Err(format!("{address} is {reason}; only documented sound parameters can be probed"));
+        return Err(format!(
+            "{address} is {reason}; only documented sound parameters can be probed"
+        ));
     }
     let hints: &'static [&'static str] = match address.def().map(|d| d.kind) {
         Some(ValueKind::Choice(texts)) => texts,
@@ -167,7 +171,10 @@ impl ProbeFile {
 
     /// Inserts or replaces the record for its value, keeping results sorted by value.
     pub fn upsert(&mut self, record: ProbeRecord) {
-        match self.results.binary_search_by_key(&record.value, |r| r.value) {
+        match self
+            .results
+            .binary_search_by_key(&record.value, |r| r.value)
+        {
             Ok(i) => self.results[i] = record,
             Err(i) => self.results.insert(i, record),
         }
@@ -189,11 +196,14 @@ impl ProbeFile {
     /// a name table. Values without a display reading become `"#n"`; the array ends at the
     /// last accepted value.
     pub fn rust_table(&self, const_name: &str) -> String {
-        let by_value: BTreeMap<u8, &ProbeRecord> = self.results.iter().map(|r| (r.value, r)).collect();
+        let by_value: BTreeMap<u8, &ProbeRecord> =
+            self.results.iter().map(|r| (r.value, r)).collect();
         let last = self
             .results
             .iter()
-            .filter(|r| r.accepted != Some(false) && (r.display.is_some() || r.accepted == Some(true)))
+            .filter(|r| {
+                r.accepted != Some(false) && (r.display.is_some() || r.accepted == Some(true))
+            })
             .map(|r| r.value)
             .max();
         let mut out = format!(
@@ -278,11 +288,18 @@ pub struct ProbeOptions {
 /// Progress messages for the caller to print.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeEvent {
-    Original { name: String },
-    Skipped { value: u8 },
+    Original {
+        name: String,
+    },
+    Skipped {
+        value: u8,
+    },
     Recorded(ProbeRecord),
     Stopped(String),
-    Restored { identical: bool, differences: String },
+    Restored {
+        identical: bool,
+        differences: String,
+    },
 }
 
 /// The outcome of a probe run. The edit buffer has been restored (or the restore failed,
@@ -309,14 +326,26 @@ pub fn run_probe<T: Transport>(
     save: &mut dyn FnMut(&ProbeFile),
     report: &mut dyn FnMut(ProbeEvent),
 ) -> Result<ProbeOutcome, String> {
-    let original = synth.fetch().map_err(|e| format!("could not fetch the edit buffer first: {e}"))?;
-    report(ProbeEvent::Original { name: virus_syx::Patch::from_bytes(&original.data).name() });
+    let original = synth
+        .fetch()
+        .map_err(|e| format!("could not fetch the edit buffer first: {e}"))?;
+    report(ProbeEvent::Original {
+        name: virus_syx::Patch::from_bytes(&original.data).name(),
+    });
     on_original(&original)?;
 
-    let error = probe_values(synth, plan, &mut file, options, prompter, &original, save, report).err();
+    let error = probe_values(
+        synth, plan, &mut file, options, prompter, &original, save, report,
+    )
+    .err();
 
     let restore_error = restore(synth, &original, report).err();
-    Ok(ProbeOutcome { file, original, error, restore_error })
+    Ok(ProbeOutcome {
+        file,
+        original,
+        error,
+        restore_error,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -341,7 +370,9 @@ fn probe_values<T: Transport>(
     let mut rejected_in_a_row = 0;
 
     for &value in &plan.values {
-        let done = file.get(value).is_some_and(|r| r.display.is_some() || !options.interactive);
+        let done = file
+            .get(value)
+            .is_some_and(|r| r.display.is_some() || !options.interactive);
         if done {
             report(ProbeEvent::Skipped { value });
             continue;
@@ -357,7 +388,9 @@ fn probe_values<T: Transport>(
         loop {
             synth.set_param(plan.param, value)?;
             if options.readback {
-                let dump = synth.fetch().map_err(|e| format!("read-back of value {value} failed: {e}"))?;
+                let dump = synth
+                    .fetch()
+                    .map_err(|e| format!("read-back of value {value} failed: {e}"))?;
                 let readback = dump.data[plan.param.offset()];
                 record.readback = Some(readback);
                 record.accepted = Some(readback == value);
@@ -373,8 +406,14 @@ fn probe_values<T: Transport>(
             let question = format!(
                 "{} = {value}{}{} — display shows? [text / Enter=skip / r=resend / q=quit] ",
                 plan.param,
-                record.readback.filter(|r| *r != value).map_or(String::new(), |r| format!(" (read back {r}!)")),
-                record.printed_hint.as_deref().map_or(String::new(), |h| format!(" (printed list: {h})")),
+                record
+                    .readback
+                    .filter(|r| *r != value)
+                    .map_or(String::new(), |r| format!(" (read back {r}!)")),
+                record
+                    .printed_hint
+                    .as_deref()
+                    .map_or(String::new(), |h| format!(" (printed list: {h})")),
             );
             match prompter.ask(&question) {
                 Answer::Text(text) => record.display = Some(text),
@@ -415,14 +454,21 @@ fn restore<T: Transport>(
     report: &mut dyn FnMut(ProbeEvent),
 ) -> Result<(), String> {
     synth.send_edit_buffer(&original.data)?;
-    let back = synth.fetch().map_err(|e| format!("restore read-back failed: {e}"))?;
+    let back = synth
+        .fetch()
+        .map_err(|e| format!("restore read-back failed: {e}"))?;
     let differences = list_addresses(&diff(&original.data, &back.data), 8);
     let identical = differences.is_empty();
-    report(ProbeEvent::Restored { identical, differences: differences.clone() });
+    report(ProbeEvent::Restored {
+        identical,
+        differences: differences.clone(),
+    });
     if identical {
         Ok(())
     } else {
-        Err(format!("the edit buffer read back differs from the original at {differences}"))
+        Err(format!(
+            "the edit buffer read back differs from the original at {differences}"
+        ))
     }
 }
 
@@ -443,7 +489,11 @@ mod tests {
     }
 
     fn options(interactive: bool) -> ProbeOptions {
-        ProbeOptions { interactive, readback: true, stop_after_rejected: 3 }
+        ProbeOptions {
+            interactive,
+            readback: true,
+            stop_after_rejected: 3,
+        }
     }
 
     fn run(
@@ -478,7 +528,13 @@ mod tests {
         let file = ProbeFile::new(&plan, 0, 0x40);
         let before = s.fetch().unwrap().data;
 
-        let (outcome, events, saves) = run(&mut s, &plan, file, &options(false), &mut Scripted(VecDeque::new(), vec![]));
+        let (outcome, events, saves) = run(
+            &mut s,
+            &plan,
+            file,
+            &options(false),
+            &mut Scripted(VecDeque::new(), vec![]),
+        );
 
         assert!(outcome.error.is_none() && outcome.restore_error.is_none());
         let values: Vec<u8> = outcome.file.results.iter().map(|r| r.value).collect();
@@ -486,12 +542,23 @@ mod tests {
         assert_eq!(saves, 8);
         assert_eq!(outcome.file.get(4).unwrap().accepted, Some(true));
         assert_eq!(outcome.file.get(5).unwrap().readback, Some(4));
-        assert_eq!(outcome.file.get(1).unwrap().printed_hint.as_deref(), Some("PatchVol"));
+        assert_eq!(
+            outcome.file.get(1).unwrap().printed_hint.as_deref(),
+            Some("PatchVol")
+        );
         assert!(outcome.file.results.iter().all(|r| r.note.is_none()));
         assert!(events.iter().any(|e| matches!(e, ProbeEvent::Stopped(_))));
-        assert!(events.contains(&ProbeEvent::Restored { identical: true, differences: String::new() }));
+        assert!(events.contains(&ProbeEvent::Restored {
+            identical: true,
+            differences: String::new()
+        }));
         assert_eq!(s.fetch().unwrap().data, before, "edit buffer restored");
-        let setup: Vec<&Vec<u8>> = s.transport.received.iter().filter(|m| m[6] == 0x71 && m[8] == 64).collect();
+        let setup: Vec<&Vec<u8>> = s
+            .transport
+            .received
+            .iter()
+            .filter(|m| m[6] == 0x71 && m[8] == 64)
+            .collect();
         assert_eq!(setup[0][9], 3, "Assign 1 source = ModWheel");
     }
 
@@ -507,14 +574,25 @@ mod tests {
             Answer::Quit,
         ];
         let mut prompter = Scripted(answers.into_iter().collect(), Vec::new());
-        let (outcome, _, _) = run(&mut s, &plan, ProbeFile::new(&plan, 0, 0x40), &options(true), &mut prompter);
+        let (outcome, _, _) = run(
+            &mut s,
+            &plan,
+            ProbeFile::new(&plan, 0, 0x40),
+            &options(true),
+            &mut prompter,
+        );
         let r = &outcome.file.results;
         assert_eq!(r.len(), 3);
         assert_eq!(r[0].display.as_deref(), Some("Off"));
         assert_eq!(r[1].display.as_deref(), Some("Delay"));
         assert_eq!(r[2].display, None);
         assert!(prompter.1[0].contains("printed list: Off"));
-        let a112_changes = s.transport.received.iter().filter(|m| m[6] == 0x70 && m[8] == 112).count();
+        let a112_changes = s
+            .transport
+            .received
+            .iter()
+            .filter(|m| m[6] == 0x70 && m[8] == 112)
+            .count();
         assert_eq!(a112_changes, 5, "value 1 was sent twice");
     }
 
@@ -534,12 +612,25 @@ mod tests {
         let json = file.to_json();
         let file = ProbeFile::from_json(&json).unwrap();
         let answers = [Answer::Text("Off".into()), Answer::Text("OscHold".into())];
-        let (outcome, events, _) =
-            run(&mut s, &plan, file, &options(true), &mut Scripted(answers.into_iter().collect(), vec![]));
+        let (outcome, events, _) = run(
+            &mut s,
+            &plan,
+            file,
+            &options(true),
+            &mut Scripted(answers.into_iter().collect(), vec![]),
+        );
         assert!(events.contains(&ProbeEvent::Skipped { value: 1 }));
-        let names: Vec<_> = outcome.file.results.iter().map(|r| r.display.clone().unwrap()).collect();
+        let names: Vec<_> = outcome
+            .file
+            .results
+            .iter()
+            .map(|r| r.display.clone().unwrap())
+            .collect();
         assert_eq!(names, ["Off", "Osc", "OscHold"]);
-        assert!(outcome.file.rust_table("VOCODER").contains("\"OscHold\", // 2"));
+        assert!(outcome
+            .file
+            .rust_table("VOCODER")
+            .contains("\"OscHold\", // 2"));
     }
 
     #[test]
@@ -559,7 +650,10 @@ mod tests {
             &mut |_| {},
         );
         assert!(result.unwrap_err().contains("fetch the edit buffer first"));
-        assert!(s.transport.received.iter().all(|m| m[6] == 0x30), "only the request was sent");
+        assert!(
+            s.transport.received.iter().all(|m| m[6] == 0x30),
+            "only the request was sent"
+        );
     }
 
     #[test]
@@ -569,19 +663,33 @@ mod tests {
         fake.edit_buffers.insert(0x40, crate::fake::pattern(0)); // A112 = 80, so probing 0..=1 changes it
         let mut s = synth(fake);
         let plan = value_plan(ParamAddress::a(112), range(0, 1).unwrap()).unwrap();
-        let (outcome, events, _) =
-            run(&mut s, &plan, ProbeFile::new(&plan, 0, 0x40), &options(false), &mut Scripted(VecDeque::new(), vec![]));
+        let (outcome, events, _) = run(
+            &mut s,
+            &plan,
+            ProbeFile::new(&plan, 0, 0x40),
+            &options(false),
+            &mut Scripted(VecDeque::new(), vec![]),
+        );
         assert!(outcome.error.is_none());
         let error = outcome.restore_error.expect("the restore did not take");
-        assert!(error.contains("differs from the original at A112"), "{error}");
-        assert!(events.contains(&ProbeEvent::Restored { identical: false, differences: "A112".to_owned() }));
+        assert!(
+            error.contains("differs from the original at A112"),
+            "{error}"
+        );
+        assert!(events.contains(&ProbeEvent::Restored {
+            identical: false,
+            differences: "A112".to_owned()
+        }));
     }
 
     #[test]
     fn value_plans_refuse_non_sound_parameters_and_bad_ranges() {
         assert!(value_plan(ParamAddress::a(0), vec![0]).is_err());
         assert!(value_plan(ParamAddress::a(1), vec![0]).is_err());
-        assert_eq!(value_plan(ParamAddress::a(49), vec![]).unwrap().hint(6), Some("Shaper"));
+        assert_eq!(
+            value_plan(ParamAddress::a(49), vec![]).unwrap().hint(6),
+            Some("Shaper")
+        );
         assert!(range(5, 4).is_err());
         assert!(range(0, 128).is_err());
         assert_eq!(suggested_max(ParamAddress::a(49)), 40);

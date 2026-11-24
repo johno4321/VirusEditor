@@ -21,8 +21,15 @@ pub struct LibrarySlot {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Replace {
     /// `select`: also switch the synth to this library slot, once the load has happened (E6).
-    Load { patch: Patch, origin: String, select: Option<LibrarySlot> },
-    SendToEditBuffer { patch: Patch, origin: String },
+    Load {
+        patch: Patch,
+        origin: String,
+        select: Option<LibrarySlot>,
+    },
+    SendToEditBuffer {
+        patch: Patch,
+        origin: String,
+    },
     Init,
     Fetch,
 }
@@ -84,15 +91,18 @@ pub struct Comforts {
 /// Label and coalescing key for the edits of one frame.
 pub fn describe(edits: &[Edit]) -> (String, Option<CoalesceKey>) {
     let key_of = |e: &Edit| match e {
-        Edit::Param { page, number, .. } => {
-            Some((if *page == virus_syx::Page::PageA { 0 } else { 128 }) + u32::from(*number))
-        }
+        Edit::Param { page, number, .. } => Some(
+            (if *page == virus_syx::Page::PageA {
+                0
+            } else {
+                128
+            }) + u32::from(*number),
+        ),
         Edit::Name(_) => Some(1000),
     };
     let label_of = |e: &Edit| match e {
-        Edit::Param { page, number, .. } => {
-            virus_syx::single_param(*page, *number).map_or_else(|| format!("param {number}"), |d| d.name.to_owned())
-        }
+        Edit::Param { page, number, .. } => virus_syx::single_param(*page, *number)
+            .map_or_else(|| format!("param {number}"), |d| d.name.to_owned()),
         Edit::Name(_) => "name".to_owned(),
     };
     match edits {
@@ -107,13 +117,19 @@ pub fn describe(edits: &[Edit]) -> (String, Option<CoalesceKey>) {
 
 impl Comforts {
     pub fn new(original: Patch) -> Self {
-        Self { original, ..Self::default() }
+        Self {
+            original,
+            ..Self::default()
+        }
     }
 
     /// A new patch replaced the edited one (load, init, fetch): new original, empty history,
     /// compare ended (nothing is sent). `on_synth` says whether the synth's edit buffer holds it.
     pub fn reset(&mut self, original: Patch, on_synth: bool) {
-        *self = Self { on_synth, ..Self::new(original) };
+        *self = Self {
+            on_synth,
+            ..Self::new(original)
+        };
     }
 
     /// The editor bytes equal the synth's edit buffer, as far as we know (RV-M5). False after
@@ -136,7 +152,8 @@ impl Comforts {
     pub fn adopt_dump(&mut self, previous: &Patch, session: &Session, now: f64) {
         self.compare.discard();
         self.history.seal();
-        self.history.record(previous, session.patch(), "synth dump", None, now);
+        self.history
+            .record(previous, session.patch(), "synth dump", None, now);
         self.original = session.patch().clone();
         self.on_synth = true;
     }
@@ -170,7 +187,8 @@ impl Comforts {
     /// Records the effect of this frame's edits (`before` → the session's patch).
     pub fn record(&mut self, before: &Patch, session: &Session, edits: &[Edit], now: f64) {
         let (label, key) = describe(edits);
-        self.history.record(before, session.patch(), &label, key, now);
+        self.history
+            .record(before, session.patch(), &label, key, now);
     }
 
     /// Ends drag coalescing (pointer released).
@@ -201,14 +219,26 @@ impl Comforts {
     }
 
     /// Pastes (or inits) a section into the edited patch as one undo step.
-    pub fn paste_section(&mut self, session: &mut Session, clip: &SectionClip, verb: &str, now: f64) -> Vec<Vec<u8>> {
+    pub fn paste_section(
+        &mut self,
+        session: &mut Session,
+        clip: &SectionClip,
+        verb: &str,
+        now: f64,
+    ) -> Vec<Vec<u8>> {
         if self.comparing() {
             return Vec::new();
         }
         let before = session.patch().clone();
         let messages = apply_values(session, sections::changes(&before, clip));
         self.history.seal();
-        self.history.record(&before, session.patch(), &format!("{verb} {}", clip.section), None, now);
+        self.history.record(
+            &before,
+            session.patch(),
+            &format!("{verb} {}", clip.section),
+            None,
+            now,
+        );
         messages
     }
 }
@@ -219,7 +249,10 @@ mod tests {
     use virus_syx::{parse_sysex, read_sysex_file, Page, SysExMessage};
 
     fn bank_a() -> Vec<Patch> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/factory/Bank_A.syx");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/factory/Bank_A.syx"
+        );
         read_sysex_file(path)
             .expect("factory bank")
             .iter()
@@ -239,7 +272,11 @@ mod tests {
 
     fn edit(c: &mut Comforts, s: &mut Session, number: u8, value: u8, now: f64) {
         let before = s.patch().clone();
-        let edits = [Edit::Param { page: Page::PageA, number, value }];
+        let edits = [Edit::Param {
+            page: Page::PageA,
+            number,
+            value,
+        }];
         s.edit(Page::PageA, number, value);
         c.record(&before, s, &edits, now);
     }
@@ -252,7 +289,10 @@ mod tests {
         edit(&mut c, &mut s, 40, old ^ 0x20, 0.0);
         assert!(c.is_edited(&s));
         c.undo(&mut s);
-        assert!(!c.is_edited(&s), "undoing back to the original clears the flag");
+        assert!(
+            !c.is_edited(&s),
+            "undoing back to the original clears the flag"
+        );
     }
 
     #[test]
@@ -313,12 +353,18 @@ mod tests {
     #[test]
     fn sync_state_transitions() {
         let (mut c, mut s, banks) = setup();
-        assert!(!c.on_synth(), "a freshly loaded/init patch is not on the synth");
+        assert!(
+            !c.on_synth(),
+            "a freshly loaded/init patch is not on the synth"
+        );
         c.mark_sent();
         assert!(c.on_synth());
         let old = s.patch().get(Page::PageA, 40);
         edit(&mut c, &mut s, 40, old ^ 0x20, 0.0);
-        assert!(c.on_synth() && c.is_edited(&s), "edits are sent, so still in sync, and dirty");
+        assert!(
+            c.on_synth() && c.is_edited(&s),
+            "edits are sent, so still in sync, and dirty"
+        );
         c.mark_unsynced(); // part change or no output
         assert!(!c.on_synth());
         c.reset(banks[1].clone(), true); // fetch
@@ -341,7 +387,11 @@ mod tests {
 
         let messages = c.undo(&mut s);
         assert!(!messages.is_empty());
-        assert_eq!(s.patch(), &dirty, "undo restores the discarded edits exactly");
+        assert_eq!(
+            s.patch(),
+            &dirty,
+            "undo restores the discarded edits exactly"
+        );
         assert!(c.is_edited(&s));
     }
 
@@ -351,8 +401,14 @@ mod tests {
     /// a different A0) replaces it and is adopted as one undo step.
     fn adopted_over_hold_pedal_patch() -> (Comforts, Session, Patch, Patch) {
         let banks = bank_a();
-        let pedal_down = banks.iter().find(|p| p.get(Page::PageA, HOLD_PEDAL) == 127).expect("factory patch with A64 = 127");
-        let pedal_up = banks.iter().find(|p| p.get(Page::PageA, HOLD_PEDAL) != 127).expect("factory patch with A64 < 127");
+        let pedal_down = banks
+            .iter()
+            .find(|p| p.get(Page::PageA, HOLD_PEDAL) == 127)
+            .expect("factory patch with A64 = 127");
+        let pedal_up = banks
+            .iter()
+            .find(|p| p.get(Page::PageA, HOLD_PEDAL) != 127)
+            .expect("factory patch with A64 < 127");
         let mut dump = pedal_up.to_bytes();
         dump[0] ^= 0x01;
         let dump = Patch::from_bytes(&dump);
@@ -375,11 +431,27 @@ mod tests {
         let messages = c.undo(&mut s);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].len(), 267);
-        assert_eq!(messages[0][6..9], [0x10, 0x00, 0x40], "single dump to the Single edit buffer");
+        assert_eq!(
+            messages[0][6..9],
+            [0x10, 0x00, 0x40],
+            "single dump to the Single edit buffer"
+        );
         assert!(!messages.iter().any(|m| is_hold_pedal_change(m)));
-        assert_eq!(s.patch().as_bytes()[1..], previous.as_bytes()[1..], "every other byte is restored");
-        assert_eq!(s.patch().as_bytes()[0], dump.as_bytes()[0], "A0 is never changed");
-        assert_eq!(messages[0][9], dump.as_bytes()[0], "the dump carries the synth's A0");
+        assert_eq!(
+            s.patch().as_bytes()[1..],
+            previous.as_bytes()[1..],
+            "every other byte is restored"
+        );
+        assert_eq!(
+            s.patch().as_bytes()[0],
+            dump.as_bytes()[0],
+            "A0 is never changed"
+        );
+        assert_eq!(
+            messages[0][9],
+            dump.as_bytes()[0],
+            "the dump carries the synth's A0"
+        );
     }
 
     #[test]
@@ -394,7 +466,11 @@ mod tests {
 
     #[test]
     fn describe_names_and_keys() {
-        let one = [Edit::Param { page: Page::PageA, number: 40, value: 1 }];
+        let one = [Edit::Param {
+            page: Page::PageA,
+            number: 40,
+            value: 1,
+        }];
         let (label, key) = describe(&one);
         assert_eq!(label, "Cutoff");
         assert!(key.is_some());
@@ -404,31 +480,55 @@ mod tests {
     }
 
     fn library_load(select: Option<LibrarySlot>) -> Replace {
-        Replace::Load { patch: Patch::init(), origin: "library (Init)".into(), select }
+        Replace::Load {
+            patch: Patch::init(),
+            origin: "library (Init)".into(),
+            select,
+        }
     }
 
     #[test]
     fn unedited_patch_is_replaced_at_once_with_its_selection() {
         let mut request = ReplaceRequest::default();
-        let slot = LibrarySlot { bank_id: 1, program: 5 };
-        assert_eq!(request.request(library_load(Some(slot)), false), Some(library_load(Some(slot))));
+        let slot = LibrarySlot {
+            bank_id: 1,
+            program: 5,
+        };
+        assert_eq!(
+            request.request(library_load(Some(slot)), false),
+            Some(library_load(Some(slot)))
+        );
         assert!(request.pending().is_none());
     }
 
     #[test]
     fn cancelling_the_replace_drops_the_synth_selection() {
         let mut request = ReplaceRequest::default();
-        let slot = LibrarySlot { bank_id: 1, program: 5 };
-        assert_eq!(request.request(library_load(Some(slot)), true), None, "waits for the user");
+        let slot = LibrarySlot {
+            bank_id: 1,
+            program: 5,
+        };
+        assert_eq!(
+            request.request(library_load(Some(slot)), true),
+            None,
+            "waits for the user"
+        );
         assert!(request.pending().is_some());
-        assert_eq!(request.resolve(false), None, "nothing to perform, so nothing is selected on the synth");
+        assert_eq!(
+            request.resolve(false),
+            None,
+            "nothing to perform, so nothing is selected on the synth"
+        );
         assert!(request.pending().is_none());
     }
 
     #[test]
     fn confirming_the_replace_performs_the_load_and_its_selection() {
         let mut request = ReplaceRequest::default();
-        let slot = LibrarySlot { bank_id: 2, program: 127 };
+        let slot = LibrarySlot {
+            bank_id: 2,
+            program: 127,
+        };
         request.request(library_load(Some(slot)), true);
         match request.resolve(true) {
             Some(Replace::Load { select, .. }) => assert_eq!(select, Some(slot)),
@@ -442,9 +542,19 @@ mod tests {
         let fetch = Replace::Fetch.warning("Lead");
         assert!(fetch.contains("Undo brings them back"), "{fetch}");
         assert!(!fetch.contains("discards"), "{fetch}");
-        for action in [library_load(None), Replace::Init, Replace::SendToEditBuffer { patch: Patch::init(), origin: String::new() }] {
+        for action in [
+            library_load(None),
+            Replace::Init,
+            Replace::SendToEditBuffer {
+                patch: Patch::init(),
+                origin: String::new(),
+            },
+        ] {
             let text = action.warning("Lead");
-            assert!(text.contains("discards them and the undo history"), "{text}");
+            assert!(
+                text.contains("discards them and the undo history"),
+                "{text}"
+            );
         }
     }
 }

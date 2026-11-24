@@ -14,10 +14,18 @@ use std::thread;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Task {
-    PickImport { dir: Option<PathBuf> },
-    PickExport { dir: Option<PathBuf>, file_name: String },
+    PickImport {
+        dir: Option<PathBuf>,
+    },
+    PickExport {
+        dir: Option<PathBuf>,
+        file_name: String,
+    },
     ReadFile(PathBuf),
-    WriteFile { path: PathBuf, bytes: Vec<u8> },
+    WriteFile {
+        path: PathBuf,
+        bytes: Vec<u8>,
+    },
 }
 
 impl Task {
@@ -36,8 +44,14 @@ pub enum Outcome {
     /// `None` = the dialog was cancelled.
     ImportPicked(Option<PathBuf>),
     ExportPicked(Option<PathBuf>),
-    Read { path: PathBuf, result: Result<Vec<u8>, String> },
-    Written { path: PathBuf, result: Result<(), String> },
+    Read {
+        path: PathBuf,
+        result: Result<Vec<u8>, String>,
+    },
+    Written {
+        path: PathBuf,
+        result: Result<(), String>,
+    },
     /// The worker panicked.
     Failed(String),
 }
@@ -63,18 +77,22 @@ impl Backend for SystemBackend {
                 Outcome::ImportPicked(block_on(dialog.pick_file()).map(|f| f.path().to_path_buf()))
             }
             Task::PickExport { dir, file_name } => {
-                let mut dialog = rfd::AsyncFileDialog::new().add_filter("SysEx", &["syx"]).set_file_name(file_name);
+                let mut dialog = rfd::AsyncFileDialog::new()
+                    .add_filter("SysEx", &["syx"])
+                    .set_file_name(file_name);
                 if let Some(dir) = dir {
                     dialog = dialog.set_directory(dir);
                 }
                 Outcome::ExportPicked(block_on(dialog.save_file()).map(|f| f.path().to_path_buf()))
             }
             Task::ReadFile(path) => {
-                let result = std::fs::read(&path).map_err(|e| format!("Cannot read {}: {e}", path.display()));
+                let result = std::fs::read(&path)
+                    .map_err(|e| format!("Cannot read {}: {e}", path.display()));
                 Outcome::Read { path, result }
             }
             Task::WriteFile { path, bytes } => {
-                let result = std::fs::write(&path, bytes).map_err(|e| format!("Cannot write {}: {e}", path.display()));
+                let result = std::fs::write(&path, bytes)
+                    .map_err(|e| format!("Cannot write {}: {e}", path.display()));
                 Outcome::Written { path, result }
             }
         }
@@ -125,7 +143,14 @@ impl Default for FileJobs {
 impl FileJobs {
     pub fn with_backend(backend: Arc<dyn Backend>) -> Self {
         let (sender, receiver) = channel();
-        Self { backend, sender, receiver, busy: None, import_dir: None, export_dir: None }
+        Self {
+            backend,
+            sender,
+            receiver,
+            busy: None,
+            import_dir: None,
+            export_dir: None,
+        }
     }
 
     /// What is running, for the busy indicator; `None` when idle.
@@ -142,8 +167,9 @@ impl FileJobs {
         let backend = Arc::clone(&self.backend);
         let sender = self.sender.clone();
         thread::spawn(move || {
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| backend.run(task)))
-                .unwrap_or_else(|_| Outcome::Failed("the file worker crashed".to_owned()));
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| backend.run(task)))
+                    .unwrap_or_else(|_| Outcome::Failed("the file worker crashed".to_owned()));
             let _ = sender.send(outcome);
             wake();
         });
@@ -212,16 +238,27 @@ mod tests {
                     self.gate.lock().unwrap().recv().unwrap();
                     Outcome::ImportPicked(dir.map(|d| d.join("bank.syx")))
                 }
-                Task::ReadFile(path) => Outcome::Read { path, result: Ok(vec![1, 2, 3]) },
+                Task::ReadFile(path) => Outcome::Read {
+                    path,
+                    result: Ok(vec![1, 2, 3]),
+                },
                 Task::PickExport { .. } => panic!("boom"),
-                Task::WriteFile { path, .. } => Outcome::Written { path, result: Err("disk full".into()) },
+                Task::WriteFile { path, .. } => Outcome::Written {
+                    path,
+                    result: Err("disk full".into()),
+                },
             }
         }
     }
 
     fn jobs() -> (FileJobs, Sender<()>) {
         let (release, gate) = channel();
-        (FileJobs::with_backend(Arc::new(Fake { gate: Mutex::new(gate) })), release)
+        (
+            FileJobs::with_backend(Arc::new(Fake {
+                gate: Mutex::new(gate),
+            })),
+            release,
+        )
     }
 
     fn wait(jobs: &mut FileJobs) -> Outcome {
@@ -240,16 +277,24 @@ mod tests {
         let (mut jobs, release) = jobs();
         let woken = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&woken);
-        jobs.start(Task::PickImport { dir: Some(PathBuf::from("songs")) }, move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        })
+        jobs.start(
+            Task::PickImport {
+                dir: Some(PathBuf::from("songs")),
+            },
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+        )
         .unwrap();
         assert!(jobs.busy().is_some());
         assert_eq!(jobs.poll(), None, "the dialog is still open");
         assert_eq!(jobs.start(Task::ReadFile("x".into()), || {}), Err(Busy));
 
         release.send(()).unwrap();
-        assert_eq!(wait(&mut jobs), Outcome::ImportPicked(Some(PathBuf::from("songs").join("bank.syx"))));
+        assert_eq!(
+            wait(&mut jobs),
+            Outcome::ImportPicked(Some(PathBuf::from("songs").join("bank.syx")))
+        );
         assert_eq!(jobs.busy(), None);
         assert_eq!(woken.load(Ordering::SeqCst), 1);
     }
@@ -258,33 +303,92 @@ mod tests {
     fn tasks_chain_and_failures_come_back_as_outcomes() {
         let (mut jobs, _release) = jobs();
         jobs.start(Task::ReadFile("a.syx".into()), || {}).unwrap();
-        assert_eq!(wait(&mut jobs), Outcome::Read { path: "a.syx".into(), result: Ok(vec![1, 2, 3]) });
-        jobs.start(Task::WriteFile { path: "b.syx".into(), bytes: vec![] }, || {}).unwrap();
-        assert_eq!(wait(&mut jobs), Outcome::Written { path: "b.syx".into(), result: Err("disk full".into()) });
-        jobs.start(Task::PickExport { dir: None, file_name: "x.syx".into() }, || {}).unwrap();
-        assert!(matches!(wait(&mut jobs), Outcome::Failed(_)), "a worker panic must not leave the UI busy");
+        assert_eq!(
+            wait(&mut jobs),
+            Outcome::Read {
+                path: "a.syx".into(),
+                result: Ok(vec![1, 2, 3])
+            }
+        );
+        jobs.start(
+            Task::WriteFile {
+                path: "b.syx".into(),
+                bytes: vec![],
+            },
+            || {},
+        )
+        .unwrap();
+        assert_eq!(
+            wait(&mut jobs),
+            Outcome::Written {
+                path: "b.syx".into(),
+                result: Err("disk full".into())
+            }
+        );
+        jobs.start(
+            Task::PickExport {
+                dir: None,
+                file_name: "x.syx".into(),
+            },
+            || {},
+        )
+        .unwrap();
+        assert!(
+            matches!(wait(&mut jobs), Outcome::Failed(_)),
+            "a worker panic must not leave the UI busy"
+        );
         assert_eq!(jobs.busy(), None);
     }
 
     #[test]
     fn system_backend_reads_and_writes_files() {
-        let path = std::env::temp_dir().join(format!("virus-app-dialogs-{}.syx", std::process::id()));
-        let write = SystemBackend.run(Task::WriteFile { path: path.clone(), bytes: vec![0xF0, 0xF7] });
-        assert_eq!(write, Outcome::Written { path: path.clone(), result: Ok(()) });
+        let path =
+            std::env::temp_dir().join(format!("virus-app-dialogs-{}.syx", std::process::id()));
+        let write = SystemBackend.run(Task::WriteFile {
+            path: path.clone(),
+            bytes: vec![0xF0, 0xF7],
+        });
+        assert_eq!(
+            write,
+            Outcome::Written {
+                path: path.clone(),
+                result: Ok(())
+            }
+        );
         let read = SystemBackend.run(Task::ReadFile(path.clone()));
-        assert_eq!(read, Outcome::Read { path: path.clone(), result: Ok(vec![0xF0, 0xF7]) });
+        assert_eq!(
+            read,
+            Outcome::Read {
+                path: path.clone(),
+                result: Ok(vec![0xF0, 0xF7])
+            }
+        );
         std::fs::remove_file(&path).unwrap();
-        let Outcome::Read { result, .. } = SystemBackend.run(Task::ReadFile(path)) else { panic!() };
+        let Outcome::Read { result, .. } = SystemBackend.run(Task::ReadFile(path)) else {
+            panic!()
+        };
         assert!(result.unwrap_err().starts_with("Cannot read"));
     }
 
     #[test]
     fn saved_folders_are_offered_to_both_tabs() {
-        let saved = SharedFolders { import: Some(PathBuf::from("in")), export: Some(PathBuf::from("out")) };
+        let saved = SharedFolders {
+            import: Some(PathBuf::from("in")),
+            export: Some(PathBuf::from("out")),
+        };
         let (mut librarian, mut multi) = (FileJobs::default(), FileJobs::default());
         saved.offer(&mut librarian, &mut multi);
-        assert_eq!((librarian.import_dir.as_deref(), librarian.export_dir.as_deref()), (Some("in".as_ref()), Some("out".as_ref())));
-        assert_eq!((multi.import_dir.as_deref(), multi.export_dir.as_deref()), (Some("in".as_ref()), Some("out".as_ref())));
+        assert_eq!(
+            (
+                librarian.import_dir.as_deref(),
+                librarian.export_dir.as_deref()
+            ),
+            (Some("in".as_ref()), Some("out".as_ref()))
+        );
+        assert_eq!(
+            (multi.import_dir.as_deref(), multi.export_dir.as_deref()),
+            (Some("in".as_ref()), Some("out".as_ref()))
+        );
     }
 
     #[test]

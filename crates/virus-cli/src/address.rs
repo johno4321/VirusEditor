@@ -71,15 +71,24 @@ fn page_c_name(number: u8) -> Option<&'static str> {
 
 impl ParamAddress {
     pub const fn a(number: u8) -> Self {
-        Self { page: Page::PageA, number }
+        Self {
+            page: Page::PageA,
+            number,
+        }
     }
 
     pub const fn b(number: u8) -> Self {
-        Self { page: Page::PageB, number }
+        Self {
+            page: Page::PageB,
+            number,
+        }
     }
 
     pub const fn c(number: u8) -> Self {
-        Self { page: Page::PageC, number }
+        Self {
+            page: Page::PageC,
+            number,
+        }
     }
 
     /// The documented table row, if any (Page A/B only).
@@ -102,7 +111,10 @@ impl ParamAddress {
 
     /// Offset in the 256-byte patch. Only meaningful for Page A/B (see [`Self::in_single_dump`]).
     pub fn offset(self) -> usize {
-        debug_assert!(self.in_single_dump(), "{self} is not part of the single dump");
+        debug_assert!(
+            self.in_single_dump(),
+            "{self} is not part of the single dump"
+        );
         match self.page {
             Page::PageB => 128 + self.number as usize,
             _ => self.number as usize,
@@ -137,7 +149,9 @@ impl ParamAddress {
         }
         match self.def().map(|d| d.class) {
             Some(ParamClass::Sound) => None,
-            Some(ParamClass::Performance) => Some("a performance controller (not stored in the sound)"),
+            Some(ParamClass::Performance) => {
+                Some("a performance controller (not stored in the sound)")
+            }
             Some(ParamClass::Internal) => Some("internal (A0 Sound Version must never be changed)"),
             None => Some("undocumented"),
         }
@@ -174,7 +188,11 @@ pub fn parse_set_address(text: &str) -> Result<ParamAddress, String> {
         Some('A') => Page::PageA,
         Some('B') => Page::PageB,
         Some('C') => Page::PageC,
-        _ => return Err(format!("expected a parameter like A40, B39 or C32, got '{text}'")),
+        _ => {
+            return Err(format!(
+                "expected a parameter like A40, B39 or C32, got '{text}'"
+            ))
+        }
     };
     match chars.as_str().parse::<u8>() {
         Ok(number @ 0..=127) => Ok(ParamAddress { page, number }),
@@ -188,9 +206,15 @@ pub fn parse_value(text: &str) -> Result<u8, String> {
     let error = || format!("value must be 0-127 or a signed bipolar value -64..+63, got '{text}'");
     if text.starts_with('+') || text.starts_with('-') {
         let signed: i16 = text.parse().map_err(|_| error())?;
-        return u8::try_from(signed + 64).ok().filter(|v| *v <= 127).ok_or_else(error);
+        return u8::try_from(signed + 64)
+            .ok()
+            .filter(|v| *v <= 127)
+            .ok_or_else(error);
     }
-    text.parse::<u8>().ok().filter(|v| *v <= 127).ok_or_else(error)
+    text.parse::<u8>()
+        .ok()
+        .filter(|v| *v <= 127)
+        .ok_or_else(error)
 }
 
 #[cfg(test)]
@@ -249,10 +273,16 @@ mod tests {
         assert_eq!(ParamAddress::c(39).edit_warning(), None);
         for disruptive in [93, 122, 123, 124, 98, 99] {
             let warning = ParamAddress::c(disruptive).edit_warning();
-            assert!(warning.is_some_and(|w| w.contains("global")), "C{disruptive}: {warning:?}");
+            assert!(
+                warning.is_some_and(|w| w.contains("global")),
+                "C{disruptive}: {warning:?}"
+            );
         }
         assert_eq!(ParamAddress::c(60).name(), "(undocumented)");
-        assert!(ParamAddress::c(60).edit_warning().unwrap().contains("undocumented"));
+        assert!(ParamAddress::c(60)
+            .edit_warning()
+            .unwrap()
+            .contains("undocumented"));
         assert_eq!(ParamAddress::c(32).describe_value(1), "1");
     }
 }

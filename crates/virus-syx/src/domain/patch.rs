@@ -1,7 +1,9 @@
 //! The 256-byte Access Virus single patch. The raw bytes are the single source of truth (SPEC §5.1).
 
 use crate::params::{ASSIGN_LAYOUT, LFO_ASSIGN_LAYOUT};
-use crate::sysex::{encode_program_dump, parse_sysex, Page, SysExMessage, SyxError, PART_SINGLE_BUFFER};
+use crate::sysex::{
+    encode_program_dump, parse_sysex, Page, SysExMessage, SyxError, PART_SINGLE_BUFFER,
+};
 use crate::types::{AssignSource, Category};
 
 pub const PATCH_TOTAL_LEN: usize = 256;
@@ -68,7 +70,9 @@ pub enum DumpTarget {
 
 impl DumpTarget {
     /// The Single-mode edit buffer.
-    pub const SINGLE_BUFFER: Self = Self::EditBuffer { part: PART_SINGLE_BUFFER };
+    pub const SINGLE_BUFFER: Self = Self::EditBuffer {
+        part: PART_SINGLE_BUFFER,
+    };
 
     /// Decodes `bb`/`ss`; `None` for undocumented bank numbers (e.g. banks E–H, Q2).
     pub fn from_raw(bb: u8, ss: u8) -> Option<Self> {
@@ -152,7 +156,13 @@ impl Patch {
     pub fn name(&self) -> String {
         let name: String = self.bytes[NAME_OFFSET..NAME_OFFSET + NAME_LEN]
             .iter()
-            .map(|&b| if (32..=126).contains(&b) { b as char } else { '?' })
+            .map(|&b| {
+                if (32..=126).contains(&b) {
+                    b as char
+                } else {
+                    '?'
+                }
+            })
             .collect();
         name.trim_end_matches(' ').to_owned()
     }
@@ -161,7 +171,10 @@ impl Patch {
     /// truncated to 10 characters and padded with spaces (SPEC §5.4).
     pub fn set_name(&mut self, name: &str) {
         let mut chars = name.chars().map(|c| {
-            u8::try_from(c).ok().filter(|b| (32..=127).contains(b)).unwrap_or(b'?')
+            u8::try_from(c)
+                .ok()
+                .filter(|b| (32..=127).contains(b))
+                .unwrap_or(b'?')
         });
         for slot in &mut self.bytes[NAME_OFFSET..NAME_OFFSET + NAME_LEN] {
             *slot = chars.next().unwrap_or(b' ');
@@ -265,8 +278,14 @@ impl Patch {
     /// use [`parse_sysex`] when the checksum status matters.
     pub fn from_sysex(msg: &[u8]) -> Result<(Self, DumpTarget), SyxError> {
         match parse_sysex(msg)? {
-            SysExMessage::SingleDump { bank, program, data, .. } => {
-                let target = DumpTarget::from_raw(bank, program).ok_or(SyxError::UnsupportedBank(bank))?;
+            SysExMessage::SingleDump {
+                bank,
+                program,
+                data,
+                ..
+            } => {
+                let target =
+                    DumpTarget::from_raw(bank, program).ok_or(SyxError::UnsupportedBank(bank))?;
                 Ok((Self::from_bytes(&data), target))
             }
             _ => Err(SyxError::NotASingleDump { command: msg[6] }),
@@ -307,7 +326,9 @@ mod tests {
             for number in 1..128u8 {
                 let mut patch = original.clone();
                 patch.set(page, number, 0xFF);
-                for (i, (&new, &old)) in patch.as_bytes().iter().zip(original.as_bytes()).enumerate() {
+                for (i, (&new, &old)) in
+                    patch.as_bytes().iter().zip(original.as_bytes()).enumerate()
+                {
                     if i == base + number as usize {
                         assert_eq!(new, 0x7F);
                     } else {
@@ -337,7 +358,10 @@ mod tests {
         assert_eq!(patch.name(), "?n?c?d?? L");
 
         patch.set_name("Bass");
-        assert_eq!(&patch.as_bytes()[NAME_OFFSET..NAME_OFFSET + NAME_LEN], b"Bass      ");
+        assert_eq!(
+            &patch.as_bytes()[NAME_OFFSET..NAME_OFFSET + NAME_LEN],
+            b"Bass      "
+        );
         assert_eq!(patch.name(), "Bass");
 
         patch.set_name("a\tb\n");
@@ -365,7 +389,10 @@ mod tests {
     #[test]
     fn from_sysex_rejects_non_dumps_and_unknown_banks() {
         let param = encode_param_change(DEVICE_ID_OMNI, Page::PageA, 0x40, 40, 1);
-        assert_eq!(Patch::from_sysex(&param), Err(SyxError::NotASingleDump { command: 0x70 }));
+        assert_eq!(
+            Patch::from_sysex(&param),
+            Err(SyxError::NotASingleDump { command: 0x70 })
+        );
 
         let dump = encode_program_dump(DEVICE_ID_OMNI, 5, 0, Patch::init().as_bytes());
         assert_eq!(Patch::from_sysex(&dump), Err(SyxError::UnsupportedBank(5)));
@@ -383,8 +410,17 @@ mod tests {
         patch.set(Page::PageB, 77, 114);
         patch.set(Page::PageB, 78, 10);
         let slots = patch.assign_slots();
-        assert_eq!(slots.iter().map(|s| s.targets.len()).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(
+            slots.iter().map(|s| s.targets.len()).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
         assert_eq!(slots[2].source, AssignSource::Lfo1);
-        assert_eq!(slots[2].targets[2], AssignTarget { destination: 114, amount: 10 });
+        assert_eq!(
+            slots[2].targets[2],
+            AssignTarget {
+                destination: 114,
+                amount: 10
+            }
+        );
     }
 }

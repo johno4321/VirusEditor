@@ -99,16 +99,22 @@ fn port_combo(
         None => RichText::new("None"),
     };
     ui.label(RichText::new(format!("MIDI {label}")).strong());
-    ComboBox::from_id_source(("midi-port", label)).width(170.0).selected_text(text).show_ui(ui, |ui| {
-        if ui.selectable_label(selected.is_none(), "None").clicked() {
-            picked = Some(None);
-        }
-        for name in available {
-            if ui.selectable_label(selected.as_ref() == Some(name), name).clicked() {
-                picked = Some(Some(name.clone()));
+    ComboBox::from_id_source(("midi-port", label))
+        .width(170.0)
+        .selected_text(text)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(selected.is_none(), "None").clicked() {
+                picked = Some(None);
             }
-        }
-    });
+            for name in available {
+                if ui
+                    .selectable_label(selected.as_ref() == Some(name), name)
+                    .clicked()
+                {
+                    picked = Some(Some(name.clone()));
+                }
+            }
+        });
     picked
 }
 

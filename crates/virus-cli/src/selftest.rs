@@ -38,7 +38,11 @@ pub struct Check {
 
 impl Check {
     fn new(name: impl Into<String>, status: Status, detail: impl Into<String>) -> Self {
-        Self { name: name.into(), status, detail: detail.into() }
+        Self {
+            name: name.into(),
+            status,
+            detail: detail.into(),
+        }
     }
 }
 
@@ -68,7 +72,11 @@ pub fn run_selftest<T: Transport>(
     let original = match synth.fetch() {
         Ok(dump) => {
             let patch = Patch::from_bytes(&dump.data);
-            let status = if dump.checksum_ok { Status::Pass } else { Status::Fail };
+            let status = if dump.checksum_ok {
+                Status::Pass
+            } else {
+                Status::Fail
+            };
             push(
                 Check::new(
                     "fetch edit buffer (30 00 pp)",
@@ -86,7 +94,10 @@ pub fn run_selftest<T: Transport>(
             Some(dump)
         }
         Err(e) => {
-            push(Check::new("fetch edit buffer (30 00 pp)", Status::Fail, e.to_string()), &mut checks);
+            push(
+                Check::new("fetch edit buffer (30 00 pp)", Status::Fail, e.to_string()),
+                &mut checks,
+            );
             None
         }
     };
@@ -102,9 +113,15 @@ pub fn run_selftest<T: Transport>(
         }
         None => {
             for address in ROUND_TRIP_PARAMS {
-                push(Check::new(round_trip_name(address), Status::Skip, "no edit buffer"), &mut checks);
+                push(
+                    Check::new(round_trip_name(address), Status::Skip, "no edit buffer"),
+                    &mut checks,
+                );
             }
-            push(Check::new(SEND_NAME, Status::Skip, "no edit buffer"), &mut checks);
+            push(
+                Check::new(SEND_NAME, Status::Skip, "no edit buffer"),
+                &mut checks,
+            );
         }
     }
 
@@ -114,13 +131,22 @@ pub fn run_selftest<T: Transport>(
             let (collector, error) = synth.get_bank(bank, |_| {});
             let bad = collector.bad_checksums();
             let check = match error {
-                None if bad.is_empty() => Check::new(name, Status::Pass, "128 dumps, all checksums ok"),
-                None => Check::new(name, Status::Fail, format!("128 dumps, wrong checksums in programs {bad:?}")),
+                None if bad.is_empty() => {
+                    Check::new(name, Status::Pass, "128 dumps, all checksums ok")
+                }
+                None => Check::new(
+                    name,
+                    Status::Fail,
+                    format!("128 dumps, wrong checksums in programs {bad:?}"),
+                ),
                 Some(e) => Check::new(name, Status::Fail, e.to_string()),
             };
             push(check, &mut checks);
         }
-        None => push(Check::new("bank request (32 bb)", Status::Skip, "--skip-bank"), &mut checks),
+        None => push(
+            Check::new("bank request (32 bb)", Status::Skip, "--skip-bank"),
+            &mut checks,
+        ),
     }
 
     if options.global_request {
@@ -135,7 +161,11 @@ pub fn run_selftest<T: Transport>(
                     hex(&frame[..frame.len().min(16)])
                 ),
             ),
-            Err(e) => Check::new("global request (35)", Status::Info, format!("no answer ({e})")),
+            Err(e) => Check::new(
+                "global request (35)",
+                Status::Info,
+                format!("no answer ({e})"),
+            ),
         };
         push(check, &mut checks);
     }
@@ -143,14 +173,22 @@ pub fn run_selftest<T: Transport>(
 }
 
 fn round_trip_name(address: ParamAddress) -> String {
-    format!("param change {address} {} (7{}) → read back", address.name(), if address.offset() < 128 { 0 } else { 1 })
+    format!(
+        "param change {address} {} (7{}) → read back",
+        address.name(),
+        if address.offset() < 128 { 0 } else { 1 }
+    )
 }
 
 const SEND_NAME: &str = "send edit buffer (10 00 pp) → read back identical";
 
 /// Changes `address` by one step, checks only that byte changed, then puts it back and checks
 /// the whole edit buffer is the original again.
-fn param_round_trip<T: Transport>(synth: &mut Synth<T>, original: &ReceivedDump, address: ParamAddress) -> Check {
+fn param_round_trip<T: Transport>(
+    synth: &mut Synth<T>,
+    original: &ReceivedDump,
+    address: ParamAddress,
+) -> Check {
     let name = round_trip_name(address);
     let old = original.data[address.offset()];
     let new = if old < 127 { old + 1 } else { old - 1 };
@@ -172,7 +210,10 @@ fn param_round_trip<T: Transport>(synth: &mut Synth<T>, original: &ReceivedDump,
         let back = synth.fetch().map_err(|e| e.to_string())?;
         let differences = diff(&original.data, &back.data);
         if !differences.is_empty() {
-            return Err(format!("after restoring {address} bytes differ: {}", list_addresses(&differences, 8)));
+            return Err(format!(
+                "after restoring {address} bytes differ: {}",
+                list_addresses(&differences, 8)
+            ));
         }
         Ok(format!("{old}→{new}→{old}, only {address} changed"))
     })();
@@ -210,11 +251,16 @@ pub const MANUAL_CHECKS: &[&str] = &[
 pub fn format_report(checks: &[Check]) -> String {
     let mut out = String::new();
     for check in checks {
-        out.push_str(&format!("[{}] {}\n       {}\n", check.status, check.name, check.detail));
+        out.push_str(&format!(
+            "[{}] {}\n       {}\n",
+            check.status, check.name, check.detail
+        ));
     }
     let failed = checks.iter().filter(|c| c.status == Status::Fail).count();
     let passed = checks.iter().filter(|c| c.status == Status::Pass).count();
-    out.push_str(&format!("\n{passed} passed, {failed} failed\n\nStill to check by hand (G2):\n"));
+    out.push_str(&format!(
+        "\n{passed} passed, {failed} failed\n\nStill to check by hand (G2):\n"
+    ));
     for item in MANUAL_CHECKS {
         out.push_str(&format!("  - {item}\n"));
     }
@@ -232,7 +278,10 @@ mod tests {
     use virus_syx::Page;
 
     fn options() -> SelftestOptions {
-        SelftestOptions { bank: Some(1), global_request: true }
+        SelftestOptions {
+            bank: Some(1),
+            global_request: true,
+        }
     }
 
     #[test]
@@ -252,9 +301,25 @@ mod tests {
         let mut fake = FakeVirus::new(0);
         fake.silent = true;
         let mut s = synth(fake);
-        let checks = run_selftest(&mut s, &SelftestOptions { bank: None, global_request: false }, &mut |_| {});
+        let checks = run_selftest(
+            &mut s,
+            &SelftestOptions {
+                bank: None,
+                global_request: false,
+            },
+            &mut |_| {},
+        );
         let statuses: Vec<Status> = checks.iter().map(|c| c.status).collect();
-        assert_eq!(statuses, [Status::Fail, Status::Skip, Status::Skip, Status::Skip, Status::Skip]);
+        assert_eq!(
+            statuses,
+            [
+                Status::Fail,
+                Status::Skip,
+                Status::Skip,
+                Status::Skip,
+                Status::Skip
+            ]
+        );
         assert!(!all_passed(&checks));
     }
 
@@ -272,6 +337,9 @@ mod tests {
         assert_eq!(check.status, Status::Fail, "{check:?}");
         assert!(check.detail.contains("read back 0"));
         let original = s.fetch().unwrap();
-        assert_eq!(param_round_trip(&mut s, &original, ParamAddress::a(40)).status, Status::Pass);
+        assert_eq!(
+            param_round_trip(&mut s, &original, ParamAddress::a(40)).status,
+            Status::Pass
+        );
     }
 }

@@ -168,7 +168,13 @@ pub struct WindowPrefs {
 
 impl Default for WindowPrefs {
     fn default() -> Self {
-        Self { width: 1280.0, height: 860.0, x: None, y: None, maximized: false }
+        Self {
+            width: 1280.0,
+            height: 860.0,
+            x: None,
+            y: None,
+            maximized: false,
+        }
     }
 }
 
@@ -187,7 +193,11 @@ impl WindowPrefs {
         let sane = |v: Option<f32>| v.filter(|v| v.is_finite() && v.abs() <= POSITION_LIMIT);
         let (x, y) = (sane(self.x), sane(self.y));
         // Only restore a complete position.
-        (self.x, self.y) = if x.is_some() && y.is_some() { (x, y) } else { (None, None) };
+        (self.x, self.y) = if x.is_some() && y.is_some() {
+            (x, y)
+        } else {
+            (None, None)
+        };
         Some(self)
     }
 
@@ -199,7 +209,9 @@ impl WindowPrefs {
         }
         let maximized = info.maximized == Some(true);
         if maximized {
-            return previous.or(Some(Self::default())).map(|p| Self { maximized, ..p });
+            return previous
+                .or(Some(Self::default()))
+                .map(|p| Self { maximized, ..p });
         }
         let (Some(inner), outer) = (info.inner_rect, info.outer_rect) else {
             return previous;
@@ -216,7 +228,9 @@ impl WindowPrefs {
     }
 
     pub fn apply(&self, builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
-        let builder = builder.with_inner_size([self.width, self.height]).with_maximized(self.maximized);
+        let builder = builder
+            .with_inner_size([self.width, self.height])
+            .with_maximized(self.maximized);
         match (self.x, self.y) {
             (Some(x), Some(y)) => builder.with_position([x, y]),
             _ => builder,
@@ -248,7 +262,10 @@ impl Settings {
         }
         a.length_ms = a.length_ms.clamp(50, 60_000);
 
-        if !matches!(self.ui.tab.as_str(), "editor" | "modulation" | "librarian" | "multi") {
+        if !matches!(
+            self.ui.tab.as_str(),
+            "editor" | "modulation" | "librarian" | "multi"
+        ) {
             self.ui.tab = UiPrefs::default().tab;
         }
         self.window = self.window.and_then(WindowPrefs::sanitize);
@@ -285,12 +302,18 @@ fn migrate(root: &mut Map<String, Value>) {
 /// Parses a settings file. Unknown fields are ignored, missing or malformed sections take
 /// their defaults; only text that is not a JSON object is an error.
 pub fn parse(text: &str) -> Result<Settings, String> {
-    let Value::Object(mut root) = serde_json::from_str::<Value>(text).map_err(|e| e.to_string())? else {
+    let Value::Object(mut root) = serde_json::from_str::<Value>(text).map_err(|e| e.to_string())?
+    else {
         return Err("the file does not contain a JSON object".to_owned());
     };
     migrate(&mut root);
-    fn section<T: serde::de::DeserializeOwned + Default>(root: &Map<String, Value>, key: &str) -> T {
-        root.get(key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
+    fn section<T: serde::de::DeserializeOwned + Default>(
+        root: &Map<String, Value>,
+        key: &str,
+    ) -> T {
+        root.get(key)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default()
     }
     let mut settings = Settings {
         version: CURRENT_VERSION,
@@ -322,17 +345,26 @@ pub fn load_from(path: &Path) -> Loaded {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Loaded { settings: Settings::default(), warning: None };
+            return Loaded {
+                settings: Settings::default(),
+                warning: None,
+            };
         }
         Err(e) => {
             return Loaded {
                 settings: Settings::default(),
-                warning: Some(format!("Settings could not be read ({}): {e}. Using defaults.", path.display())),
+                warning: Some(format!(
+                    "Settings could not be read ({}): {e}. Using defaults.",
+                    path.display()
+                )),
             };
         }
     };
     match parse(&text) {
-        Ok(settings) => Loaded { settings, warning: None },
+        Ok(settings) => Loaded {
+            settings,
+            warning: None,
+        },
         Err(reason) => {
             let backup = backup_path(path);
             let moved = std::fs::rename(path, &backup);
@@ -343,13 +375,19 @@ pub fn load_from(path: &Path) -> Loaded {
                 ),
                 Err(e) => format!("The settings file is corrupt ({reason}) and could not be renamed: {e}. Using defaults."),
             };
-            Loaded { settings: Settings::default(), warning: Some(warning) }
+            Loaded {
+                settings: Settings::default(),
+                warning: Some(warning),
+            }
         }
     }
 }
 
 fn backup_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().map(std::ffi::OsString::from).unwrap_or_default();
+    let mut name = path
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_default();
     name.push(".bak");
     path.with_file_name(name)
 }
@@ -357,12 +395,17 @@ fn backup_path(path: &Path) -> PathBuf {
 /// Writes via a temporary file so a crash never leaves half a settings file.
 pub fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
-    let mut tmp_name = path.file_name().map(std::ffi::OsString::from).unwrap_or_default();
+    let mut tmp_name = path
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_default();
     tmp_name.push(".tmp");
     let tmp = path.with_file_name(tmp_name);
-    std::fs::write(&tmp, serialize(settings)).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    std::fs::write(&tmp, serialize(settings))
+        .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("cannot replace {}: {e}", path.display()))
 }
 
@@ -379,16 +422,30 @@ impl SettingsStore {
     pub fn load() -> (Self, Loaded) {
         match data_dir() {
             Ok(dir) => Self::load_at(dir.join(SETTINGS_FILE_NAME)),
-            Err(_) => (Self { path: None, saved: Settings::default(), last_write: None }, Loaded {
-                settings: Settings::default(),
-                warning: None,
-            }),
+            Err(_) => (
+                Self {
+                    path: None,
+                    saved: Settings::default(),
+                    last_write: None,
+                },
+                Loaded {
+                    settings: Settings::default(),
+                    warning: None,
+                },
+            ),
         }
     }
 
     pub fn load_at(path: PathBuf) -> (Self, Loaded) {
         let loaded = load_from(&path);
-        (Self { path: Some(path), saved: loaded.settings.clone(), last_write: None }, loaded)
+        (
+            Self {
+                path: Some(path),
+                saved: loaded.settings.clone(),
+                last_write: None,
+            },
+            loaded,
+        )
     }
 
     /// `true` while `current` differs from what was last written.
@@ -398,18 +455,29 @@ impl SettingsStore {
 
     /// Writes `current` if it differs from what was last saved and the rate limit allows it
     /// (or `force`, on exit). Returns an error text if the write failed.
-    pub fn save_if_changed(&mut self, current: &Settings, now: Instant, force: bool) -> Option<String> {
+    pub fn save_if_changed(
+        &mut self,
+        current: &Settings,
+        now: Instant,
+        force: bool,
+    ) -> Option<String> {
         let path = self.path.as_ref()?;
         if *current == self.saved {
             return None;
         }
-        if !force && self.last_write.is_some_and(|t| now.duration_since(t) < SAVE_INTERVAL) {
+        if !force
+            && self
+                .last_write
+                .is_some_and(|t| now.duration_since(t) < SAVE_INTERVAL)
+        {
             return None;
         }
         self.last_write = Some(now);
         // Don't retry every frame after a failure; the next change tries again.
         self.saved = current.clone();
-        save_to(path, current).err().map(|e| format!("Settings could not be saved: {e}"))
+        save_to(path, current)
+            .err()
+            .map(|e| format!("Settings could not be saved: {e}"))
     }
 }
 
@@ -417,9 +485,16 @@ impl SettingsStore {
 /// wanted ports (kept even if absent, so they reconnect later); a saved port that is present or
 /// renamed is connected. If one is missing, auto-detect is switched on so the Virus is still
 /// found meanwhile.
-pub fn restore_ports(ports: &mut Ports, prefs: &MidiPrefs, inputs: &[String], outputs: &[String]) -> Vec<MidiCommand> {
+pub fn restore_ports(
+    ports: &mut Ports,
+    prefs: &MidiPrefs,
+    inputs: &[String],
+    outputs: &[String],
+) -> Vec<MidiCommand> {
     let found = |wanted: &Option<String>, available: &[String]| {
-        wanted.as_deref().is_none_or(|w| find_port_or_renamed(w, available).is_some())
+        wanted
+            .as_deref()
+            .is_none_or(|w| find_port_or_renamed(w, available).is_some())
     };
     let missing = !found(&prefs.input, inputs) || !found(&prefs.output, outputs);
     ports.wanted_input.clone_from(&prefs.input);
@@ -462,7 +537,13 @@ mod tests {
                 legacy_prompt_dismissed: Some("C:\\old\\virus_library.db".into()),
                 theme: "ti".into(),
             },
-            window: Some(WindowPrefs { width: 1400.0, height: 900.0, x: Some(10.0), y: Some(20.0), maximized: false }),
+            window: Some(WindowPrefs {
+                width: 1400.0,
+                height: 900.0,
+                x: Some(10.0),
+                y: Some(20.0),
+                maximized: false,
+            }),
             ..Settings::default()
         };
         s.audition.octave = -2;
@@ -485,7 +566,10 @@ mod tests {
     fn defaults_keep_hold_off_and_select_off() {
         let s = Settings::default();
         assert!(!s.ui.select_on_synth);
-        assert!(!s.ui.fetch_before_store, "fetching before a store is opt-in");
+        assert!(
+            !s.ui.fetch_before_store,
+            "fetching before a store is opt-in"
+        );
         assert!(!serialize(&s).contains("latch") && !serialize(&s).contains("hold"));
         assert!(s.midi.auto_connect);
     }
@@ -524,14 +608,20 @@ mod tests {
             "ui":{"tab":"bogus"},
             "window":{"width":5,"height":1e9,"x":-32000,"y":10}}"#;
         let s = parse(text).unwrap();
-        assert_eq!((s.midi.channel, s.midi.device_id, s.midi.part), (15, 0, PART_SINGLE_BUFFER));
+        assert_eq!(
+            (s.midi.channel, s.midi.device_id, s.midi.part),
+            (15, 0, PART_SINGLE_BUFFER)
+        );
         assert_eq!(s.audition.octave, MAX_OCTAVE);
         assert_eq!(s.audition.velocity, 1);
         assert_eq!(s.audition.notes, vec![60]);
         assert_eq!(s.audition.length_ms, 50);
         assert_eq!(s.ui.tab, "editor");
         let w = s.window.unwrap();
-        assert_eq!((w.width, w.height, w.x, w.y), (MIN_WINDOW[0], MAX_WINDOW, None, None));
+        assert_eq!(
+            (w.width, w.height, w.x, w.y),
+            (MIN_WINDOW[0], MAX_WINDOW, None, None)
+        );
     }
 
     #[test]
@@ -552,7 +642,10 @@ mod tests {
         assert_eq!(loaded.settings, Settings::default());
         assert!(loaded.warning.unwrap().contains(".bak"));
         assert!(!path.exists());
-        assert_eq!(std::fs::read_to_string(dir.join("settings.json.bak")).unwrap(), "{ not json");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json.bak")).unwrap(),
+            "{ not json"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -560,7 +653,13 @@ mod tests {
     fn missing_file_gives_defaults_silently() {
         let dir = temp_dir("settings-missing");
         let loaded = load_from(&dir.join(SETTINGS_FILE_NAME));
-        assert_eq!(loaded, Loaded { settings: Settings::default(), warning: None });
+        assert_eq!(
+            loaded,
+            Loaded {
+                settings: Settings::default(),
+                warning: None
+            }
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -596,8 +695,19 @@ mod tests {
             ..MidiPrefs::default()
         };
         let mut ports = Ports::default();
-        let commands = restore_ports(&mut ports, &prefs, &names(&["Other", "Virus In"]), &names(&["Virus Out"]));
-        assert_eq!(commands, vec![MidiCommand::ConnectInput("Virus In".into()), MidiCommand::ConnectOutput("Virus Out".into())]);
+        let commands = restore_ports(
+            &mut ports,
+            &prefs,
+            &names(&["Other", "Virus In"]),
+            &names(&["Virus Out"]),
+        );
+        assert_eq!(
+            commands,
+            vec![
+                MidiCommand::ConnectInput("Virus In".into()),
+                MidiCommand::ConnectOutput("Virus Out".into())
+            ]
+        );
         assert_eq!(ports.selected_input.as_deref(), Some("Virus In"));
         assert!(!ports.auto_connect);
     }
@@ -611,13 +721,28 @@ mod tests {
             ..MidiPrefs::default()
         };
         let mut ports = Ports::default();
-        let commands = restore_ports(&mut ports, &prefs, &names(&["Virus In"]), &names(&["Virus Out"]));
-        assert_eq!(commands, vec![MidiCommand::ConnectInput("Virus In".into()), MidiCommand::ConnectOutput("Virus Out".into())]);
+        let commands = restore_ports(
+            &mut ports,
+            &prefs,
+            &names(&["Virus In"]),
+            &names(&["Virus Out"]),
+        );
+        assert_eq!(
+            commands,
+            vec![
+                MidiCommand::ConnectInput("Virus In".into()),
+                MidiCommand::ConnectOutput("Virus Out".into())
+            ]
+        );
         assert_eq!(ports.selected_input, Some("Virus In".into()));
         assert!(ports.auto_connect);
         let more = ports.on_port_list(names(&["Virus In"]), names(&["Virus Out"]));
         assert!(more.is_empty());
-        assert_eq!(ports.wanted_input.as_deref(), Some("Gone In"), "the saved name is remembered");
+        assert_eq!(
+            ports.wanted_input.as_deref(),
+            Some("Gone In"),
+            "the saved name is remembered"
+        );
     }
 
     #[test]
@@ -629,21 +754,37 @@ mod tests {
         };
         let mut ports = Ports::default();
         let commands = restore_ports(&mut ports, &prefs, &[], &names(&["2- mioXC MIDI OUT"]));
-        assert_eq!(commands, vec![MidiCommand::ConnectOutput("2- mioXC MIDI OUT".into())]);
+        assert_eq!(
+            commands,
+            vec![MidiCommand::ConnectOutput("2- mioXC MIDI OUT".into())]
+        );
         assert!(!ports.auto_connect);
         assert_eq!(ports.wanted_output.as_deref(), Some("mioXC MIDI OUT"));
     }
 
     #[test]
     fn deliberately_disconnected_stays_disconnected() {
-        let prefs = MidiPrefs { auto_connect: false, ..MidiPrefs::default() };
+        let prefs = MidiPrefs {
+            auto_connect: false,
+            ..MidiPrefs::default()
+        };
         let mut ports = Ports::default();
-        assert!(restore_ports(&mut ports, &prefs, &names(&["Virus In"]), &names(&["Virus Out"])).is_empty());
-        assert!(ports.on_port_list(names(&["Virus In"]), names(&["Virus Out"])).is_empty());
+        assert!(restore_ports(
+            &mut ports,
+            &prefs,
+            &names(&["Virus In"]),
+            &names(&["Virus Out"])
+        )
+        .is_empty());
+        assert!(ports
+            .on_port_list(names(&["Virus In"]), names(&["Virus Out"]))
+            .is_empty());
     }
 
     fn info(inner: Option<(f32, f32)>, outer_min: (f32, f32)) -> egui::ViewportInfo {
-        let rect = |w: f32, h: f32, p: (f32, f32)| egui::Rect::from_min_size(egui::pos2(p.0, p.1), egui::vec2(w, h));
+        let rect = |w: f32, h: f32, p: (f32, f32)| {
+            egui::Rect::from_min_size(egui::pos2(p.0, p.1), egui::vec2(w, h))
+        };
         egui::ViewportInfo {
             inner_rect: inner.map(|(w, h)| rect(w, h, (outer_min.0 + 8.0, outer_min.1 + 30.0))),
             outer_rect: inner.map(|(w, h)| rect(w + 16.0, h + 38.0, outer_min)),
@@ -654,21 +795,36 @@ mod tests {
     #[test]
     fn window_capture_uses_inner_size_and_outer_position() {
         let w = WindowPrefs::capture(&info(Some((1300.0, 800.0)), (50.0, 60.0)), None).unwrap();
-        assert_eq!((w.width, w.height, w.x, w.y, w.maximized), (1300.0, 800.0, Some(50.0), Some(60.0), false));
+        assert_eq!(
+            (w.width, w.height, w.x, w.y, w.maximized),
+            (1300.0, 800.0, Some(50.0), Some(60.0), false)
+        );
     }
 
     #[test]
     fn window_capture_ignores_minimised_and_keeps_restored_size_when_maximised() {
-        let previous = WindowPrefs { width: 1100.0, height: 700.0, x: Some(5.0), y: Some(6.0), maximized: false };
+        let previous = WindowPrefs {
+            width: 1100.0,
+            height: 700.0,
+            x: Some(5.0),
+            y: Some(6.0),
+            maximized: false,
+        };
         let mut minimised = info(Some((160.0, 28.0)), (-32000.0, -32000.0));
         minimised.minimized = Some(true);
-        assert_eq!(WindowPrefs::capture(&minimised, Some(previous)), Some(previous));
+        assert_eq!(
+            WindowPrefs::capture(&minimised, Some(previous)),
+            Some(previous)
+        );
 
         let mut maximised = info(Some((1920.0, 1000.0)), (0.0, 0.0));
         maximised.maximized = Some(true);
         let w = WindowPrefs::capture(&maximised, Some(previous)).unwrap();
         assert_eq!((w.width, w.height, w.maximized), (1100.0, 700.0, true));
 
-        assert_eq!(WindowPrefs::capture(&info(None, (0.0, 0.0)), Some(previous)), Some(previous));
+        assert_eq!(
+            WindowPrefs::capture(&info(None, (0.0, 0.0)), Some(previous)),
+            Some(previous)
+        );
     }
 }

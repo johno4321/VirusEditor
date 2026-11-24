@@ -15,8 +15,15 @@ use crate::views::Notice;
 
 /// What the running file task is for, captured when the user clicked.
 pub(super) enum PendingFile {
-    Import { target: ImportTarget },
-    Export { bank_id: i64, bank_name: String, export_as: Option<u8>, result: ExportResult },
+    Import {
+        target: ImportTarget,
+    },
+    Export {
+        bank_id: i64,
+        bank_name: String,
+        export_as: Option<u8>,
+        result: ExportResult,
+    },
 }
 
 impl LibrarianView {
@@ -25,21 +32,45 @@ impl LibrarianView {
             (true, Some(id)) => ImportTarget::Bank(id),
             _ => ImportTarget::OriginalBanks,
         };
-        if self.start_task(ctx, Task::PickImport { dir: self.files.import_dir.clone() }, actions) {
+        if self.start_task(
+            ctx,
+            Task::PickImport {
+                dir: self.files.import_dir.clone(),
+            },
+            actions,
+        ) {
             self.pending_file = Some(PendingFile::Import { target });
         }
     }
 
     pub(super) fn start_export(&mut self, ctx: &Context, actions: &mut Vec<LibAction>) {
-        let Some(bank) = self.query.bank_id.and_then(|id| self.cache.bank(id)).cloned() else {
-            actions.push(LibAction::Notice(Notice::warning("Select a bank to export.")));
+        let Some(bank) = self
+            .query
+            .bank_id
+            .and_then(|id| self.cache.bank(id))
+            .cloned()
+        else {
+            actions.push(LibAction::Notice(Notice::warning(
+                "Select a bank to export.",
+            )));
             return;
         };
-        let file_name: String = bank.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-        let task = Task::PickExport { dir: self.files.export_dir.clone(), file_name: format!("{file_name}.syx") };
+        let file_name: String = bank
+            .name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let task = Task::PickExport {
+            dir: self.files.export_dir.clone(),
+            file_name: format!("{file_name}.syx"),
+        };
         if self.start_task(ctx, task, actions) {
-            self.pending_file =
-                Some(PendingFile::Export { bank_id: bank.id, bank_name: bank.name, export_as: self.export_as, result: ExportResult::default() });
+            self.pending_file = Some(PendingFile::Export {
+                bank_id: bank.id,
+                bank_name: bank.name,
+                export_as: self.export_as,
+                result: ExportResult::default(),
+            });
         }
     }
 
@@ -56,9 +87,18 @@ impl LibrarianView {
     }
 
     /// Applies a finished file task on the UI thread. Call every frame.
-    pub(super) fn poll_files(&mut self, ctx: &Context, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
-        let Some(outcome) = self.files.poll() else { return };
-        let Some(pending) = self.pending_file.take() else { return };
+    pub(super) fn poll_files(
+        &mut self,
+        ctx: &Context,
+        db: &PatchDatabase,
+        actions: &mut Vec<LibAction>,
+    ) {
+        let Some(outcome) = self.files.poll() else {
+            return;
+        };
+        let Some(pending) = self.pending_file.take() else {
+            return;
+        };
         match (pending, outcome) {
             (_, Outcome::Failed(e)) => actions.push(LibAction::Notice(Notice::error(e))),
             (pending @ PendingFile::Import { .. }, Outcome::ImportPicked(Some(path))) => {
@@ -68,7 +108,10 @@ impl LibrarianView {
                 }
             }
             (PendingFile::Import { target }, Outcome::Read { path, result }) => {
-                let label = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                let label = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
                 match result.and_then(|bytes| prepare_import_bytes(db, &label, &bytes, target)) {
                     Ok(pending) if pending.needs_confirmation() => {
                         self.pending_import = Some(pending);
@@ -81,18 +124,39 @@ impl LibrarianView {
                     Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
                 }
             }
-            (PendingFile::Export { bank_id, bank_name, export_as, .. }, Outcome::ExportPicked(Some(path))) => {
+            (
+                PendingFile::Export {
+                    bank_id,
+                    bank_name,
+                    export_as,
+                    ..
+                },
+                Outcome::ExportPicked(Some(path)),
+            ) => {
                 self.files.export_dir = parent_of(&path);
                 match export_bank_bytes(db, bank_id, export_as, self.export_policy) {
                     Ok((bytes, result)) => {
                         if self.start_task(ctx, Task::WriteFile { path, bytes }, actions) {
-                            self.pending_file = Some(PendingFile::Export { bank_id, bank_name, export_as, result });
+                            self.pending_file = Some(PendingFile::Export {
+                                bank_id,
+                                bank_name,
+                                export_as,
+                                result,
+                            });
                         }
                     }
                     Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
                 }
             }
-            (PendingFile::Export { bank_name, result, .. }, Outcome::Written { path, result: written }) => {
+            (
+                PendingFile::Export {
+                    bank_name, result, ..
+                },
+                Outcome::Written {
+                    path,
+                    result: written,
+                },
+            ) => {
                 actions.push(LibAction::Notice(match written {
                     Ok(()) => Notice::info(format!(
                         "Exported {} patch(es) of {bank_name} to {}{}.",
@@ -110,7 +174,9 @@ impl LibrarianView {
 }
 
 fn parent_of(path: &Path) -> Option<PathBuf> {
-    path.parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf)
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -136,20 +202,31 @@ mod tests {
                     assert_eq!(dir, Some(PathBuf::from("remembered")));
                     Outcome::ImportPicked(Some(PathBuf::from("songs").join("in.syx")))
                 }
-                Task::ReadFile(path) => Outcome::Read { path, result: Ok(self.file.clone()) },
+                Task::ReadFile(path) => Outcome::Read {
+                    path,
+                    result: Ok(self.file.clone()),
+                },
                 Task::PickExport { file_name, .. } => {
                     assert!(file_name.ends_with(".syx"));
                     Outcome::ExportPicked(Some(PathBuf::from("out").join(file_name)))
                 }
                 Task::WriteFile { path, bytes } => {
                     *self.written.lock().unwrap() = bytes;
-                    Outcome::Written { path, result: Ok(()) }
+                    Outcome::Written {
+                        path,
+                        result: Ok(()),
+                    }
                 }
             }
         }
     }
 
-    fn pump(view: &mut LibrarianView, ctx: &Context, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
+    fn pump(
+        view: &mut LibrarianView,
+        ctx: &Context,
+        db: &PatchDatabase,
+        actions: &mut Vec<LibAction>,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while view.files.busy().is_some() || view.pending_file.is_some() {
             view.poll_files(ctx, db, actions);
@@ -171,8 +248,14 @@ mod tests {
     #[test]
     fn import_then_export_run_through_the_worker_and_remember_folders() {
         let file = encode_program_dump(0, 1, 5, Patch::init().as_bytes());
-        let fake = Arc::new(Fake { file, written: Mutex::new(Vec::new()) });
-        let mut view = LibrarianView { files: FileJobs::with_backend(fake.clone()), ..Default::default() };
+        let fake = Arc::new(Fake {
+            file,
+            written: Mutex::new(Vec::new()),
+        });
+        let mut view = LibrarianView {
+            files: FileJobs::with_backend(fake.clone()),
+            ..Default::default()
+        };
         view.files.import_dir = Some(PathBuf::from("remembered"));
         let db = PatchDatabase::open_in_memory().unwrap();
         let ctx = Context::default();
@@ -190,14 +273,26 @@ mod tests {
 
         view.refresh(&db);
         view.query.bank_id = view.cache.banks.first().map(|b| b.id);
-        let bank = db.get_banks().unwrap().into_iter().find(|b| b.bank_letter.as_deref() == Some("A")).unwrap();
+        let bank = db
+            .get_banks()
+            .unwrap()
+            .into_iter()
+            .find(|b| b.bank_letter.as_deref() == Some("A"))
+            .unwrap();
         view.query.bank_id = Some(bank.id);
         view.refresh(&db);
         view.start_export(&ctx, &mut actions);
         pump(&mut view, &ctx, &db, &mut actions);
         assert!(!fake.written.lock().unwrap().is_empty());
         assert_eq!(view.files.export_dir, Some(PathBuf::from("out")));
-        assert!(texts(&actions).last().unwrap().starts_with("Exported 1 patch(es)"), "{:?}", texts(&actions));
+        assert!(
+            texts(&actions)
+                .last()
+                .unwrap()
+                .starts_with("Exported 1 patch(es)"),
+            "{:?}",
+            texts(&actions)
+        );
     }
 
     #[test]
@@ -206,12 +301,18 @@ mod tests {
         impl Backend for Failing {
             fn run(&self, task: Task) -> Outcome {
                 match task {
-                    Task::ReadFile(path) => Outcome::Read { path, result: Err("Cannot read: gone".into()) },
+                    Task::ReadFile(path) => Outcome::Read {
+                        path,
+                        result: Err("Cannot read: gone".into()),
+                    },
                     _ => Outcome::ImportPicked(Some("x.syx".into())),
                 }
             }
         }
-        let mut view = LibrarianView { files: FileJobs::with_backend(Arc::new(Failing)), ..Default::default() };
+        let mut view = LibrarianView {
+            files: FileJobs::with_backend(Arc::new(Failing)),
+            ..Default::default()
+        };
         let db = PatchDatabase::open_in_memory().unwrap();
         let ctx = Context::default();
         let mut actions = Vec::new();
@@ -230,7 +331,10 @@ mod tests {
             }
         }
         let (release, gate) = std::sync::mpsc::channel();
-        let mut view = LibrarianView { files: FileJobs::with_backend(Arc::new(Slow(Mutex::new(gate)))), ..Default::default() };
+        let mut view = LibrarianView {
+            files: FileJobs::with_backend(Arc::new(Slow(Mutex::new(gate)))),
+            ..Default::default()
+        };
         let db = PatchDatabase::open_in_memory().unwrap();
         let ctx = Context::default();
         let mut actions = Vec::new();
@@ -238,7 +342,8 @@ mod tests {
         view.start_import(&ctx, &mut actions);
         for _ in 0..2 {
             let _ = ctx.run(RawInput::default(), |ctx| {
-                CentralPanel::default().show(ctx, |ui| view.show(ui, &db, &mut received, &mut actions));
+                CentralPanel::default()
+                    .show(ctx, |ui| view.show(ui, &db, &mut received, &mut actions));
                 view.show_dialogs(ctx, &db, &Patch::init(), &mut actions);
             });
         }

@@ -25,9 +25,17 @@ fn multi_dumps() -> Vec<Dump> {
         .expect("multis.mid readable")
         .into_iter()
         .filter_map(|frame| match parse_sysex(&frame).expect("frame parses") {
-            SysExMessage::MultiDump { bank, program, checksum_ok, .. } => {
-                Some(Dump { frame, bank, program, checksum_ok })
-            }
+            SysExMessage::MultiDump {
+                bank,
+                program,
+                checksum_ok,
+                ..
+            } => Some(Dump {
+                frame,
+                bank,
+                program,
+                checksum_ok,
+            }),
             _ => None,
         })
         .collect()
@@ -46,21 +54,39 @@ fn all_multis_round_trip_byte_identically() {
     let dumps = multi_dumps();
     assert_eq!(dumps.len(), 129);
     assert_eq!(dumps.iter().filter(|d| d.bank == 0).count(), 1);
-    let programs: Vec<u8> = dumps.iter().filter(|d| d.bank == 1).map(|d| d.program).collect();
-    let expected: Vec<u8> = (0..128u8).map(|i| if i == 0x0A { 0x0D } else { i }).collect();
+    let programs: Vec<u8> = dumps
+        .iter()
+        .filter(|d| d.bank == 1)
+        .map(|d| d.program)
+        .collect();
+    let expected: Vec<u8> = (0..128u8)
+        .map(|i| if i == 0x0A { 0x0D } else { i })
+        .collect();
     assert_eq!(programs, expected);
 
     let mut bad = 0;
     for dump in &dumps {
         let (multi, target) = Multi::from_sysex(&dump.frame).expect("multi dump");
         let exported = multi.to_sysex(dump.frame[5], target);
-        assert_eq!(exported[..265], dump.frame[..265], "bb={} mm={}", dump.bank, dump.program);
+        assert_eq!(
+            exported[..265],
+            dump.frame[..265],
+            "bb={} mm={}",
+            dump.bank,
+            dump.program
+        );
         assert_eq!(exported[266], 0xF7);
         if dump.checksum_ok {
             assert_eq!(exported, dump.frame);
         } else {
             bad += 1;
-            assert!(matches!(parse_sysex(&exported), Ok(SysExMessage::MultiDump { checksum_ok: true, .. })));
+            assert!(matches!(
+                parse_sysex(&exported),
+                Ok(SysExMessage::MultiDump {
+                    checksum_ok: true,
+                    ..
+                })
+            ));
         }
     }
     assert_eq!(bad, 87);
@@ -76,7 +102,17 @@ fn names_decode() {
 
     let multis = bank(&dumps);
     let names: Vec<String> = multis.iter().map(|(m, _)| m.name()).collect();
-    assert_eq!(names[..6], ["Sequencer", "DrumKit 01", "DrumKit 02", "Virus & RP", "Dream   RP", "Infect  RP"]);
+    assert_eq!(
+        names[..6],
+        [
+            "Sequencer",
+            "DrumKit 01",
+            "DrumKit 02",
+            "Virus & RP",
+            "Dream   RP",
+            "Infect  RP"
+        ]
+    );
     assert_eq!(names[41], "Romance RP");
     assert_eq!(names[126], "-MultiIni-");
     assert_eq!(names[127], " BAEUMI,-)");
@@ -92,18 +128,30 @@ fn parts_decode() {
     assert_eq!(sequencer.clock_tempo_bpm(), 135);
     for part in 0..16 {
         let p = sequencer.part(part);
-        assert_eq!((p.bank, p.low_key, p.high_key, p.volume, p.output), (0, 0, 127, 64, 1));
+        assert_eq!(
+            (p.bank, p.low_key, p.high_key, p.volume, p.output),
+            (0, 0, 127, 64, 1)
+        );
         // Part 11's program (and channel) 10 reads as 13 in the damaged file.
         assert_eq!(p.program, if part == 10 { 13 } else { part });
         assert_eq!(p.state, 0x47);
-        assert!(p.flag(PartFlag::Enable) && p.flag(PartFlag::MidiVolume) && p.flag(PartFlag::HoldPedal));
+        assert!(
+            p.flag(PartFlag::Enable) && p.flag(PartFlag::MidiVolume) && p.flag(PartFlag::HoldPedal)
+        );
         assert!(p.flag(PartFlag::ProgramChange) && !p.flag(PartFlag::PriorityHigh));
     }
 
     let drums = &multis[1].0;
     let lows: Vec<u8> = (0..16).map(|p| drums.part(p).low_key).collect();
     assert_eq!(lows, (36..52).collect::<Vec<u8>>());
-    assert_eq!((drums.part(0).bank, drums.part(0).program, drums.part(15).high_key), (1, 70, 120));
+    assert_eq!(
+        (
+            drums.part(0).bank,
+            drums.part(0).program,
+            drums.part(15).high_key
+        ),
+        (1, 70, 120)
+    );
     assert!((0..16).all(|p| drums.part_state(p) == 0x01));
 
     let baeumi = &multis[127].0;
@@ -124,7 +172,11 @@ fn editing_every_parameter_back_and_forth_is_lossless() {
                 let original = edited.get(def, part);
                 edited.set(def, part, original ^ 1);
                 edited.set(def, part, original);
-                assert_eq!(edited, multi, "{} part {part} of mm={}", def.name, dump.program);
+                assert_eq!(
+                    edited, multi,
+                    "{} part {part} of mm={}",
+                    def.name, dump.program
+                );
             }
         }
     }

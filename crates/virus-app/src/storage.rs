@@ -12,7 +12,9 @@ pub const DB_FILE_NAME: &str = "virus_library.db";
 pub enum LibraryLocation {
     File(PathBuf),
     /// The file couldn't be opened; nothing will be saved.
-    InMemory { reason: String },
+    InMemory {
+        reason: String,
+    },
 }
 
 /// `…/VirusEditor/data` in the platform's per-user data directory (library and settings).
@@ -37,7 +39,8 @@ pub fn open_library_at(path: Result<PathBuf, String>) -> (PatchDatabase, Library
     match path.and_then(|p| open_file(&p).map(|db| (db, p))) {
         Ok((db, path)) => (db, LibraryLocation::File(path)),
         Err(reason) => {
-            let db = PatchDatabase::open_in_memory().expect("an in-memory SQLite database can always be opened");
+            let db = PatchDatabase::open_in_memory()
+                .expect("an in-memory SQLite database can always be opened");
             (db, LibraryLocation::InMemory { reason })
         }
     }
@@ -45,7 +48,8 @@ pub fn open_library_at(path: Result<PathBuf, String>) -> (PatchDatabase, Library
 
 fn open_file(path: &Path) -> Result<PatchDatabase, String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
     PatchDatabase::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))
 }
@@ -57,7 +61,10 @@ pub fn legacy_candidates() -> Vec<PathBuf> {
     if let Ok(dir) = std::env::current_dir() {
         found.push(dir.join(DB_FILE_NAME));
     }
-    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
         found.push(dir.join(DB_FILE_NAME));
     }
     found
@@ -75,8 +82,14 @@ pub fn find_legacy_library(current: &Path, candidates: &[PathBuf]) -> Option<Pat
 
 /// A legacy library worth offering: only while the new library is still empty (no patches, no
 /// multis, no user banks), and not the file the user already answered "Not now" for.
-pub fn pending_legacy_library(db: &PatchDatabase, location: &LibraryLocation, dismissed: Option<&str>) -> Option<PathBuf> {
-    let LibraryLocation::File(path) = location else { return None };
+pub fn pending_legacy_library(
+    db: &PatchDatabase,
+    location: &LibraryLocation,
+    dismissed: Option<&str>,
+) -> Option<PathBuf> {
+    let LibraryLocation::File(path) = location else {
+        return None;
+    };
     if !db.is_empty_library().ok()? {
         return None;
     }
@@ -85,7 +98,9 @@ pub fn pending_legacy_library(db: &PatchDatabase, location: &LibraryLocation, di
 
 /// Whether `legacy` is the file stored by "Not now" (compared as written and canonicalised).
 pub fn is_dismissed(legacy: &Path, dismissed: Option<&str>) -> bool {
-    let Some(dismissed) = dismissed.map(Path::new) else { return false };
+    let Some(dismissed) = dismissed.map(Path::new) else {
+        return false;
+    };
     let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     legacy == dismissed || canonical(legacy) == canonical(dismissed)
 }
@@ -121,7 +136,8 @@ pub struct Adopted {
 pub fn adopt_legacy_library(legacy: &Path, target: &Path) -> Result<Adopted, String> {
     let mut pre_adopt_backup = None;
     if target.exists() {
-        let existing = PatchDatabase::open(target).map_err(|e| format!("cannot open {}: {e}", target.display()))?;
+        let existing = PatchDatabase::open(target)
+            .map_err(|e| format!("cannot open {}: {e}", target.display()))?;
         let empty = existing.is_empty_library().map_err(|e| e.to_string())?;
         drop(existing);
         if !empty {
@@ -131,8 +147,13 @@ pub fn adopt_legacy_library(legacy: &Path, target: &Path) -> Result<Adopted, Str
             ));
         }
         let backup = free_pre_adopt_path(target);
-        PatchDatabase::copy_file(target, &backup)
-            .map_err(|e| format!("cannot back up {} to {}: {e}", target.display(), backup.display()))?;
+        PatchDatabase::copy_file(target, &backup).map_err(|e| {
+            format!(
+                "cannot back up {} to {}: {e}",
+                target.display(),
+                backup.display()
+            )
+        })?;
         pre_adopt_backup = Some(backup);
         for suffix in ["", "-wal", "-shm"] {
             let mut name = target.as_os_str().to_owned();
@@ -141,11 +162,17 @@ pub fn adopt_legacy_library(legacy: &Path, target: &Path) -> Result<Adopted, Str
         }
     }
     if let Some(dir) = target.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
-    PatchDatabase::copy_file(legacy, target).map_err(|e| format!("cannot copy {}: {e}", legacy.display()))?;
-    let db = PatchDatabase::open(target).map_err(|e| format!("cannot open {}: {e}", target.display()))?;
-    Ok(Adopted { db, pre_adopt_backup })
+    PatchDatabase::copy_file(legacy, target)
+        .map_err(|e| format!("cannot copy {}: {e}", legacy.display()))?;
+    let db = PatchDatabase::open(target)
+        .map_err(|e| format!("cannot open {}: {e}", target.display()))?;
+    Ok(Adopted {
+        db,
+        pre_adopt_backup,
+    })
 }
 
 #[cfg(test)]
@@ -190,20 +217,32 @@ mod tests {
         let target = dir.join("new").join(DB_FILE_NAME);
         let (db, location) = open_library_at(Ok(target.clone()));
         assert_eq!(db.patch_count().unwrap(), 0);
-        assert_eq!(find_legacy_library(&target, std::slice::from_ref(&legacy)), Some(legacy.clone()));
-        assert_eq!(find_legacy_library(&legacy, std::slice::from_ref(&legacy)), None, "the library itself is not legacy");
+        assert_eq!(
+            find_legacy_library(&target, std::slice::from_ref(&legacy)),
+            Some(legacy.clone())
+        );
+        assert_eq!(
+            find_legacy_library(&legacy, std::slice::from_ref(&legacy)),
+            None,
+            "the library itself is not legacy"
+        );
         assert_eq!(location, LibraryLocation::File(target.clone()));
         drop(db);
 
         let adopted = adopt_legacy_library(&legacy, &target).unwrap();
         assert_eq!(adopted.db.patch_count().unwrap(), 1);
-        assert_eq!(adopted.db.schema_version().unwrap(), virus_db::SCHEMA_VERSION);
+        assert_eq!(
+            adopted.db.schema_version().unwrap(),
+            virus_db::SCHEMA_VERSION
+        );
         assert!(adopted.db.v1_backup().is_some_and(Path::exists));
         assert!(legacy.exists(), "the original stays as a backup");
         drop(adopted);
 
         // A library that already has data is never replaced.
-        let err = adopt_legacy_library(&legacy, &target).err().expect("must refuse a non-empty library");
+        let err = adopt_legacy_library(&legacy, &target)
+            .err()
+            .expect("must refuse a non-empty library");
         assert!(err.contains("already contains"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -217,11 +256,20 @@ mod tests {
         drop(open_library_at(Ok(target.clone())));
 
         let adopted = adopt_legacy_library(&legacy, &target).unwrap();
-        let backup = adopted.pre_adopt_backup.clone().expect("a backup of the replaced library");
-        assert_eq!(backup, dir.join("new").join("virus_library.db.pre-adopt.bak"));
+        let backup = adopted
+            .pre_adopt_backup
+            .clone()
+            .expect("a backup of the replaced library");
+        assert_eq!(
+            backup,
+            dir.join("new").join("virus_library.db.pre-adopt.bak")
+        );
         drop(adopted);
         let old = PatchDatabase::open(&backup).unwrap();
-        assert!(old.is_empty_library().unwrap(), "the backup is the library that was replaced");
+        assert!(
+            old.is_empty_library().unwrap(),
+            "the backup is the library that was replaced"
+        );
         drop(old);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -233,12 +281,21 @@ mod tests {
         write_v1_library(&legacy);
         let target = dir.join("new").join(DB_FILE_NAME);
         let (db, _) = open_library_at(Ok(target.clone()));
-        db.save_multi(Some(0), &[0u8; virus_db::MULTI_LEN], &virus_db::PatchMeta::default(), true).unwrap();
+        db.save_multi(
+            Some(0),
+            &[0u8; virus_db::MULTI_LEN],
+            &virus_db::PatchMeta::default(),
+            true,
+        )
+        .unwrap();
         drop(db);
 
         assert!(adopt_legacy_library(&legacy, &target).is_err());
         let kept = PatchDatabase::open(&target).unwrap();
-        assert!(kept.get_multi_by_slot(0).unwrap().is_some(), "the multi survives");
+        assert!(
+            kept.get_multi_by_slot(0).unwrap().is_some(),
+            "the multi survives"
+        );
         drop(kept);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -287,11 +344,18 @@ mod tests {
         let blocker = dir.join("not-a-folder");
         std::fs::write(&blocker, b"x").unwrap();
         let (db, location) = open_library_at(Ok(blocker.join(DB_FILE_NAME)));
-        assert!(matches!(location, LibraryLocation::InMemory { ref reason } if reason.contains("cannot create")));
+        assert!(
+            matches!(location, LibraryLocation::InMemory { ref reason } if reason.contains("cannot create"))
+        );
         assert_eq!(db.get_banks().unwrap().len(), 4);
 
         let (_, location) = open_library_at(Err("no home".into()));
-        assert_eq!(location, LibraryLocation::InMemory { reason: "no home".into() });
+        assert_eq!(
+            location,
+            LibraryLocation::InMemory {
+                reason: "no home".into()
+            }
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

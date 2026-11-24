@@ -6,8 +6,8 @@ use virus_db::PatchDatabase;
 use virus_syx::Patch;
 
 use super::{accent, DIM, WARN};
-use crate::compare::diff;
 use crate::comforts::Comforts;
+use crate::compare::diff;
 use crate::sections::{self, SectionClip};
 use crate::session::Session;
 
@@ -19,7 +19,10 @@ pub enum ComfortAction {
     /// Send the edited patch to the synth's edit buffer (RV-M5).
     SendNow,
     /// Paste or init a section (`verb` names the undo step).
-    Section { clip: SectionClip, verb: &'static str },
+    Section {
+        clip: SectionClip,
+        verb: &'static str,
+    },
 }
 
 /// A library slot picked by bank and slot number.
@@ -36,21 +39,32 @@ impl LibraryPick {
         if self.bank_id.is_none() {
             self.bank_id = banks.first().map(|b| b.id);
         }
-        let current = banks.iter().find(|b| Some(b.id) == self.bank_id).map_or("—".to_owned(), |b| b.name.clone());
+        let current = banks
+            .iter()
+            .find(|b| Some(b.id) == self.bank_id)
+            .map_or("—".to_owned(), |b| b.name.clone());
         ui.horizontal(|ui| {
-            ComboBox::from_id_source((salt, "bank")).selected_text(current).show_ui(ui, |ui| {
-                for bank in &banks {
-                    ui.selectable_value(&mut self.bank_id, Some(bank.id), &bank.name);
-                }
-            });
+            ComboBox::from_id_source((salt, "bank"))
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for bank in &banks {
+                        ui.selectable_value(&mut self.bank_id, Some(bank.id), &bank.name);
+                    }
+                });
             ui.label("slot");
             ui.add(egui::DragValue::new(&mut self.program).clamp_range(0..=127));
         });
-        let record = db.get_patch_by_slot(self.bank_id?, self.program).ok().flatten();
+        let record = db
+            .get_patch_by_slot(self.bank_id?, self.program)
+            .ok()
+            .flatten();
         match record {
             Some(r) => {
                 ui.label(RichText::new(&r.name).monospace());
-                Some((Patch::from_bytes(&r.data), format!("library slot {}", self.program)))
+                Some((
+                    Patch::from_bytes(&r.data),
+                    format!("library slot {}", self.program),
+                ))
             }
             None => {
                 ui.label(RichText::new("empty slot").color(DIM));
@@ -81,7 +95,12 @@ pub struct ComfortsView {
 
 impl ComfortsView {
     /// The toolbar row: undo/redo, Compare, edited/compare badges, and the window toggles.
-    pub fn bar(&mut self, ui: &mut Ui, comforts: &Comforts, session: &Session) -> Vec<ComfortAction> {
+    pub fn bar(
+        &mut self,
+        ui: &mut Ui,
+        comforts: &Comforts,
+        session: &Session,
+    ) -> Vec<ComfortAction> {
         let mut actions = Vec::new();
         let history = comforts.history();
         let comparing = comforts.comparing();
@@ -137,49 +156,71 @@ impl ComfortsView {
         actions
     }
 
-    pub fn windows(&mut self, ctx: &Context, comforts: &Comforts, session: &Session, db: &PatchDatabase) -> Vec<ComfortAction> {
+    pub fn windows(
+        &mut self,
+        ctx: &Context,
+        comforts: &Comforts,
+        session: &Session,
+        db: &PatchDatabase,
+    ) -> Vec<ComfortAction> {
         let mut actions = Vec::new();
         self.diff_window(ctx, comforts, session, db);
         self.sections_window(ctx, comforts, session, db, &mut actions);
         actions
     }
 
-    fn diff_window(&mut self, ctx: &Context, comforts: &Comforts, session: &Session, db: &PatchDatabase) {
+    fn diff_window(
+        &mut self,
+        ctx: &Context,
+        comforts: &Comforts,
+        session: &Session,
+        db: &PatchDatabase,
+    ) {
         let mut open = self.diff_open;
-        Window::new("Patch diff").open(&mut open).default_width(420.0).show(ctx, |ui| {
-            let edited = comforts.edited(session);
-            ui.horizontal(|ui| {
-                ui.label("Compare the edited patch with");
-                ui.selectable_value(&mut self.diff_library, false, "its original");
-                ui.selectable_value(&mut self.diff_library, true, "a library patch");
-            });
-            let other = if self.diff_library {
-                self.diff_pick.show(ui, db, "diff-pick").map(|(p, _)| p)
-            } else {
-                Some(comforts.original().clone())
-            };
-            let Some(other) = other else { return };
-            let entries = diff(&other, edited);
-            ui.separator();
-            if entries.is_empty() {
-                ui.label("Identical (all 256 bytes).");
-                return;
-            }
-            ui.label(format!("{} byte(s) differ — 'other' → edited", entries.len()));
-            ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                egui::Grid::new("diff-grid").striped(true).show(ui, |ui| {
-                    for entry in &entries {
-                        let label = RichText::new(&entry.label);
-                        ui.label(if entry.section.is_some() { label } else { label.color(DIM) });
-                        ui.label(entry.section.unwrap_or(""));
-                        ui.monospace(&entry.before);
-                        ui.label("→");
-                        ui.monospace(&entry.after);
-                        ui.end_row();
-                    }
+        Window::new("Patch diff")
+            .open(&mut open)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                let edited = comforts.edited(session);
+                ui.horizontal(|ui| {
+                    ui.label("Compare the edited patch with");
+                    ui.selectable_value(&mut self.diff_library, false, "its original");
+                    ui.selectable_value(&mut self.diff_library, true, "a library patch");
+                });
+                let other = if self.diff_library {
+                    self.diff_pick.show(ui, db, "diff-pick").map(|(p, _)| p)
+                } else {
+                    Some(comforts.original().clone())
+                };
+                let Some(other) = other else { return };
+                let entries = diff(&other, edited);
+                ui.separator();
+                if entries.is_empty() {
+                    ui.label("Identical (all 256 bytes).");
+                    return;
+                }
+                ui.label(format!(
+                    "{} byte(s) differ — 'other' → edited",
+                    entries.len()
+                ));
+                ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    egui::Grid::new("diff-grid").striped(true).show(ui, |ui| {
+                        for entry in &entries {
+                            let label = RichText::new(&entry.label);
+                            ui.label(if entry.section.is_some() {
+                                label
+                            } else {
+                                label.color(DIM)
+                            });
+                            ui.label(entry.section.unwrap_or(""));
+                            ui.monospace(&entry.before);
+                            ui.label("→");
+                            ui.monospace(&entry.after);
+                            ui.end_row();
+                        }
+                    });
                 });
             });
-        });
         self.diff_open = open;
     }
 
@@ -265,7 +306,11 @@ mod tests {
         db.create_bank("Test").expect("bank");
         let mut session = Session::default();
         let mut comforts = Comforts::new(Patch::init());
-        let mut view = ComfortsView { diff_open: true, sections_open: true, ..Default::default() };
+        let mut view = ComfortsView {
+            diff_open: true,
+            sections_open: true,
+            ..Default::default()
+        };
         for frame in 0..4 {
             match frame {
                 1 => view.diff_library = true,

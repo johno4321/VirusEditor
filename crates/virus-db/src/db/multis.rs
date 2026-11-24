@@ -7,10 +7,12 @@ use rusqlite::{params, OptionalExtension, Row, ToSql};
 use super::{check_program, check_seven_bit, PatchDatabase, BANK_SLOTS};
 use crate::error::{DbError, Result};
 use crate::models::{
-    BadChecksumPolicy, BankExport, IncomingMultiDump, MultiImportReport, MultiRecord, MultiSummary, PatchMeta,
+    BadChecksumPolicy, BankExport, IncomingMultiDump, MultiImportReport, MultiRecord, MultiSummary,
+    PatchMeta,
 };
 use crate::multi_data::{
-    encode_multi_dump, multi_name, MULTI_BANK_BYTE, MULTI_DUMP_LEN, MULTI_EDIT_BUFFER_BANK, MULTI_LEN,
+    encode_multi_dump, multi_name, MULTI_BANK_BYTE, MULTI_DUMP_LEN, MULTI_EDIT_BUFFER_BANK,
+    MULTI_LEN,
 };
 use crate::patch_data::first_eight_bit_offset;
 
@@ -112,14 +114,20 @@ impl PatchDatabase {
 
     /// Unslotted multis, oldest first.
     pub fn get_loose_multis(&self) -> Result<Vec<MultiSummary>> {
-        let sql = format!("SELECT {MULTI_SUMMARY_COLUMNS} FROM multis WHERE slot IS NULL ORDER BY id ASC");
+        let sql = format!(
+            "SELECT {MULTI_SUMMARY_COLUMNS} FROM multis WHERE slot IS NULL ORDER BY id ASC"
+        );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_multi_summary)?.collect::<rusqlite::Result<_>>()?;
+        let rows = stmt
+            .query_map([], row_to_multi_summary)?
+            .collect::<rusqlite::Result<_>>()?;
         Ok(rows)
     }
 
     pub fn delete_multi(&self, id: i64) -> Result<bool> {
-        let n = self.conn.execute("DELETE FROM multis WHERE id = ?1", params![id])?;
+        let n = self
+            .conn
+            .execute("DELETE FROM multis WHERE id = ?1", params![id])?;
         if n > 0 {
             self.bump();
         }
@@ -143,7 +151,9 @@ impl PatchDatabase {
     }
 
     fn update_multi_meta(&self, column: &str, value: &dyn ToSql, id: i64) -> Result<bool> {
-        let sql = format!("UPDATE multis SET {column} = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2");
+        let sql = format!(
+            "UPDATE multis SET {column} = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2"
+        );
         let n = self.conn.execute(&sql, params![value, id])?;
         if n > 0 {
             self.bump();
@@ -173,7 +183,8 @@ impl PatchDatabase {
                 match dump.bank {
                     MULTI_EDIT_BUFFER_BANK => report.loose.push(dump.clone()),
                     MULTI_BANK_BYTE
-                        if (dump.program as usize) < BANK_SLOTS && first_eight_bit_offset(&dump.data).is_none() =>
+                        if (dump.program as usize) < BANK_SLOTS
+                            && first_eight_bit_offset(&dump.data).is_none() =>
                     {
                         insert.execute(params![
                             dump.program,
@@ -202,7 +213,9 @@ impl PatchDatabase {
     /// flagged (`checksum_ok = false`) multis and multis with bytes ≥ 0x80 left out. See
     /// [`Self::export_multi_bank`] to choose otherwise.
     pub fn export_multi_bank_dumps(&self, device_id: u8) -> Result<Vec<Vec<u8>>> {
-        Ok(self.export_multi_bank(device_id, BadChecksumPolicy::Skip)?.frames)
+        Ok(self
+            .export_multi_bank(device_id, BadChecksumPolicy::Skip)?
+            .frames)
     }
 
     /// Concatenation of [`Self::export_multi_bank_dumps`], suitable for a `.syx` file.
@@ -214,12 +227,21 @@ impl PatchDatabase {
     /// file; data bytes are sent exactly as stored. Multis flagged `checksum_ok = false` are
     /// handled according to `policy` (like [`Self::export_bank`]); multis with bytes ≥ 0x80 are
     /// always left out.
-    pub fn export_multi_bank(&self, device_id: u8, policy: BadChecksumPolicy) -> Result<BankExport> {
+    pub fn export_multi_bank(
+        &self,
+        device_id: u8,
+        policy: BadChecksumPolicy,
+    ) -> Result<BankExport> {
         let mut stmt = self.conn.prepare(
             "SELECT id, slot, raw_data, checksum_ok FROM multis WHERE slot IS NOT NULL ORDER BY slot ASC",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, u8>(1)?, r.get::<_, Vec<u8>>(2)?, r.get::<_, bool>(3)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, u8>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, bool>(3)?,
+            ))
         })?;
         let mut export = BankExport::default();
         for row in rows {
@@ -266,7 +288,8 @@ fn row_to_multi_parts(row: &Row) -> rusqlite::Result<(MultiSummary, Vec<u8>)> {
 }
 
 fn to_multi_bytes(id: i64, raw: &[u8]) -> Result<[u8; MULTI_LEN]> {
-    raw.try_into().map_err(|_| DbError::CorruptMulti { id, len: raw.len() })
+    raw.try_into()
+        .map_err(|_| DbError::CorruptMulti { id, len: raw.len() })
 }
 
 fn into_multi_record((s, raw): (MultiSummary, Vec<u8>)) -> Result<MultiRecord> {
@@ -284,7 +307,9 @@ fn into_multi_record((s, raw): (MultiSummary, Vec<u8>)) -> Result<MultiRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::multi_data::{multi_dump_checksum, MULTI_DUMP_LEN, MULTI_NAME_LEN, MULTI_NAME_OFFSET};
+    use crate::multi_data::{
+        multi_dump_checksum, MULTI_DUMP_LEN, MULTI_NAME_LEN, MULTI_NAME_OFFSET,
+    };
     use crate::schema::{CREATE_TABLES_SQL, SCHEMA_VERSION};
     use rusqlite::Connection;
 
@@ -301,37 +326,69 @@ mod tests {
     }
 
     fn dump(bank: u8, program: u8, name: &str) -> IncomingMultiDump {
-        IncomingMultiDump { bank, program, data: synthetic_multi(name), checksum_ok: true }
+        IncomingMultiDump {
+            bank,
+            program,
+            data: synthetic_multi(name),
+            checksum_ok: true,
+        }
     }
 
     fn multi_count(db: &PatchDatabase) -> i64 {
-        db.conn.query_row("SELECT COUNT(*) FROM multis", [], |r| r.get(0)).unwrap()
+        db.conn
+            .query_row("SELECT COUNT(*) FROM multis", [], |r| r.get(0))
+            .unwrap()
     }
 
     #[test]
     fn save_and_load_is_byte_exact() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let data = synthetic_multi("Sequencer");
-        let meta = PatchMeta { tags: "live".into(), favorite: true };
+        let meta = PatchMeta {
+            tags: "live".into(),
+            favorite: true,
+        };
         let id = db.save_multi(Some(3), &data, &meta, true).unwrap();
         let rec = db.get_multi_by_id(id).unwrap().unwrap();
-        assert_eq!((rec.data, rec.slot, rec.name.as_str()), (data, Some(3), "Sequencer"));
-        assert_eq!((rec.tags.as_str(), rec.favorite, rec.checksum_ok), ("live", true, true));
+        assert_eq!(
+            (rec.data, rec.slot, rec.name.as_str()),
+            (data, Some(3), "Sequencer")
+        );
+        assert_eq!(
+            (rec.tags.as_str(), rec.favorite, rec.checksum_ok),
+            ("live", true, true)
+        );
         assert_eq!(db.get_multi_by_slot(3).unwrap().unwrap(), rec);
 
         // Upsert into the same slot keeps the ID.
         let other = synthetic_multi("Other");
-        assert_eq!(db.save_multi(Some(3), &other, &PatchMeta::default(), true).unwrap(), id);
+        assert_eq!(
+            db.save_multi(Some(3), &other, &PatchMeta::default(), true)
+                .unwrap(),
+            id
+        );
         assert_eq!(db.get_multi_by_id(id).unwrap().unwrap().name, "Other");
 
         // Unslotted multis never collide.
-        let a = db.save_multi(None, &data, &PatchMeta::default(), true).unwrap();
-        let b = db.save_multi(None, &data, &PatchMeta::default(), true).unwrap();
+        let a = db
+            .save_multi(None, &data, &PatchMeta::default(), true)
+            .unwrap();
+        let b = db
+            .save_multi(None, &data, &PatchMeta::default(), true)
+            .unwrap();
         assert_ne!(a, b);
-        let loose: Vec<_> = db.get_loose_multis().unwrap().into_iter().map(|m| (m.id, m.slot)).collect();
+        let loose: Vec<_> = db
+            .get_loose_multis()
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.id, m.slot))
+            .collect();
         assert_eq!(loose, [(a, None), (b, None)]);
 
-        assert!(matches!(db.save_multi(Some(128), &data, &meta, true), Err(DbError::InvalidProgram(128))));
+        assert!(matches!(
+            db.save_multi(Some(128), &data, &meta, true),
+            Err(DbError::InvalidProgram(128))
+        ));
         assert!(db.set_multi_favorite(a, true).unwrap());
         assert!(db.set_multi_tags(a, "x").unwrap());
         assert_eq!(db.get_multi_by_id(a).unwrap().unwrap().data, data);
@@ -343,12 +400,18 @@ mod tests {
     fn mark_multi_checked_clears_the_flag_and_keeps_the_data() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let data = synthetic_multi("Damaged");
-        let meta = PatchMeta { tags: "mine".into(), favorite: true };
+        let meta = PatchMeta {
+            tags: "mine".into(),
+            favorite: true,
+        };
         let id = db.save_multi(Some(4), &data, &meta, false).unwrap();
         assert!(db.mark_multi_checked(id).unwrap());
         let rec = db.get_multi_by_id(id).unwrap().unwrap();
         assert!(rec.checksum_ok);
-        assert_eq!((rec.data, rec.tags.as_str(), rec.favorite), (data, "mine", true));
+        assert_eq!(
+            (rec.data, rec.tags.as_str(), rec.favorite),
+            (data, "mine", true)
+        );
     }
 
     #[test]
@@ -360,9 +423,22 @@ mod tests {
     #[test]
     fn slots_have_128_entries() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        db.save_multi(Some(0), &synthetic_multi("First"), &PatchMeta::default(), true).unwrap();
-        db.save_multi(Some(127), &synthetic_multi("Last"), &PatchMeta::default(), true).unwrap();
-        db.save_multi(None, &synthetic_multi("Loose"), &PatchMeta::default(), true).unwrap();
+        db.save_multi(
+            Some(0),
+            &synthetic_multi("First"),
+            &PatchMeta::default(),
+            true,
+        )
+        .unwrap();
+        db.save_multi(
+            Some(127),
+            &synthetic_multi("Last"),
+            &PatchMeta::default(),
+            true,
+        )
+        .unwrap();
+        db.save_multi(None, &synthetic_multi("Loose"), &PatchMeta::default(), true)
+            .unwrap();
         let slots = db.get_multi_slots().unwrap();
         assert_eq!(slots.len(), 128);
         assert_eq!(slots[0].as_ref().unwrap().name, "First");
@@ -376,7 +452,13 @@ mod tests {
         let mut bad = dump(1, 7, "BadSum");
         bad.checksum_ok = false;
         let edit = dump(0, 0, "EditBuf");
-        let dumps = [dump(1, 0, "Sequencer"), edit.clone(), dump(2, 1, "Bank2"), dump(1, 0x7F, "Last"), bad];
+        let dumps = [
+            dump(1, 0, "Sequencer"),
+            edit.clone(),
+            dump(2, 1, "Bank2"),
+            dump(1, 0x7F, "Last"),
+            bad,
+        ];
         let before = db.data_version();
         let report = db.import_multi_dumps(&dumps).unwrap();
         assert_eq!(report.imported, 3);
@@ -385,20 +467,32 @@ mod tests {
         assert_ne!(db.data_version(), before);
         assert_eq!(multi_count(&db), 3);
         assert!(!db.get_multi_by_slot(7).unwrap().unwrap().checksum_ok);
-        assert_eq!(db.get_multi_by_slot(0).unwrap().unwrap().data, synthetic_multi("Sequencer"));
+        assert_eq!(
+            db.get_multi_by_slot(0).unwrap().unwrap().data,
+            synthetic_multi("Sequencer")
+        );
     }
 
     #[test]
     fn import_keeps_metadata_only_for_same_name() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        let meta = PatchMeta { tags: "mine".into(), favorite: true };
-        db.save_multi(Some(0), &synthetic_multi("Same"), &meta, true).unwrap();
-        db.save_multi(Some(1), &synthetic_multi("Old"), &meta, true).unwrap();
+        let meta = PatchMeta {
+            tags: "mine".into(),
+            favorite: true,
+        };
+        db.save_multi(Some(0), &synthetic_multi("Same"), &meta, true)
+            .unwrap();
+        db.save_multi(Some(1), &synthetic_multi("Old"), &meta, true)
+            .unwrap();
         let mut same = dump(1, 0, "Same");
         same.data[200] = 99;
-        db.import_multi_dumps(&[same.clone(), dump(1, 1, "New")]).unwrap();
+        db.import_multi_dumps(&[same.clone(), dump(1, 1, "New")])
+            .unwrap();
         let kept = db.get_multi_by_slot(0).unwrap().unwrap();
-        assert_eq!((kept.data, kept.tags.as_str(), kept.favorite), (same.data, "mine", true));
+        assert_eq!(
+            (kept.data, kept.tags.as_str(), kept.favorite),
+            (same.data, "mine", true)
+        );
         let reset = db.get_multi_by_slot(1).unwrap().unwrap();
         assert_eq!((reset.tags.as_str(), reset.favorite), ("", false));
     }
@@ -413,7 +507,10 @@ mod tests {
             )
             .unwrap();
         let dumps: Vec<_> = (0..10).map(|p| dump(1, p, "X")).collect();
-        assert!(matches!(db.import_multi_dumps(&dumps), Err(DbError::Sqlite(_))));
+        assert!(matches!(
+            db.import_multi_dumps(&dumps),
+            Err(DbError::Sqlite(_))
+        ));
         assert_eq!(multi_count(&db), 0);
     }
 
@@ -421,14 +518,20 @@ mod tests {
     fn export_frames_are_exact_and_in_slot_order() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let (m0, m9) = (synthetic_multi("Zero"), synthetic_multi("Nine"));
-        db.save_multi(Some(9), &m9, &PatchMeta::default(), true).unwrap();
-        db.save_multi(Some(0), &m0, &PatchMeta::default(), true).unwrap();
-        db.save_multi(None, &m0, &PatchMeta::default(), true).unwrap();
+        db.save_multi(Some(9), &m9, &PatchMeta::default(), true)
+            .unwrap();
+        db.save_multi(Some(0), &m0, &PatchMeta::default(), true)
+            .unwrap();
+        db.save_multi(None, &m0, &PatchMeta::default(), true)
+            .unwrap();
         let frames = db.export_multi_bank_dumps(0x10).unwrap();
         assert_eq!(frames.len(), 2);
         for (frame, (slot, data)) in frames.iter().zip([(0u8, &m0), (9, &m9)]) {
             assert_eq!(frame.len(), MULTI_DUMP_LEN);
-            assert_eq!(&frame[..9], &[0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x11, 0x01, slot]);
+            assert_eq!(
+                &frame[..9],
+                &[0xF0, 0x00, 0x20, 0x33, 0x01, 0x10, 0x11, 0x01, slot]
+            );
             assert_eq!(&frame[9..265], &data[..]);
             assert_eq!(frame[265], multi_dump_checksum(0x10, 1, slot, data));
         }
@@ -440,28 +543,54 @@ mod tests {
         let db = PatchDatabase::open_in_memory().unwrap();
         let mut bad = dump(1, 4, "Damaged");
         bad.checksum_ok = false;
-        db.import_multi_dumps(&[dump(1, 0, "Fine"), bad.clone()]).unwrap();
+        db.import_multi_dumps(&[dump(1, 0, "Fine"), bad.clone()])
+            .unwrap();
         let correct = multi_dump_checksum(0x00, 1, 4, &bad.data);
 
         let skip = db.export_multi_bank(0x00, BadChecksumPolicy::Skip).unwrap();
-        assert_eq!((skip.frames.len(), skip.skipped_flagged, skip.included_flagged), (1, 1, 0));
+        assert_eq!(
+            (
+                skip.frames.len(),
+                skip.skipped_flagged,
+                skip.included_flagged
+            ),
+            (1, 1, 0)
+        );
         assert_eq!(skip.frames[0][8], 0);
 
-        let keep = db.export_multi_bank(0x00, BadChecksumPolicy::KeepInvalid).unwrap();
+        let keep = db
+            .export_multi_bank(0x00, BadChecksumPolicy::KeepInvalid)
+            .unwrap();
         assert_eq!((keep.frames.len(), keep.included_flagged), (2, 1));
         assert_eq!(&keep.frames[1][9..265], &bad.data[..]);
         assert_ne!(keep.frames[1][265], correct);
         assert!(keep.frames[1][265] < 0x80);
 
-        let fix = db.export_multi_bank(0x00, BadChecksumPolicy::Rechecksum).unwrap();
+        let fix = db
+            .export_multi_bank(0x00, BadChecksumPolicy::Rechecksum)
+            .unwrap();
         assert_eq!(fix.frames[1][265], correct);
     }
 
     #[test]
     fn save_multi_stores_the_given_flag() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        let slotted = db.save_multi(Some(5), &synthetic_multi("Flagged"), &PatchMeta::default(), false).unwrap();
-        let loose = db.save_multi(None, &synthetic_multi("Loose"), &PatchMeta::default(), false).unwrap();
+        let slotted = db
+            .save_multi(
+                Some(5),
+                &synthetic_multi("Flagged"),
+                &PatchMeta::default(),
+                false,
+            )
+            .unwrap();
+        let loose = db
+            .save_multi(
+                None,
+                &synthetic_multi("Loose"),
+                &PatchMeta::default(),
+                false,
+            )
+            .unwrap();
         assert!(!db.get_multi_by_id(slotted).unwrap().unwrap().checksum_ok);
         assert!(!db.get_multi_by_id(loose).unwrap().unwrap().checksum_ok);
     }
@@ -469,8 +598,20 @@ mod tests {
     #[test]
     fn storing_a_clean_multi_over_a_flagged_slot_takes_the_new_flag() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        db.save_multi(Some(5), &synthetic_multi("Old"), &PatchMeta::default(), false).unwrap();
-        db.save_multi(Some(5), &synthetic_multi("New"), &PatchMeta::default(), true).unwrap();
+        db.save_multi(
+            Some(5),
+            &synthetic_multi("Old"),
+            &PatchMeta::default(),
+            false,
+        )
+        .unwrap();
+        db.save_multi(
+            Some(5),
+            &synthetic_multi("New"),
+            &PatchMeta::default(),
+            true,
+        )
+        .unwrap();
         assert!(db.get_multi_by_slot(5).unwrap().unwrap().checksum_ok);
     }
 
@@ -497,10 +638,19 @@ mod tests {
     #[test]
     fn import_reports_duplicate_slots_and_keeps_the_later_dump() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        let dumps = [dump(1, 4, "First"), dump(1, 5, "Other"), dump(1, 4, "Second"), dump(1, 4, "Third")];
+        let dumps = [
+            dump(1, 4, "First"),
+            dump(1, 5, "Other"),
+            dump(1, 4, "Second"),
+            dump(1, 4, "Third"),
+        ];
         let report = db.import_multi_dumps(&dumps).unwrap();
         assert_eq!(report.imported, 2, "distinct slots");
-        assert_eq!(report.duplicates, [4], "each duplicated slot is listed once");
+        assert_eq!(
+            report.duplicates,
+            [4],
+            "each duplicated slot is listed once"
+        );
         assert_eq!(db.get_multi_by_slot(4).unwrap().unwrap().name, "Third");
     }
 
@@ -510,9 +660,19 @@ mod tests {
         let mut bad = dump(1, 4, "Damaged");
         bad.checksum_ok = false;
         db.import_multi_dumps(&[dump(1, 0, "Fine"), bad]).unwrap();
-        let id = db.save_multi(Some(9), &synthetic_multi("Eight"), &PatchMeta::default(), true).unwrap();
+        let id = db
+            .save_multi(
+                Some(9),
+                &synthetic_multi("Eight"),
+                &PatchMeta::default(),
+                true,
+            )
+            .unwrap();
         db.conn
-            .execute("UPDATE multis SET raw_data = ?1 WHERE id = ?2", params![&[0x80u8; MULTI_LEN][..], id])
+            .execute(
+                "UPDATE multis SET raw_data = ?1 WHERE id = ?2",
+                params![&[0x80u8; MULTI_LEN][..], id],
+            )
             .unwrap();
 
         let frames = db.export_multi_bank_dumps(0x10).unwrap();
@@ -520,17 +680,35 @@ mod tests {
         assert_eq!(frames[0][8], 0);
         assert_eq!(db.export_multi_bank_syx(0x10).unwrap(), frames.concat());
 
-        let all = db.export_multi_bank(0x10, BadChecksumPolicy::KeepInvalid).unwrap();
-        assert_eq!((all.frames.len(), all.included_flagged, all.skipped_invalid), (2, 1, 1));
+        let all = db
+            .export_multi_bank(0x10, BadChecksumPolicy::KeepInvalid)
+            .unwrap();
+        assert_eq!(
+            (all.frames.len(), all.included_flagged, all.skipped_invalid),
+            (2, 1, 1)
+        );
     }
 
     #[test]
     fn corrupt_multi_blob_is_an_error() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        let id = db.save_multi(Some(0), &synthetic_multi("Ok"), &PatchMeta::default(), true).unwrap();
-        db.conn.execute("UPDATE multis SET raw_data = zeroblob(9) WHERE id = ?1", params![id]).unwrap();
-        assert!(matches!(db.get_multi_by_id(id), Err(DbError::CorruptMulti { len: 9, .. })));
-        assert!(matches!(db.export_multi_bank_dumps(0), Err(DbError::CorruptMulti { len: 9, .. })));
+        let id = db
+            .save_multi(Some(0), &synthetic_multi("Ok"), &PatchMeta::default(), true)
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE multis SET raw_data = zeroblob(9) WHERE id = ?1",
+                params![id],
+            )
+            .unwrap();
+        assert!(matches!(
+            db.get_multi_by_id(id),
+            Err(DbError::CorruptMulti { len: 9, .. })
+        ));
+        assert!(matches!(
+            db.export_multi_bank_dumps(0),
+            Err(DbError::CorruptMulti { len: 9, .. })
+        ));
     }
 
     #[test]
@@ -549,7 +727,15 @@ mod tests {
                 let (dd, bb, mm) = (h[4], h[6], h[7]);
                 let data: [u8; MULTI_LEN] = h[8..8 + MULTI_LEN].try_into().unwrap();
                 let checksum_ok = multi_dump_checksum(dd, bb, mm, &data) == h[8 + MULTI_LEN];
-                scanned.push((dd, IncomingMultiDump { bank: bb, program: mm, data, checksum_ok }));
+                scanned.push((
+                    dd,
+                    IncomingMultiDump {
+                        bank: bb,
+                        program: mm,
+                        data,
+                        checksum_ok,
+                    },
+                ));
                 i += MULTI_DUMP_LEN - 1;
             } else {
                 i += 1;
@@ -562,7 +748,10 @@ mod tests {
         let report = db.import_multi_dumps(&dumps).unwrap();
         // Multi 10 reads as mm = 13 in the damaged file, so slot 13 is addressed twice: it is
         // reported as a duplicate and counted once.
-        assert_eq!((report.imported, report.loose.len(), report.skipped), (127, 1, 0));
+        assert_eq!(
+            (report.imported, report.loose.len(), report.skipped),
+            (127, 1, 0)
+        );
         assert_eq!(report.duplicates, [13]);
         let slots = db.get_multi_slots().unwrap();
         assert_eq!(slots.iter().flatten().count(), 127);
@@ -574,8 +763,16 @@ mod tests {
             expected[dump.program as usize] = Some(dump);
         }
         let frames = db.export_multi_bank_dumps(scanned[0].0).unwrap();
-        let clean: Vec<&IncomingMultiDump> = expected.into_iter().flatten().filter(|d| d.checksum_ok).collect();
-        assert_eq!(frames.len(), clean.len(), "flagged multis are left out by default");
+        let clean: Vec<&IncomingMultiDump> = expected
+            .into_iter()
+            .flatten()
+            .filter(|d| d.checksum_ok)
+            .collect();
+        assert_eq!(
+            frames.len(),
+            clean.len(),
+            "flagged multis are left out by default"
+        );
         for (frame, dump) in frames.iter().zip(clean) {
             assert_eq!(frame[8], dump.program);
             assert_eq!(&frame[9..265], &dump.data[..]);
@@ -586,7 +783,11 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(CREATE_TABLES_SQL).unwrap();
         conn.pragma_update(None, "user_version", 2).unwrap();
-        conn.execute("INSERT INTO banks (name, bank_letter, is_rom) VALUES ('Bank A', 'A', 0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO banks (name, bank_letter, is_rom) VALUES ('Bank A', 'A', 0)",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO patches (bank_id, program_number, name, raw_data) VALUES (1, 4, 'Kept', ?1)",
             params![&[7u8; 256][..]],
@@ -599,9 +800,18 @@ mod tests {
     fn migrates_v2_to_v3_keeping_patches() {
         let db = PatchDatabase::with_connection(v2_connection(), None).unwrap();
         assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
-        assert_eq!(db.get_patch_by_slot(1, 4).unwrap().unwrap().data, [7u8; 256]);
+        assert_eq!(
+            db.get_patch_by_slot(1, 4).unwrap().unwrap().data,
+            [7u8; 256]
+        );
         assert_eq!(db.get_banks().unwrap().len(), 1);
-        db.save_multi(Some(0), &synthetic_multi("New"), &PatchMeta::default(), true).unwrap();
+        db.save_multi(
+            Some(0),
+            &synthetic_multi("New"),
+            &PatchMeta::default(),
+            true,
+        )
+        .unwrap();
         assert_eq!(multi_count(&db), 1);
     }
 
@@ -615,15 +825,25 @@ mod tests {
             conn.execute_batch(CREATE_TABLES_SQL).unwrap();
             conn.pragma_update(None, "user_version", 2).unwrap();
             // A view of the same name makes `CREATE TABLE IF NOT EXISTS` a no-op and the index fail.
-            conn.execute_batch("CREATE VIEW multis AS SELECT 1 AS slot, 'x' AS name;").unwrap();
+            conn.execute_batch("CREATE VIEW multis AS SELECT 1 AS slot, 'x' AS name;")
+                .unwrap();
         }
-        assert!(matches!(PatchDatabase::open(&path), Err(DbError::Sqlite(_))));
+        assert!(matches!(
+            PatchDatabase::open(&path),
+            Err(DbError::Sqlite(_))
+        ));
         {
             let conn = Connection::open(&path).unwrap();
-            let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+            let version: i64 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
             assert_eq!(version, 2);
             let indexes: i64 = conn
-                .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'idx_multis_%'", [], |r| r.get(0))
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'idx_multis_%'",
+                    [],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(indexes, 0);
         }

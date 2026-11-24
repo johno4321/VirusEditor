@@ -28,11 +28,27 @@ pub struct Knob<'a> {
 
 impl<'a> Knob<'a> {
     pub fn unipolar(value: &'a mut u8, label: &'a str) -> Self {
-        Self { value, label, bipolar: false, min: 0, max: 127, default: 0, radius: 16.0 }
+        Self {
+            value,
+            label,
+            bipolar: false,
+            min: 0,
+            max: 127,
+            default: 0,
+            radius: 16.0,
+        }
     }
 
     pub fn bipolar(value: &'a mut u8, label: &'a str) -> Self {
-        Self { value, label, bipolar: true, min: 0, max: 127, default: BIPOLAR_CENTRE, radius: 16.0 }
+        Self {
+            value,
+            label,
+            bipolar: true,
+            min: 0,
+            max: 127,
+            default: BIPOLAR_CENTRE,
+            radius: 16.0,
+        }
     }
 
     /// Range reachable by dragging. A stored value outside it is shown as-is and kept until
@@ -113,7 +129,10 @@ impl Widget for Knob<'_> {
 
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
-            let centre = pos2(rect.center().x, rect.min.y + font_height + 4.0 + self.radius);
+            let centre = pos2(
+                rect.center().x,
+                rect.min.y + font_height + 4.0 + self.radius,
+            );
             painter.text(
                 pos2(rect.center().x, rect.min.y + font_height * 0.5),
                 egui::Align2::CENTER_CENTER,
@@ -124,28 +143,59 @@ impl Widget for Knob<'_> {
 
             let track_radius = self.radius + 3.0;
             let p = theme::palette();
-            draw_arc(painter, centre, track_radius, ARC_START_ANGLE, ARC_START_ANGLE + ARC_TOTAL_ANGLE, p.control_grey);
+            draw_arc(
+                painter,
+                centre,
+                track_radius,
+                ARC_START_ANGLE,
+                ARC_START_ANGLE + ARC_TOTAL_ANGLE,
+                p.control_grey,
+            );
             let current = self.angle(f32::from(*self.value));
             if self.bipolar {
                 let centre_angle = self.angle(f32::from(BIPOLAR_CENTRE));
                 painter.line_segment(
-                    [centre + vec2(0.0, -track_radius - 2.0), centre + vec2(0.0, -track_radius + 2.0)],
+                    [
+                        centre + vec2(0.0, -track_radius - 2.0),
+                        centre + vec2(0.0, -track_radius + 2.0),
+                    ],
                     Stroke::new(1.5_f32, theme::DIM),
                 );
-                draw_arc(painter, centre, track_radius, centre_angle.min(current), centre_angle.max(current), p.arc);
+                draw_arc(
+                    painter,
+                    centre,
+                    track_radius,
+                    centre_angle.min(current),
+                    centre_angle.max(current),
+                    p.arc,
+                );
             } else {
-                draw_arc(painter, centre, track_radius, ARC_START_ANGLE, current, p.arc);
+                draw_arc(
+                    painter,
+                    centre,
+                    track_radius,
+                    ARC_START_ANGLE,
+                    current,
+                    p.arc,
+                );
             }
 
             painter.circle(centre, self.radius, BODY, Stroke::new(1.0_f32, p.edge));
             let direction = vec2(current.cos(), current.sin());
             painter.line_segment(
-                [centre + direction * self.radius * 0.35, centre + direction * self.radius * 0.85],
+                [
+                    centre + direction * self.radius * 0.35,
+                    centre + direction * self.radius * 0.85,
+                ],
                 Stroke::new(2.0_f32, NEEDLE),
             );
 
             let out_of_range = *self.value < self.min || *self.value > self.max;
-            let neutral = if self.bipolar { *self.value == BIPOLAR_CENTRE } else { false };
+            let neutral = if self.bipolar {
+                *self.value == BIPOLAR_CENTRE
+            } else {
+                false
+            };
             let colour = if out_of_range {
                 theme::WARN
             } else if neutral {
@@ -165,7 +215,14 @@ impl Widget for Knob<'_> {
     }
 }
 
-fn draw_arc(painter: &egui::Painter, centre: Pos2, radius: f32, start: f32, end: f32, colour: Color32) {
+fn draw_arc(
+    painter: &egui::Painter,
+    centre: Pos2,
+    radius: f32,
+    start: f32,
+    end: f32,
+    colour: Color32,
+) {
     if (end - start).abs() < 0.01 {
         return;
     }

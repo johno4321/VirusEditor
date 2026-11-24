@@ -112,7 +112,10 @@ impl Worker {
         self.refresh_ports();
         loop {
             let now = Instant::now();
-            let wait = match (self.batch.time_until_next(now), self.ports.time_until_poll(now)) {
+            let wait = match (
+                self.batch.time_until_next(now),
+                self.ports.time_until_poll(now),
+            ) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
@@ -149,7 +152,9 @@ impl Worker {
     fn handle(&mut self, cmd: MidiCommand) {
         match cmd {
             MidiCommand::RefreshPorts => self.refresh_ports(),
-            MidiCommand::SetPortPolling(interval) => self.ports.set_interval(interval, Instant::now()),
+            MidiCommand::SetPortPolling(interval) => {
+                self.ports.set_interval(interval, Instant::now())
+            }
             MidiCommand::ConnectInput(name) => {
                 // Close first: some backends cannot open the same port twice.
                 self.input = None;
@@ -207,7 +212,9 @@ impl Worker {
             return false;
         }
         if let Err(e) = conn.send(message) {
-            self.sink.error(format!("Send to '{name}' failed: {e}; the output was closed"));
+            self.sink.error(format!(
+                "Send to '{name}' failed: {e}; the output was closed"
+            ));
             self.output = None;
             self.ports.forget();
             self.emit_status();
@@ -231,7 +238,8 @@ impl Worker {
         match (list_input_ports(), list_output_ports()) {
             (Ok(inputs), Ok(outputs)) => {
                 self.ports.changed(&inputs, &outputs);
-                self.sink.emit(MidiEvent::PortListUpdated { inputs, outputs });
+                self.sink
+                    .emit(MidiEvent::PortListUpdated { inputs, outputs });
             }
             (Err(e), _) | (_, Err(e)) => self.sink.error(format!("Port enumeration failed: {e}")),
         }
@@ -243,7 +251,8 @@ impl Worker {
         self.ports.polled(Instant::now());
         if let (Ok(inputs), Ok(outputs)) = (list_input_ports(), list_output_ports()) {
             if self.ports.changed(&inputs, &outputs) {
-                self.sink.emit(MidiEvent::PortListUpdated { inputs, outputs });
+                self.sink
+                    .emit(MidiEvent::PortListUpdated { inputs, outputs });
             }
         }
     }

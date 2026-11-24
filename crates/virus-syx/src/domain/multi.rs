@@ -7,8 +7,8 @@
 
 use crate::params::{format_kind, ValueKind, LFO_SHAPE_NAMES};
 use crate::sysex::{
-    encode_multi_dump, encode_param_change, parse_sysex, part_bank_from_c32, part_bank_to_c32, Page, SysExMessage,
-    SyxError, PAGE_C_PART_BANK_CHANGE,
+    encode_multi_dump, encode_param_change, parse_sysex, part_bank_from_c32, part_bank_to_c32,
+    Page, SysExMessage, SyxError, PAGE_C_PART_BANK_CHANGE,
 };
 
 /// Length of a multi program (the data block of a multi dump).
@@ -70,7 +70,13 @@ pub enum PartFlag {
 }
 
 impl PartFlag {
-    pub const ALL: [Self; 5] = [Self::Enable, Self::MidiVolume, Self::HoldPedal, Self::PriorityHigh, Self::ProgramChange];
+    pub const ALL: [Self; 5] = [
+        Self::Enable,
+        Self::MidiVolume,
+        Self::HoldPedal,
+        Self::PriorityHigh,
+        Self::ProgramChange,
+    ];
 
     pub const fn bit(self) -> u8 {
         match self {
@@ -144,8 +150,18 @@ impl MultiParamDef {
     pub fn param_change(&self, device_id: u8, part: u8, value: u8) -> Option<Vec<u8>> {
         let live = self.live?;
         let part = if self.is_part_param() { part & 0x0F } else { 0 };
-        let value = if self.is_part_bank() { part_bank_to_c32(value) } else { value };
-        Some(encode_param_change(device_id, live.page, part, live.number, value))
+        let value = if self.is_part_bank() {
+            part_bank_to_c32(value)
+        } else {
+            value
+        };
+        Some(encode_param_change(
+            device_id,
+            live.page,
+            part,
+            live.number,
+            value,
+        ))
     }
 
     /// The stored byte for a value received live as this row's parameter change, the inverse of
@@ -161,21 +177,27 @@ impl MultiParamDef {
 
     /// The Part Bank row: stored 0-based (A = 0), sent as C32 Part Bank Change.
     fn is_part_bank(&self) -> bool {
-        self.live == Some(LiveParam { page: Page::PageC, number: PAGE_C_PART_BANK_CHANGE })
+        self.live
+            == Some(LiveParam {
+                page: Page::PageC,
+                number: PAGE_C_PART_BANK_CHANGE,
+            })
     }
 }
 
 /// Bank of a part's single: dump bytes 32..47 (documented 0..1) and C31/C32 (0..3).
 pub const PART_BANK_NAMES: [&str; 4] = ["A", "B", "C", "D"];
-pub const MIDI_CHANNEL_NAMES: [&str; 16] =
-    ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"];
+pub const MIDI_CHANNEL_NAMES: [&str; 16] = [
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16",
+];
 /// Output select (C22, C41, bytes 22 and 176..191).
 ///
 /// Only 0..2 are printed in the addendum ("0:Out1L 1:Out1L+R 2:Out1R .."); 3..8 follow that
 /// pattern for the Rack's three stereo outputs (factory multi 127 uses 1, 4 and 7 for three
 /// layered parts). 9..14 are unknown and shown as `#n`. Needs a live test.
-pub const OUTPUT_SELECT_NAMES: [&str; 9] =
-    ["Out1 L", "Out1 L+R", "Out1 R", "Out2 L", "Out2 L+R", "Out2 R", "Out3 L", "Out3 L+R", "Out3 R"];
+pub const OUTPUT_SELECT_NAMES: [&str; 9] = [
+    "Out1 L", "Out1 L+R", "Out1 R", "Out2 L", "Out2 L+R", "Out2 R", "Out3 L", "Out3 L+R", "Out3 R",
+];
 pub const PRIORITY_NAMES: [&str; 2] = ["Low", "High"];
 
 const fn row(
@@ -187,11 +209,23 @@ const fn row(
     max: u8,
     live: Option<LiveParam>,
 ) -> MultiParamDef {
-    MultiParamDef { name, short, section, location, kind, min: 0, max, live }
+    MultiParamDef {
+        name,
+        short,
+        section,
+        location,
+        kind,
+        min: 0,
+        max,
+        live,
+    }
 }
 
 const fn c(number: u8) -> Option<LiveParam> {
-    Some(LiveParam { page: Page::PageC, number })
+    Some(LiveParam {
+        page: Page::PageC,
+        number,
+    })
 }
 
 const fn name_char(index: u8, name: &'static str) -> MultiParamDef {
@@ -228,26 +262,186 @@ pub static MULTI_PARAMS: &[MultiParamDef] = &[
     name_char(7, "Multi Name Char8"),
     name_char(8, "Multi Name Char9"),
     name_char(9, "Multi Name Char10"),
-    row("Multi Clock Tempo", "Tempo", "Multi", Common(15), ValueKind::Unipolar, 127, None),
-    row("Multi Delay Mode", "Delay", "Delay", Common(16), ValueKind::Toggle, 1, None),
-    row("Multi Delay Time", "Time", "Delay", Common(17), ValueKind::Unipolar, 127, None),
-    row("Multi Delay Feedback", "Feedback", "Delay", Common(18), ValueKind::Unipolar, 127, None),
-    row("Multi Delay Rate", "Rate", "Delay", Common(19), ValueKind::Unipolar, 127, None),
-    row("Multi Delay Depth", "Depth", "Delay", Common(20), ValueKind::Unipolar, 127, None),
-    row("Multi Delay Shape", "Shape", "Delay", Common(21), ValueKind::Choice(&LFO_SHAPE_NAMES), 5, None),
-    row("Multi Delay Output Select", "Output", "Delay", Common(22), ValueKind::Choice(&OUTPUT_SELECT_NAMES), 14, c(22)),
-    row("Multi Delay Clock", "Clock", "Delay", Common(23), ValueKind::Raw, 16, None),
-    row("Multi Delay Color", "Color", "Delay", Common(24), ValueKind::Bipolar, 127, None),
-    row("Part Bank", "Bank", "Part", Part(32), ValueKind::Choice(&PART_BANK_NAMES), 1, c(32)),
-    row("Part Program", "Prog", "Part", Part(48), ValueKind::Unipolar, 127, c(33)),
-    row("Part MIDI Channel", "Ch", "Part", Part(64), ValueKind::Choice(&MIDI_CHANNEL_NAMES), 15, c(34)),
-    row("Part Low Key", "Low", "Part", Part(80), ValueKind::Note, 127, c(35)),
-    row("Part High Key", "High", "Part", Part(96), ValueKind::Note, 127, c(36)),
-    row("Part Transpose", "Transp", "Part", Part(112), ValueKind::Bipolar, 127, c(37)),
-    row("Part Detune", "Detune", "Part", Part(128), ValueKind::Bipolar, 127, c(38)),
-    row("Part Volume", "Vol", "Part", Part(144), ValueKind::Bipolar, 127, c(39)),
-    row("Part MIDI Volume Init", "MIDI Vol", "Part", Part(160), ValueKind::Unipolar, 127, c(40)),
-    row("Part Output Select", "Out", "Part", Part(176), ValueKind::Choice(&OUTPUT_SELECT_NAMES), 14, c(41)),
+    row(
+        "Multi Clock Tempo",
+        "Tempo",
+        "Multi",
+        Common(15),
+        ValueKind::Unipolar,
+        127,
+        None,
+    ),
+    row(
+        "Multi Delay Mode",
+        "Delay",
+        "Delay",
+        Common(16),
+        ValueKind::Toggle,
+        1,
+        None,
+    ),
+    row(
+        "Multi Delay Time",
+        "Time",
+        "Delay",
+        Common(17),
+        ValueKind::Unipolar,
+        127,
+        None,
+    ),
+    row(
+        "Multi Delay Feedback",
+        "Feedback",
+        "Delay",
+        Common(18),
+        ValueKind::Unipolar,
+        127,
+        None,
+    ),
+    row(
+        "Multi Delay Rate",
+        "Rate",
+        "Delay",
+        Common(19),
+        ValueKind::Unipolar,
+        127,
+        None,
+    ),
+    row(
+        "Multi Delay Depth",
+        "Depth",
+        "Delay",
+        Common(20),
+        ValueKind::Unipolar,
+        127,
+        None,
+    ),
+    row(
+        "Multi Delay Shape",
+        "Shape",
+        "Delay",
+        Common(21),
+        ValueKind::Choice(&LFO_SHAPE_NAMES),
+        5,
+        None,
+    ),
+    row(
+        "Multi Delay Output Select",
+        "Output",
+        "Delay",
+        Common(22),
+        ValueKind::Choice(&OUTPUT_SELECT_NAMES),
+        14,
+        c(22),
+    ),
+    row(
+        "Multi Delay Clock",
+        "Clock",
+        "Delay",
+        Common(23),
+        ValueKind::Raw,
+        16,
+        None,
+    ),
+    row(
+        "Multi Delay Color",
+        "Color",
+        "Delay",
+        Common(24),
+        ValueKind::Bipolar,
+        127,
+        None,
+    ),
+    row(
+        "Part Bank",
+        "Bank",
+        "Part",
+        Part(32),
+        ValueKind::Choice(&PART_BANK_NAMES),
+        1,
+        c(32),
+    ),
+    row(
+        "Part Program",
+        "Prog",
+        "Part",
+        Part(48),
+        ValueKind::Unipolar,
+        127,
+        c(33),
+    ),
+    row(
+        "Part MIDI Channel",
+        "Ch",
+        "Part",
+        Part(64),
+        ValueKind::Choice(&MIDI_CHANNEL_NAMES),
+        15,
+        c(34),
+    ),
+    row(
+        "Part Low Key",
+        "Low",
+        "Part",
+        Part(80),
+        ValueKind::Note,
+        127,
+        c(35),
+    ),
+    row(
+        "Part High Key",
+        "High",
+        "Part",
+        Part(96),
+        ValueKind::Note,
+        127,
+        c(36),
+    ),
+    row(
+        "Part Transpose",
+        "Transp",
+        "Part",
+        Part(112),
+        ValueKind::Bipolar,
+        127,
+        c(37),
+    ),
+    row(
+        "Part Detune",
+        "Detune",
+        "Part",
+        Part(128),
+        ValueKind::Bipolar,
+        127,
+        c(38),
+    ),
+    row(
+        "Part Volume",
+        "Vol",
+        "Part",
+        Part(144),
+        ValueKind::Bipolar,
+        127,
+        c(39),
+    ),
+    row(
+        "Part MIDI Volume Init",
+        "MIDI Vol",
+        "Part",
+        Part(160),
+        ValueKind::Unipolar,
+        127,
+        c(40),
+    ),
+    row(
+        "Part Output Select",
+        "Out",
+        "Part",
+        Part(176),
+        ValueKind::Choice(&OUTPUT_SELECT_NAMES),
+        14,
+        c(41),
+    ),
     row(
         "Part Effect Send",
         "FX Send",
@@ -255,11 +449,38 @@ pub static MULTI_PARAMS: &[MultiParamDef] = &[
         Part(192),
         ValueKind::Unipolar,
         127,
-        Some(LiveParam { page: Page::PageA, number: 113 }),
+        Some(LiveParam {
+            page: Page::PageA,
+            number: 113,
+        }),
     ),
-    row("Part Enable", "On", "Part", MultiLocation::PartFlag(PartFlag::Enable), ValueKind::Toggle, 1, c(72)),
-    row("Part MIDI Volume Enable", "Vol En", "Part", MultiLocation::PartFlag(PartFlag::MidiVolume), ValueKind::Toggle, 1, c(73)),
-    row("Part Hold Pedal Enable", "Hold", "Part", MultiLocation::PartFlag(PartFlag::HoldPedal), ValueKind::Toggle, 1, c(74)),
+    row(
+        "Part Enable",
+        "On",
+        "Part",
+        MultiLocation::PartFlag(PartFlag::Enable),
+        ValueKind::Toggle,
+        1,
+        c(72),
+    ),
+    row(
+        "Part MIDI Volume Enable",
+        "Vol En",
+        "Part",
+        MultiLocation::PartFlag(PartFlag::MidiVolume),
+        ValueKind::Toggle,
+        1,
+        c(73),
+    ),
+    row(
+        "Part Hold Pedal Enable",
+        "Hold",
+        "Part",
+        MultiLocation::PartFlag(PartFlag::HoldPedal),
+        ValueKind::Toggle,
+        1,
+        c(74),
+    ),
     row(
         "Note Steal Priority",
         "Prio",
@@ -287,13 +508,17 @@ pub fn multi_part_params() -> impl Iterator<Item = &'static MultiParamDef> {
 
 /// The common (non-name) rows of [`MULTI_PARAMS`].
 pub fn multi_common_params() -> impl Iterator<Item = &'static MultiParamDef> {
-    MULTI_PARAMS.iter().filter(|def| !def.is_part_param() && def.kind != ValueKind::NameChar)
+    MULTI_PARAMS
+        .iter()
+        .filter(|def| !def.is_part_param() && def.kind != ValueKind::NameChar)
 }
 
 /// Looks up the Multi row edited by an incoming parameter change (e.g. `72 pp 27 vv` → Part
 /// Volume of part `pp`).
 pub fn multi_param_for_live(page: Page, number: u8) -> Option<&'static MultiParamDef> {
-    MULTI_PARAMS.iter().find(|def| def.live == Some(LiveParam { page, number }))
+    MULTI_PARAMS
+        .iter()
+        .find(|def| def.live == Some(LiveParam { page, number }))
 }
 
 /// Read-only typed view of one part (raw values; see [`MULTI_PARAMS`] for their meaning).
@@ -344,7 +569,13 @@ impl Multi {
     pub fn name(&self) -> String {
         let name: String = self.bytes[MULTI_NAME_OFFSET..MULTI_NAME_OFFSET + MULTI_NAME_LEN]
             .iter()
-            .map(|&b| if (32..=126).contains(&b) { b as char } else { '?' })
+            .map(|&b| {
+                if (32..=126).contains(&b) {
+                    b as char
+                } else {
+                    '?'
+                }
+            })
             .collect();
         name.trim_end_matches(' ').to_owned()
     }
@@ -352,9 +583,12 @@ impl Multi {
     /// Writes exactly 10 name bytes: characters outside ASCII 32..127 become `?`, the name is
     /// truncated to 10 characters and padded with spaces (SPEC §5.4).
     pub fn set_name(&mut self, name: &str) {
-        let mut chars = name
-            .chars()
-            .map(|c| u8::try_from(c).ok().filter(|b| (32..=127).contains(b)).unwrap_or(b'?'));
+        let mut chars = name.chars().map(|c| {
+            u8::try_from(c)
+                .ok()
+                .filter(|b| (32..=127).contains(b))
+                .unwrap_or(b'?')
+        });
         for slot in &mut self.bytes[MULTI_NAME_OFFSET..MULTI_NAME_OFFSET + MULTI_NAME_LEN] {
             *slot = chars.next().unwrap_or(b' ');
         }
@@ -443,8 +677,14 @@ impl Multi {
     /// use [`parse_sysex`] when the checksum status matters.
     pub fn from_sysex(msg: &[u8]) -> Result<(Self, MultiDumpTarget), SyxError> {
         match parse_sysex(msg)? {
-            SysExMessage::MultiDump { bank, program, data, .. } => {
-                let target = MultiDumpTarget::from_raw(bank, program).ok_or(SyxError::UnsupportedMultiBank(bank))?;
+            SysExMessage::MultiDump {
+                bank,
+                program,
+                data,
+                ..
+            } => {
+                let target = MultiDumpTarget::from_raw(bank, program)
+                    .ok_or(SyxError::UnsupportedMultiBank(bank))?;
                 Ok((Self::from_bytes(&data), target))
             }
             _ => Err(SyxError::NotAMultiDump { command: msg[6] }),
@@ -489,10 +729,17 @@ mod tests {
                 assert!(multi.set(def, part, value), "{} part {part}", def.name);
                 assert_eq!(multi.get(def, part), value & 0x7F);
                 let offset = def.offset(part);
-                for (i, (&new, &old)) in multi.as_bytes().iter().zip(original.as_bytes()).enumerate() {
+                for (i, (&new, &old)) in
+                    multi.as_bytes().iter().zip(original.as_bytes()).enumerate()
+                {
                     match def.location {
                         MultiLocation::PartFlag(flag) if i == offset => {
-                            assert_eq!(new ^ old, 1 << flag.bit(), "{} touched other bits", def.name)
+                            assert_eq!(
+                                new ^ old,
+                                1 << flag.bit(),
+                                "{} touched other bits",
+                                def.name
+                            )
                         }
                         _ if i == offset => {}
                         _ => assert_eq!(new, old, "byte {i} changed by {} part {part}", def.name),
@@ -504,7 +751,8 @@ mod tests {
 
     #[test]
     fn table_never_addresses_internal_bytes() {
-        let internal = |i: usize| i <= 3 || i == 14 || (25..=31).contains(&i) || (208..=239).contains(&i);
+        let internal =
+            |i: usize| i <= 3 || i == 14 || (25..=31).contains(&i) || (208..=239).contains(&i);
         for def in MULTI_PARAMS {
             for part in 0..16 {
                 assert!(!internal(def.offset(part)), "{}", def.name);
@@ -531,7 +779,10 @@ mod tests {
         assert_eq!(multi.part_state(3), 0x18);
         assert!(multi.set_part_enabled(3, true));
         assert!(multi.part_enabled(3));
-        assert_eq!(multi.as_bytes()[..PART_STATE_OFFSET + 3], bytes[..PART_STATE_OFFSET + 3]);
+        assert_eq!(
+            multi.as_bytes()[..PART_STATE_OFFSET + 3],
+            bytes[..PART_STATE_OFFSET + 3]
+        );
     }
 
     #[test]
@@ -552,30 +803,57 @@ mod tests {
         let frame = multi.to_sysex(DEVICE_ID_OMNI, MultiDumpTarget::Bank { program: 9 });
         assert_eq!(frame.len(), 267);
         assert_eq!(frame[6..9], [0x11, 0x01, 0x09]);
-        assert_eq!(Multi::from_sysex(&frame), Ok((multi.clone(), MultiDumpTarget::Bank { program: 9 })));
+        assert_eq!(
+            Multi::from_sysex(&frame),
+            Ok((multi.clone(), MultiDumpTarget::Bank { program: 9 }))
+        );
 
         let edit = multi.to_sysex(0, MultiDumpTarget::EditBuffer);
         assert_eq!(edit[6..9], [0x11, 0x00, 0x00]);
-        assert_eq!(Multi::from_sysex(&edit).unwrap().1, MultiDumpTarget::EditBuffer);
+        assert_eq!(
+            Multi::from_sysex(&edit).unwrap().1,
+            MultiDumpTarget::EditBuffer
+        );
 
         let single = encode_program_dump(0, 1, 0, multi.as_bytes());
-        assert_eq!(Multi::from_sysex(&single), Err(SyxError::NotAMultiDump { command: 0x10 }));
+        assert_eq!(
+            Multi::from_sysex(&single),
+            Err(SyxError::NotAMultiDump { command: 0x10 })
+        );
         let bank2 = encode_multi_dump(0, 2, 0, multi.as_bytes());
-        assert_eq!(Multi::from_sysex(&bank2), Err(SyxError::UnsupportedMultiBank(2)));
+        assert_eq!(
+            Multi::from_sysex(&bank2),
+            Err(SyxError::UnsupportedMultiBank(2))
+        );
     }
 
     #[test]
     fn live_param_changes_address_the_part() {
         let vol = param("Part Volume");
-        assert_eq!(vol.param_change(0x10, 3, 70).unwrap()[6..10], [0x72, 0x03, 39, 70]);
+        assert_eq!(
+            vol.param_change(0x10, 3, 70).unwrap()[6..10],
+            [0x72, 0x03, 39, 70]
+        );
         let fx = param("Part Effect Send");
-        assert_eq!(fx.param_change(0, 15, 5).unwrap()[6..10], [0x70, 0x0F, 113, 5]);
+        assert_eq!(
+            fx.param_change(0, 15, 5).unwrap()[6..10],
+            [0x70, 0x0F, 113, 5]
+        );
         let enable = param("Part Enable");
-        assert_eq!(enable.param_change(0, 2, 1).unwrap()[6..10], [0x72, 0x02, 72, 1]);
+        assert_eq!(
+            enable.param_change(0, 2, 1).unwrap()[6..10],
+            [0x72, 0x02, 72, 1]
+        );
         let bank = param("Part Bank");
-        assert_eq!(bank.param_change(0, 1, 1).unwrap()[6..10], [0x72, 0x01, 32, 1]);
+        assert_eq!(
+            bank.param_change(0, 1, 1).unwrap()[6..10],
+            [0x72, 0x01, 32, 1]
+        );
         let name1 = &MULTI_PARAMS[0];
-        assert_eq!(name1.param_change(0, 7, b'X').unwrap()[6..10], [0x72, 0x00, 5, b'X']);
+        assert_eq!(
+            name1.param_change(0, 7, b'X').unwrap()[6..10],
+            [0x72, 0x00, 5, b'X']
+        );
         assert_eq!(param("Multi Clock Tempo").param_change(0, 0, 1), None);
     }
 
@@ -592,7 +870,10 @@ mod tests {
     fn incoming_part_bank_maps_back_to_the_stored_byte() {
         let bank = param("Part Bank");
         for stored in 0..4 {
-            assert_eq!(bank.stored_from_live(part_bank_to_c32(stored)), Some(stored));
+            assert_eq!(
+                bank.stored_from_live(part_bank_to_c32(stored)),
+                Some(stored)
+            );
         }
     }
 
@@ -610,7 +891,10 @@ mod tests {
             .map(|l| l.number)
             .collect();
         numbers.sort_unstable();
-        assert_eq!(numbers, [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 72, 73, 74, 77, 78]);
+        assert_eq!(
+            numbers,
+            [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 72, 73, 74, 77, 78]
+        );
         for def in MULTI_PARAMS.iter().filter(|d| d.live.is_some()) {
             let live = def.live.unwrap();
             assert_eq!(multi_param_for_live(live.page, live.number), Some(def));

@@ -12,11 +12,16 @@ use crate::audition::Audition;
 use crate::comforts::{Comforts, Replace, ReplaceRequest};
 use crate::dialogs::SharedFolders;
 use crate::library::{slot_label, store_patch, EditorFlag, PendingStore};
-use crate::session::{Activity, EditPart, Incoming, MidiSettings, PacedSend, Ports, Session, Submitted, Ticket, PORT_POLL_INTERVAL};
+use crate::session::{
+    Activity, EditPart, Incoming, MidiSettings, PacedSend, Ports, Session, Submitted, Ticket,
+    PORT_POLL_INTERVAL,
+};
 use crate::settings::{self, FolderPrefs, Loaded, Settings, SettingsStore, WindowPrefs};
-use crate::storage::{adopt_legacy_library, open_library, open_library_at, pending_legacy_library, LibraryLocation};
-use crate::theme::{self, ThemeKind};
+use crate::storage::{
+    adopt_legacy_library, open_library, open_library_at, pending_legacy_library, LibraryLocation,
+};
 use crate::synth_select::select_messages;
+use crate::theme::{self, ThemeKind};
 use crate::views::comforts::{ComfortAction, ComfortsView};
 use crate::views::librarian::{LibAction, LibrarianView};
 use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, DIM, WARN};
@@ -119,7 +124,8 @@ const STORE_REQUEST_WAIT: Duration = Duration::from_secs(10);
 
 impl VirusApp {
     pub fn new(cc: &eframe::CreationContext<'_>, store: SettingsStore, loaded: Loaded) -> Self {
-        let mut notice = Notice::info("Ready. Select the MIDI ports, or let auto-detect find the Virus.");
+        let mut notice =
+            Notice::info("Ready. Select the MIDI ports, or let auto-detect find the Virus.");
         let midi = match MidiService::spawn() {
             Ok(service) => {
                 // Repaint as soon as MIDI arrives instead of polling every frame (U2).
@@ -137,10 +143,16 @@ impl VirusApp {
 
         let (db, location) = open_library();
         if let LibraryLocation::InMemory { reason } = &location {
-            notice = Notice::error(format!("Library is in memory only and will NOT be saved: {reason}"));
+            notice = Notice::error(format!(
+                "Library is in memory only and will NOT be saved: {reason}"
+            ));
         }
 
-        let legacy = pending_legacy_library(&db, &location, loaded.settings.ui.legacy_prompt_dismissed.as_deref());
+        let legacy = pending_legacy_library(
+            &db,
+            &location,
+            loaded.settings.ui.legacy_prompt_dismissed.as_deref(),
+        );
         let mut app = Self {
             session: Session::default(),
             ports: Ports::default(),
@@ -165,7 +177,7 @@ impl VirusApp {
             comfort_ui: ComfortsView::default(),
             pending_replace: ReplaceRequest::default(),
             last_target: (EditPart::default(), 0),
-            multi: MultiSession::default(),    // [multi]
+            multi: MultiSession::default(),   // [multi]
             multi_view: MultiView::default(), // [multi]
             pending_store: None,
             store_waiting: None,
@@ -181,37 +193,50 @@ impl VirusApp {
     }
 
     fn apply_settings(&mut self, s: &Settings) {
-        self.session.settings = MidiSettings { channel: s.midi.channel, device_id: s.midi.device_id, part: s.edit_part() };
+        self.session.settings = MidiSettings {
+            channel: s.midi.channel,
+            device_id: s.midi.device_id,
+            part: s.edit_part(),
+        };
         self.pending_ports = Some(s.midi.clone());
         let audition = &mut self.audition;
         audition.open = s.audition.open;
         audition.set_octave(s.audition.octave);
         audition.settings.velocity = s.audition.velocity;
         audition.settings.velocity_from_position = s.audition.velocity_from_position;
-        audition.settings.audition_notes.clone_from(&s.audition.notes);
+        audition
+            .settings
+            .audition_notes
+            .clone_from(&s.audition.notes);
         audition.settings.audition_length_ms = s.audition.length_ms;
         self.tab = Tab::from_key(&s.ui.tab);
         self.librarian.select_on_synth = s.ui.select_on_synth;
         self.librarian.fetch_before_store = s.ui.fetch_before_store;
-        self.legacy_dismissed.clone_from(&s.ui.legacy_prompt_dismissed);
+        self.legacy_dismissed
+            .clone_from(&s.ui.legacy_prompt_dismissed);
         self.theme = ThemeKind::from_key(&s.ui.theme);
         if let (Some(name), Ok(banks)) = (&s.ui.bank, self.db.get_banks()) {
-            self.librarian.set_bank_id(banks.iter().find(|b| &b.name == name).map(|b| b.id));
+            self.librarian
+                .set_bank_id(banks.iter().find(|b| &b.name == name).map(|b| b.id));
         }
         self.folders = SharedFolders {
             import: FolderPrefs::existing(&s.folders.import),
             export: FolderPrefs::existing(&s.folders.export),
         };
-        self.folders.offer(&mut self.librarian.files, &mut self.multi_view.files);
+        self.folders
+            .offer(&mut self.librarian.files, &mut self.multi_view.files);
         self.window = s.window;
     }
 
     /// Everything worth keeping between runs, as it is now.
     fn snapshot(&mut self) -> Settings {
-        self.folders.sync(&mut self.librarian.files, &mut self.multi_view.files);
+        self.folders
+            .sync(&mut self.librarian.files, &mut self.multi_view.files);
         let bank_id = self.librarian.bank_id();
         if self.bank_name.0 != bank_id {
-            let name = bank_id.and_then(|id| self.db.get_banks().ok()?.into_iter().find(|b| b.id == id)).map(|b| b.name);
+            let name = bank_id
+                .and_then(|id| self.db.get_banks().ok()?.into_iter().find(|b| b.id == id))
+                .map(|b| b.name);
             self.bank_name = (bank_id, name);
         }
         let mut midi = match &self.pending_ports {
@@ -257,7 +282,10 @@ impl VirusApp {
 
     fn save_settings(&mut self, ctx: Option<&egui::Context>, force: bool) {
         let current = self.snapshot();
-        if let Some(error) = self.settings_store.save_if_changed(&current, Instant::now(), force) {
+        if let Some(error) = self
+            .settings_store
+            .save_if_changed(&current, Instant::now(), force)
+        {
             self.notice = Notice::error(error);
         }
         // A rate-limited change must still be written when no other repaint comes along.
@@ -286,7 +314,9 @@ impl VirusApp {
             self.notice = Notice::warning("No MIDI output connected: nothing was sent.");
             return;
         }
-        let Some(message) = self.paced.submit(message, Instant::now()) else { return };
+        let Some(message) = self.paced.submit(message, Instant::now()) else {
+            return;
+        };
         self.command(MidiCommand::Send(message));
     }
 
@@ -323,7 +353,11 @@ impl VirusApp {
         self.send_notes(messages);
         self.notice = Notice::info(format!(
             "Panic sent on channel(s) {}.",
-            channels.iter().map(|c| (c + 1).to_string()).collect::<Vec<_>>().join(", ")
+            channels
+                .iter()
+                .map(|c| (c + 1).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
 
@@ -332,7 +366,9 @@ impl VirusApp {
         let closes_output = commands.iter().any(|c| {
             matches!(
                 c,
-                MidiCommand::Disconnect | MidiCommand::DisconnectOutput | MidiCommand::ConnectOutput(_)
+                MidiCommand::Disconnect
+                    | MidiCommand::DisconnectOutput
+                    | MidiCommand::ConnectOutput(_)
             )
         });
         if closes_output && self.audition.is_active() {
@@ -350,7 +386,8 @@ impl VirusApp {
                 MidiEvent::PortListUpdated { inputs, outputs } => {
                     let mut commands = Vec::new();
                     if let Some(saved) = self.pending_ports.take() {
-                        commands = settings::restore_ports(&mut self.ports, &saved, &inputs, &outputs);
+                        commands =
+                            settings::restore_ports(&mut self.ports, &saved, &inputs, &outputs);
                     }
                     commands.extend(self.ports.on_port_list(inputs, outputs));
                     self.release_notes_before(&commands);
@@ -377,7 +414,9 @@ impl VirusApp {
                     self.notice = if dropped == 0 {
                         Notice::info(format!("Bank send finished: {sent} sent."))
                     } else {
-                        Notice::warning(format!("Bank send aborted after {sent} sent; {dropped} not sent."))
+                        Notice::warning(format!(
+                            "Bank send aborted after {sent} sent; {dropped} not sent."
+                        ))
                     };
                 }
                 MidiEvent::Error(e) => self.notice = Notice::error(format!("MIDI: {e}")),
@@ -410,7 +449,9 @@ impl VirusApp {
                 self.notice = if checksum_ok {
                     Notice::info(format!("Received '{name}' from the synth."))
                 } else {
-                    Notice::warning(format!("Received '{name}' from the synth with a wrong checksum."))
+                    Notice::warning(format!(
+                        "Received '{name}' from the synth with a wrong checksum."
+                    ))
                 };
                 if was_dirty {
                     self.notice = Notice::warning(format!(
@@ -420,7 +461,11 @@ impl VirusApp {
                 self.editor_flag.received(checksum_ok, was_dirty); // [CR-H1]
                 self.complete_pending_store(checksum_ok);
             }
-            Incoming::DumpQueued { bank, program, checksum_ok } => {
+            Incoming::DumpQueued {
+                bank,
+                program,
+                checksum_ok,
+            } => {
                 let count = self.session.received.len();
                 let flag = if checksum_ok { "" } else { " (wrong checksum)" };
                 self.notice = Notice::info(format!(
@@ -434,7 +479,11 @@ impl VirusApp {
     fn apply_edits(&mut self, edits: Vec<Edit>) {
         for edit in edits {
             match edit {
-                Edit::Param { page, number, value } => {
+                Edit::Param {
+                    page,
+                    number,
+                    value,
+                } => {
                     if let Some(message) = self.session.edit(page, number, value) {
                         self.send(message);
                     }
@@ -480,7 +529,11 @@ impl VirusApp {
 
     fn perform_replace(&mut self, action: Replace) {
         match action {
-            Replace::Load { patch, origin, select } => {
+            Replace::Load {
+                patch,
+                origin,
+                select,
+            } => {
                 self.editor_flag.loaded(); // [CR-H1]
                 self.load(patch, origin);
                 if let Some(slot) = select {
@@ -511,24 +564,29 @@ impl VirusApp {
 
     /// [comforts] The "discard unstored edits?" dialog.
     fn replace_dialog(&mut self, ctx: &egui::Context) {
-        let Some(pending) = self.pending_replace.pending() else { return };
+        let Some(pending) = self.pending_replace.pending() else {
+            return;
+        };
         let warning = pending.warning(&self.comforts.edited(&self.session).name()); // [E6]
         let mut choice = None;
-        egui::Window::new("Replace the edited patch?").collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.label(warning);
-            ui.horizontal(|ui| {
-                if ui.button("Replace").clicked() {
-                    choice = Some(true);
-                }
-                if ui.button("Store first…").clicked() {
-                    self.librarian.open_store_dialog(&self.db, None);
-                    choice = Some(false);
-                }
-                if ui.button("Cancel").clicked() {
-                    choice = Some(false);
-                }
+        egui::Window::new("Replace the edited patch?")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(warning);
+                ui.horizontal(|ui| {
+                    if ui.button("Replace").clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button("Store first…").clicked() {
+                        self.librarian.open_store_dialog(&self.db, None);
+                        choice = Some(false);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(false);
+                    }
+                });
             });
-        });
         if let Some(action) = choice.and_then(|replace| self.pending_replace.resolve(replace)) {
             self.perform_replace(action);
         }
@@ -542,7 +600,10 @@ impl VirusApp {
             ComfortAction::SendNow => {
                 self.send_edited_patch();
                 if self.ports.output_connected() {
-                    self.notice = Notice::info(format!("Sent '{}' to the synth's edit buffer.", self.session.patch().name()));
+                    self.notice = Notice::info(format!(
+                        "Sent '{}' to the synth's edit buffer.",
+                        self.session.patch().name()
+                    ));
                 }
                 Vec::new()
             }
@@ -556,8 +617,14 @@ impl VirusApp {
                 messages
             }
             ComfortAction::Section { clip, verb } => {
-                let messages = self.comforts.paste_section(&mut self.session, &clip, verb, now);
-                self.notice = Notice::info(format!("{verb} {}: {} byte(s) changed.", clip.section, messages.len()));
+                let messages = self
+                    .comforts
+                    .paste_section(&mut self.session, &clip, verb, now);
+                self.notice = Notice::info(format!(
+                    "{verb} {}: {} byte(s) changed.",
+                    clip.section,
+                    messages.len()
+                ));
                 messages
             }
         };
@@ -573,21 +640,36 @@ impl VirusApp {
         }
         use egui::{Key, Modifiers};
         let redo = ctx.input_mut(|i| {
-            i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y)
+            i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)
+                || i.consume_key(Modifiers::COMMAND, Key::Y)
         });
         if redo {
             return Some(ComfortAction::Redo);
         }
-        ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z)).then_some(ComfortAction::Undo)
+        ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z))
+            .then_some(ComfortAction::Undo)
     }
 
     fn handle_library_action(&mut self, action: LibAction) {
         match action {
-            LibAction::Load { patch, origin, select, flagged } => {
+            LibAction::Load {
+                patch,
+                origin,
+                select,
+                flagged,
+            } => {
                 self.editor_flag.request(flagged); // [CR-H1]
-                self.request_replace(Replace::Load { patch, origin, select });
+                self.request_replace(Replace::Load {
+                    patch,
+                    origin,
+                    select,
+                });
             }
-            LibAction::SendToEditBuffer { patch, origin, flagged } => {
+            LibAction::SendToEditBuffer {
+                patch,
+                origin,
+                flagged,
+            } => {
                 self.editor_flag.request(flagged); // [CR-H1]
                 self.request_replace(Replace::SendToEditBuffer { patch, origin });
             }
@@ -616,7 +698,9 @@ impl VirusApp {
             }
             LibAction::Notice(notice) => self.notice = notice,
             LibAction::LooseMultis(dumps) => self.multi_view.add_loose(dumps), // [F9]
-            LibAction::FetchThenStore { bank_id, program } => self.fetch_then_store(bank_id, program),
+            LibAction::FetchThenStore { bank_id, program } => {
+                self.fetch_then_store(bank_id, program)
+            }
         }
     }
 
@@ -638,10 +722,16 @@ impl VirusApp {
             }
             Submitted::Queued(ticket) => {
                 self.pending_store = None;
-                self.store_waiting = Some(WaitingStore { bank_id, program, ticket, since: now });
+                self.store_waiting = Some(WaitingStore {
+                    bank_id,
+                    program,
+                    ticket,
+                    since: now,
+                });
             }
         }
-        self.notice = Notice::info("Fetching the synth's edit buffer; it is stored when it arrives…");
+        self.notice =
+            Notice::info("Fetching the synth's edit buffer; it is stored when it arrives…");
     }
 
     /// Gives up on a store whose request never got a quiet line (and withdraws the request), or
@@ -653,15 +743,20 @@ impl VirusApp {
             if now >= deadline {
                 self.paced.remove(waiting.ticket);
                 self.store_waiting = None;
-                self.notice = Notice::warning("The MIDI line never went quiet for the fetch request: nothing was stored.");
+                self.notice = Notice::warning(
+                    "The MIDI line never went quiet for the fetch request: nothing was stored.",
+                );
             } else {
                 ctx.request_repaint_after(deadline - now);
             }
         }
-        let Some(pending) = self.pending_store else { return };
+        let Some(pending) = self.pending_store else {
+            return;
+        };
         if pending.expired(now) {
             self.pending_store = None;
-            self.notice = Notice::warning("The synth did not send its edit buffer: nothing was stored.");
+            self.notice =
+                Notice::warning("The synth did not send its edit buffer: nothing was stored.");
         } else {
             ctx.request_repaint_after(pending.deadline() - now);
         }
@@ -669,17 +764,34 @@ impl VirusApp {
 
     /// Stores the just-adopted edit buffer in the slot chosen in the Store dialog.
     fn complete_pending_store(&mut self, checksum_ok: bool) {
-        let Some(pending) = self.pending_store.take() else { return };
+        let Some(pending) = self.pending_store.take() else {
+            return;
+        };
         if !checksum_ok {
-            self.notice = Notice::warning("The synth's edit buffer arrived with a wrong checksum: nothing was stored.");
+            self.notice = Notice::warning(
+                "The synth's edit buffer arrived with a wrong checksum: nothing was stored.",
+            );
             return;
         }
         let patch = self.session.patch().clone();
-        match store_patch(&self.db, pending.bank_id, pending.program, &patch, !self.editor_flag.flagged()) {
+        match store_patch(
+            &self.db,
+            pending.bank_id,
+            pending.program,
+            &patch,
+            !self.editor_flag.flagged(),
+        ) {
             Ok(_) => {
-                let bank = self.db.get_banks().ok().and_then(|banks| banks.into_iter().find(|b| b.id == pending.bank_id));
+                let bank = self
+                    .db
+                    .get_banks()
+                    .ok()
+                    .and_then(|banks| banks.into_iter().find(|b| b.id == pending.bank_id));
                 let label = slot_label(bank.as_ref(), pending.program);
-                self.notice = Notice::info(format!("Stored '{}' (fetched from the synth) to {label}.", patch.name()));
+                self.notice = Notice::info(format!(
+                    "Stored '{}' (fetched from the synth) to {label}.",
+                    patch.name()
+                ));
                 self.comforts.mark_stored(patch);
                 self.origin = label;
             }
@@ -692,8 +804,12 @@ impl VirusApp {
         if !self.librarian.select_on_synth || !self.ports.output_connected() {
             return;
         }
-        let Ok(banks) = self.db.get_banks() else { return };
-        let Some(bank) = banks.into_iter().find(|b| b.id == bank_id) else { return };
+        let Ok(banks) = self.db.get_banks() else {
+            return;
+        };
+        let Some(bank) = banks.into_iter().find(|b| b.id == bank_id) else {
+            return;
+        };
         let messages = select_messages(
             self.session.settings.device_id,
             self.session.settings.part,
@@ -718,19 +834,31 @@ impl VirusApp {
             self.notice = Notice::warning("No MIDI output connected: the bank was not sent.");
             return;
         }
-        match self.db.export_bank(bank_id, self.session.settings.device_id, None, policy) {
+        match self
+            .db
+            .export_bank(bank_id, self.session.settings.device_id, None, policy)
+        {
             Ok(export) => {
                 let count = export.frames.len();
                 if count == 0 {
-                    self.notice = Notice::warning("Nothing to send: every stored patch was left out (flagged ⚠).");
+                    self.notice = Notice::warning(
+                        "Nothing to send: every stored patch was left out (flagged ⚠).",
+                    );
                     return;
                 }
-                self.paced.start(Instant::now(), count, Duration::from_millis(DUMP_GAP_MS));
+                self.paced
+                    .start(Instant::now(), count, Duration::from_millis(DUMP_GAP_MS));
                 self.batch_running = true;
-                self.command(MidiCommand::SendBatch { messages: export.frames, gap_ms: DUMP_GAP_MS });
+                self.command(MidiCommand::SendBatch {
+                    messages: export.frames,
+                    gap_ms: DUMP_GAP_MS,
+                });
                 let mut text = format!("Sending {count} patch(es) to the synth…");
                 if export.skipped_flagged > 0 {
-                    text.push_str(&format!(" {} flagged ⚠ patch(es) left out.", export.skipped_flagged));
+                    text.push_str(&format!(
+                        " {} flagged ⚠ patch(es) left out.",
+                        export.skipped_flagged
+                    ));
                 }
                 self.notice = Notice::info(text);
             }
@@ -744,18 +872,30 @@ impl VirusApp {
             self.notice = Notice::warning("No MIDI output connected: the Multi bank was not sent.");
             return;
         }
-        match self.db.export_multi_bank(self.session.settings.device_id, policy) {
+        match self
+            .db
+            .export_multi_bank(self.session.settings.device_id, policy)
+        {
             Ok(export) if export.frames.is_empty() => {
-                self.notice = Notice::warning("Nothing to send: the Multi bank is empty or every multi is flagged ⚠.");
+                self.notice = Notice::warning(
+                    "Nothing to send: the Multi bank is empty or every multi is flagged ⚠.",
+                );
             }
             Ok(export) => {
                 let count = export.frames.len();
-                self.paced.start(Instant::now(), count, Duration::from_millis(DUMP_GAP_MS));
+                self.paced
+                    .start(Instant::now(), count, Duration::from_millis(DUMP_GAP_MS));
                 self.batch_running = true;
-                self.command(MidiCommand::SendBatch { messages: export.frames, gap_ms: DUMP_GAP_MS });
+                self.command(MidiCommand::SendBatch {
+                    messages: export.frames,
+                    gap_ms: DUMP_GAP_MS,
+                });
                 let mut text = format!("Sending {count} multi(s) to the synth's Multi bank…");
                 if export.skipped_flagged > 0 {
-                    text.push_str(&format!(" {} flagged ⚠ multi(s) left out.", export.skipped_flagged));
+                    text.push_str(&format!(
+                        " {} flagged ⚠ multi(s) left out.",
+                        export.skipped_flagged
+                    ));
                 }
                 self.notice = Notice::info(text);
             }
@@ -765,7 +905,9 @@ impl VirusApp {
 
     /// Offers to copy and migrate a v1 library found next to the exe / in the working directory (M3).
     fn legacy_prompt(&mut self, ctx: &egui::Context) {
-        let Some(legacy) = self.legacy.clone() else { return };
+        let Some(legacy) = self.legacy.clone() else {
+            return;
+        };
         let LibraryLocation::File(target) = self.location.clone() else {
             self.legacy = None;
             return;
@@ -786,7 +928,8 @@ impl VirusApp {
         });
         if dismiss {
             self.legacy = None;
-            self.legacy_dismissed = Some(legacy.to_string_lossy().into_owned()); // [CR-M5] saved in settings
+            self.legacy_dismissed = Some(legacy.to_string_lossy().into_owned());
+            // [CR-M5] saved in settings
         }
         if !accept {
             return;
@@ -795,12 +938,17 @@ impl VirusApp {
         // Release the file handle on the target before it is replaced.
         let old = std::mem::replace(
             &mut self.db,
-            PatchDatabase::open_in_memory().expect("an in-memory SQLite database can always be opened"),
+            PatchDatabase::open_in_memory()
+                .expect("an in-memory SQLite database can always be opened"),
         );
         drop(old);
         match adopt_legacy_library(&legacy, &target) {
             Ok(adopted) => {
-                let backup = adopted.db.v1_backup().map(|p| format!(" Backup: {}.", p.display())).unwrap_or_default();
+                let backup = adopted
+                    .db
+                    .v1_backup()
+                    .map(|p| format!(" Backup: {}.", p.display()))
+                    .unwrap_or_default();
                 let replaced = adopted
                     .pre_adopt_backup
                     .as_ref()
@@ -880,7 +1028,12 @@ impl VirusApp {
         match &self.location {
             LibraryLocation::InMemory { reason } => {
                 theme::lcd_frame().show(ui, |ui| {
-                    ui.colored_label(theme::palette().lcd_alert, format!("⚠ The library is in memory only — nothing will be saved ({reason})."));
+                    ui.colored_label(
+                        theme::palette().lcd_alert,
+                        format!(
+                            "⚠ The library is in memory only — nothing will be saved ({reason})."
+                        ),
+                    );
                 });
             }
             LibraryLocation::File(_) => {}
@@ -915,11 +1068,13 @@ impl App for VirusApp {
             self.comfort_action(action, now_secs);
         }
 
-        TopBottomPanel::top("header").frame(theme::header_frame()).show(ctx, |ui| {
-            ui.add_space(4.0);
-            self.header(ui);
-            ui.add_space(4.0);
-        });
+        TopBottomPanel::top("header")
+            .frame(theme::header_frame())
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                self.header(ui);
+                ui.add_space(4.0);
+            });
         // [comforts] undo/redo, compare and edited badge on every tab
         let bar_actions = TopBottomPanel::top("comforts")
             .show(ctx, |ui| {
@@ -945,7 +1100,11 @@ impl App for VirusApp {
                     midi_available,
                 );
                 if let LibraryLocation::File(path) = &self.location {
-                    ui.label(RichText::new(format!("Library: {}", path.display())).size(10.0).color(DIM));
+                    ui.label(
+                        RichText::new(format!("Library: {}", path.display()))
+                            .size(10.0)
+                            .color(DIM),
+                    );
                 }
                 commands
             })
@@ -956,7 +1115,9 @@ impl App for VirusApp {
         if target != self.last_target {
             self.last_target = target;
             self.comforts.mark_unsynced();
-            self.notice = Notice::warning("Edited part changed: the editor no longer matches the synth. Send or Fetch.");
+            self.notice = Notice::warning(
+                "Edited part changed: the editor no longer matches the synth. Send or Fetch.",
+            );
         }
         for command in commands {
             self.command(command);
@@ -965,7 +1126,9 @@ impl App for VirusApp {
         // Above the MIDI bar, on every tab.
         let settings = self.session.settings;
         let multi_channel = self.multi.edited_part_channel(settings.part); // [multi] N9
-        let target = self.audition.sync_target(settings.channel, settings.part, multi_channel);
+        let target = self
+            .audition
+            .sync_target(settings.channel, settings.part, multi_channel);
         self.send_notes(target);
         let output_connected = self.ports.output_connected();
         let now_ms = (ctx.input(|i| i.time) * 1000.0) as u64;
@@ -986,28 +1149,47 @@ impl App for VirusApp {
         let mut multi_actions = Vec::new(); // [multi]
         CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Editor => {
-                ui.add_enabled_ui(!comparing, |ui| self.editor.show(ui, self.session.patch(), &mut edits));
+                ui.add_enabled_ui(!comparing, |ui| {
+                    self.editor.show(ui, self.session.patch(), &mut edits)
+                });
             }
             Tab::Modulation => {
-                ui.add_enabled_ui(!comparing, |ui| modulation::show(ui, self.session.patch(), &mut edits));
+                ui.add_enabled_ui(!comparing, |ui| {
+                    modulation::show(ui, self.session.patch(), &mut edits)
+                });
             }
-            Tab::Librarian => self.librarian.show(ui, &self.db, &mut self.session.received, &mut actions),
+            Tab::Librarian => {
+                self.librarian
+                    .show(ui, &self.db, &mut self.session.received, &mut actions)
+            }
             // [multi]
-            Tab::Multi => self.multi_view.show(ui, &self.db, &mut self.multi, &mut self.session.settings, &mut multi_actions),
+            Tab::Multi => self.multi_view.show(
+                ui,
+                &self.db,
+                &mut self.multi,
+                &mut self.session.settings,
+                &mut multi_actions,
+            ),
         });
-        self.librarian.show_dialogs(ctx, &self.db, self.session.patch(), &mut actions);
-        self.multi_view.show_dialogs(ctx, &self.db, &mut self.multi, &mut multi_actions); // [CR-M4/H2/L2]
-        self.folders.sync(&mut self.librarian.files, &mut self.multi_view.files);
+        self.librarian
+            .show_dialogs(ctx, &self.db, self.session.patch(), &mut actions);
+        self.multi_view
+            .show_dialogs(ctx, &self.db, &mut self.multi, &mut multi_actions); // [CR-M4/H2/L2]
+        self.folders
+            .sync(&mut self.librarian.files, &mut self.multi_view.files);
         self.legacy_prompt(ctx);
         // [comforts] snapshot around the edits so undo records exact byte changes
         let before = self.session.patch().clone();
         let recorded = if comparing { Vec::new() } else { edits.clone() };
         self.apply_edits(if comparing { Vec::new() } else { edits });
-        self.comforts.record(&before, &self.session, &recorded, now_secs);
+        self.comforts
+            .record(&before, &self.session, &recorded, now_secs);
         if ctx.input(|i| i.pointer.any_released()) {
             self.comforts.seal();
         }
-        let window_actions = self.comfort_ui.windows(ctx, &self.comforts, &self.session, &self.db);
+        let window_actions = self
+            .comfort_ui
+            .windows(ctx, &self.comforts, &self.session, &self.db);
         for action in window_actions {
             self.comfort_action(action, now_secs);
         }

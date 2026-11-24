@@ -2,14 +2,21 @@
 //! SysEx Part Bank Change (C32) and Part Program Change (C33) (SPEC §3.5). Both are independent
 //! of the MIDI channel and of the synth's program-change enables.
 
-use virus_syx::{encode_part_bank_change, encode_part_program_change, part_bank_to_c32, SingleBank};
+use virus_syx::{
+    encode_part_bank_change, encode_part_program_change, part_bank_to_c32, SingleBank,
+};
 
 use crate::session::EditPart;
 
 /// The SysEx to select `program` of library bank `bank_letter` on the edited part: bank
 /// change first (immediate), then program change. Empty unless the library bank mirrors a
 /// synth bank (letters A–D; user banks have no counterpart) and `program` is 0..=127.
-pub fn select_messages(device_id: u8, part: EditPart, bank_letter: Option<&str>, program: u8) -> Vec<Vec<u8>> {
+pub fn select_messages(
+    device_id: u8,
+    part: EditPart,
+    bank_letter: Option<&str>,
+    program: u8,
+) -> Vec<Vec<u8>> {
     let Some(bank) = bank_letter.and_then(synth_bank) else {
         return Vec::new();
     };
@@ -26,7 +33,9 @@ pub fn select_messages(device_id: u8, part: EditPart, bank_letter: Option<&str>,
 }
 
 fn synth_bank(letter: &str) -> Option<SingleBank> {
-    SingleBank::ALL.into_iter().find(|bank| bank.letter().to_string() == letter)
+    SingleBank::ALL
+        .into_iter()
+        .find(|bank| bank.letter().to_string() == letter)
 }
 
 #[cfg(test)]
@@ -36,7 +45,13 @@ mod tests {
 
     fn param(message: &[u8]) -> (Page, u8, u8, u8) {
         match parse_sysex(message).unwrap() {
-            SysExMessage::ParamChange { page, part, param, value, .. } => (page, part, param, value),
+            SysExMessage::ParamChange {
+                page,
+                part,
+                param,
+                value,
+                ..
+            } => (page, part, param, value),
             other => panic!("not a parameter change: {other:?}"),
         }
     }

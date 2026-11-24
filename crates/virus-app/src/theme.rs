@@ -29,7 +29,10 @@ impl ThemeKind {
 
     /// Unknown keys fall back to the default.
     pub fn from_key(key: &str) -> Self {
-        Self::ALL.into_iter().find(|t| t.key() == key).unwrap_or_default()
+        Self::ALL
+            .into_iter()
+            .find(|t| t.key() == key)
+            .unwrap_or_default()
     }
 
     pub fn label(self) -> &'static str {
@@ -146,7 +149,10 @@ pub const TI: Palette = Palette {
 static CURRENT: AtomicU8 = AtomicU8::new(0);
 
 pub fn current() -> ThemeKind {
-    ThemeKind::ALL.get(usize::from(CURRENT.load(Ordering::Relaxed))).copied().unwrap_or_default()
+    ThemeKind::ALL
+        .get(usize::from(CURRENT.load(Ordering::Relaxed)))
+        .copied()
+        .unwrap_or_default()
 }
 
 /// The active theme's colours.
@@ -250,7 +256,13 @@ pub fn visuals(p: &Palette) -> Visuals {
     w.open.bg_stroke = Stroke::new(1.0_f32, p.accent);
     w.open.fg_stroke = Stroke::new(1.0_f32, LEGEND);
 
-    for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+    for state in [
+        &mut w.noninteractive,
+        &mut w.inactive,
+        &mut w.hovered,
+        &mut w.active,
+        &mut w.open,
+    ] {
         state.rounding = rounding();
     }
     v
@@ -285,7 +297,10 @@ pub fn lcd_frame() -> Frame {
 }
 
 pub fn lcd_text(text: impl Into<String>) -> RichText {
-    RichText::new(text).font(FontId::monospace(15.0)).strong().color(palette().lcd_text)
+    RichText::new(text)
+        .font(FontId::monospace(15.0))
+        .strong()
+        .color(palette().lcd_text)
 }
 
 /// A section: coloured title strip over a dark body. `width` defaults to filling the row.
@@ -294,19 +309,27 @@ pub fn section(ui: &mut Ui, title: &str, width: Option<f32>, add: impl FnOnce(&m
     section_frame().show(ui, |ui| {
         ui.set_width(width.unwrap_or_else(|| ui.available_width()));
         ui.spacing_mut().item_spacing.y = 0.0;
-        let top = Rounding { nw: ROUNDING, ne: ROUNDING, sw: 0.0, se: 0.0 };
-        Frame::none().fill(p.strip).rounding(top).inner_margin(Margin::symmetric(STRIP_PADDING_X, STRIP_PADDING_Y)).show(
-            ui,
-            |ui| {
+        let top = Rounding {
+            nw: ROUNDING,
+            ne: ROUNDING,
+            sw: 0.0,
+            se: 0.0,
+        };
+        Frame::none()
+            .fill(p.strip)
+            .rounding(top)
+            .inner_margin(Margin::symmetric(STRIP_PADDING_X, STRIP_PADDING_Y))
+            .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new(title).strong().color(p.on_strip));
-            },
-        );
-        Frame::none().inner_margin(Margin::same(SECTION_PADDING)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 5.0;
-            add(ui);
-        });
+            });
+        Frame::none()
+            .inner_margin(Margin::same(SECTION_PADDING))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 5.0;
+                add(ui);
+            });
     });
 }
 
@@ -315,9 +338,19 @@ pub fn section(ui: &mut Ui, title: &str, width: Option<f32>, add: impl FnOnce(&m
 pub fn tab<T: PartialEq>(ui: &mut Ui, current: &mut T, value: T, label: &str) {
     let p = palette();
     let selected = *current == value;
-    let (fill, text) = if selected { (p.accent, p.on_accent) } else { (p.control_grey, LEGEND) };
-    let stroke = if selected { Stroke::new(1.0_f32, p.accent_text) } else { Stroke::new(1.0_f32, p.edge) };
-    let button = egui::Button::new(RichText::new(label).strong().color(text)).fill(fill).stroke(stroke);
+    let (fill, text) = if selected {
+        (p.accent, p.on_accent)
+    } else {
+        (p.control_grey, LEGEND)
+    };
+    let stroke = if selected {
+        Stroke::new(1.0_f32, p.accent_text)
+    } else {
+        Stroke::new(1.0_f32, p.edge)
+    };
+    let button = egui::Button::new(RichText::new(label).strong().color(text))
+        .fill(fill)
+        .stroke(stroke);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 3.0;
         led(ui, selected);
@@ -334,7 +367,11 @@ pub fn led(ui: &mut Ui, lit: bool) {
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
     painter.circle_filled(rect.center(), TAB_LED_BEZEL_RADIUS, LED_BEZEL);
-    painter.circle_filled(rect.center(), TAB_LED_RADIUS, if lit { p.led_on } else { p.led_off });
+    painter.circle_filled(
+        rect.center(),
+        TAB_LED_RADIUS,
+        if lit { p.led_on } else { p.led_off },
+    );
 }
 
 /// A glyph's convex polygons, as points on a unit-height grid (y down).
@@ -343,7 +380,13 @@ type GlyphPolys = &'static [&'static [(f32, f32)]];
 /// "VIRUS" as blocky letters. Pairs of (advance width, polygons).
 const LOGO_GLYPHS: &[(f32, GlyphPolys)] = &[
     // V
-    (0.9, &[&[(0.0, 0.0), (0.3, 0.0), (0.63, 1.0), (0.27, 1.0)], &[(0.6, 0.0), (0.9, 0.0), (0.63, 1.0), (0.27, 1.0)]]),
+    (
+        0.9,
+        &[
+            &[(0.0, 0.0), (0.3, 0.0), (0.63, 1.0), (0.27, 1.0)],
+            &[(0.6, 0.0), (0.9, 0.0), (0.63, 1.0), (0.27, 1.0)],
+        ],
+    ),
     // I
     (0.28, &[&[(0.0, 0.0), (0.28, 0.0), (0.28, 1.0), (0.0, 1.0)]]),
     // R
@@ -352,7 +395,13 @@ const LOGO_GLYPHS: &[(f32, GlyphPolys)] = &[
         &[
             &[(0.0, 0.0), (0.26, 0.0), (0.26, 1.0), (0.0, 1.0)],
             &[(0.0, 0.0), (0.78, 0.0), (0.78, 0.25), (0.0, 0.25)],
-            &[(0.62, 0.0), (0.78, 0.0), (0.9, 0.12), (0.9, 0.62), (0.62, 0.62)],
+            &[
+                (0.62, 0.0),
+                (0.78, 0.0),
+                (0.9, 0.12),
+                (0.9, 0.62),
+                (0.62, 0.62),
+            ],
             &[(0.0, 0.4), (0.9, 0.4), (0.9, 0.62), (0.0, 0.62)],
             &[(0.5, 0.6), (0.8, 0.6), (0.95, 1.0), (0.65, 1.0)],
         ],
@@ -363,18 +412,43 @@ const LOGO_GLYPHS: &[(f32, GlyphPolys)] = &[
         &[
             &[(0.0, 0.0), (0.26, 0.0), (0.26, 0.85), (0.0, 0.85)],
             &[(0.64, 0.0), (0.9, 0.0), (0.9, 0.85), (0.64, 0.85)],
-            &[(0.0, 0.75), (0.9, 0.75), (0.9, 0.88), (0.78, 1.0), (0.12, 1.0), (0.0, 0.88)],
+            &[
+                (0.0, 0.75),
+                (0.9, 0.75),
+                (0.9, 0.88),
+                (0.78, 1.0),
+                (0.12, 1.0),
+                (0.0, 0.88),
+            ],
         ],
     ),
     // S
     (
         0.9,
         &[
-            &[(0.0, 0.12), (0.12, 0.0), (0.9, 0.0), (0.9, 0.24), (0.0, 0.24)],
+            &[
+                (0.0, 0.12),
+                (0.12, 0.0),
+                (0.9, 0.0),
+                (0.9, 0.24),
+                (0.0, 0.24),
+            ],
             &[(0.0, 0.12), (0.26, 0.12), (0.26, 0.6), (0.0, 0.6)],
-            &[(0.0, 0.38), (0.78, 0.38), (0.9, 0.5), (0.9, 0.62), (0.0, 0.62)],
+            &[
+                (0.0, 0.38),
+                (0.78, 0.38),
+                (0.9, 0.5),
+                (0.9, 0.62),
+                (0.0, 0.62),
+            ],
             &[(0.64, 0.5), (0.9, 0.5), (0.9, 0.88), (0.64, 0.88)],
-            &[(0.0, 0.76), (0.9, 0.76), (0.9, 0.88), (0.78, 1.0), (0.0, 1.0)],
+            &[
+                (0.0, 0.76),
+                (0.9, 0.76),
+                (0.9, 0.88),
+                (0.78, 1.0),
+                (0.0, 1.0),
+            ],
         ],
     ),
 ];
@@ -398,7 +472,9 @@ fn logo_polygons(origin: egui::Pos2, height: f32) -> Vec<Vec<egui::Pos2>> {
         for poly in *polys {
             out.push(
                 poly.iter()
-                    .map(|&(x, y)| origin + egui::vec2((x0 + x + (1.0 - y) * LOGO_SLANT) * height, y * height))
+                    .map(|&(x, y)| {
+                        origin + egui::vec2((x0 + x + (1.0 - y) * LOGO_SLANT) * height, y * height)
+                    })
                     .collect(),
             );
         }
@@ -466,7 +542,11 @@ mod tests {
                 ("legend on accent", p.on_accent, p.accent),
                 ("legend on hover", Color32::WHITE, p.accent_hover),
                 ("legend on pressed", Color32::WHITE, p.pressed),
-                ("strong text on control black", Color32::WHITE, p.control_black),
+                (
+                    "strong text on control black",
+                    Color32::WHITE,
+                    p.control_black,
+                ),
                 ("legend on strip", p.on_strip, p.strip),
                 ("legend on chassis", LEGEND, p.chassis),
                 ("legend on control grey", LEGEND, p.control_grey),
@@ -474,7 +554,11 @@ mod tests {
                 ("dim on chassis", DIM, p.chassis),
                 ("dim on control black", DIM, p.control_black),
                 ("accent text on chassis", p.accent_text, p.chassis),
-                ("accent text on control black", p.accent_text, p.control_black),
+                (
+                    "accent text on control black",
+                    p.accent_text,
+                    p.control_black,
+                ),
                 ("LCD text on LCD", p.lcd_text, p.lcd_bg),
                 ("alert on LCD", p.lcd_alert, p.lcd_bg),
                 ("danger on chassis", DANGER, p.chassis),
@@ -507,7 +591,10 @@ mod tests {
             }
             // The tab LED must stand out from the header, by its bezel or by its own light.
             let led = contrast(LED_BEZEL, p.header).max(contrast(p.led_on, p.header));
-            assert!(led >= 3.0, "{kind:?} tab LED on header: contrast {led:.2} < 3.0");
+            assert!(
+                led >= 3.0,
+                "{kind:?} tab LED on header: contrast {led:.2} < 3.0"
+            );
         }
     }
 
@@ -531,7 +618,10 @@ mod tests {
                 })
                 .filter(|z| z.abs() > 1e-4)
                 .collect();
-            assert!(signs.iter().all(|z| *z > 0.0) || signs.iter().all(|z| *z < 0.0), "not convex: {poly:?}");
+            assert!(
+                signs.iter().all(|z| *z > 0.0) || signs.iter().all(|z| *z < 0.0),
+                "not convex: {poly:?}"
+            );
         }
     }
 
@@ -542,11 +632,13 @@ mod tests {
         for kind in ThemeKind::ALL {
             apply(&ctx, kind);
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                egui::TopBottomPanel::top("h").frame(header_frame()).show(ctx, |ui| {
-                    ui.label(lcd_text("Init"));
-                    logo(ui);
-                    ui.label(app_name("Rack Editor"));
-                });
+                egui::TopBottomPanel::top("h")
+                    .frame(header_frame())
+                    .show(ctx, |ui| {
+                        ui.label(lcd_text("Init"));
+                        logo(ui);
+                        ui.label(app_name("Rack Editor"));
+                    });
                 egui::CentralPanel::default().show(ctx, |ui| {
                     section(ui, "Oscillators", None, |ui| {
                         tab(ui, &mut tab_value, 1, "One");

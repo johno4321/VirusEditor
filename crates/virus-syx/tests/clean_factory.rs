@@ -7,7 +7,11 @@ use virus_syx::{
 
 macro_rules! clean_bank {
     ($name:literal) => {
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/factory/", $name)
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/factory/",
+            $name
+        )
     };
 }
 
@@ -16,7 +20,12 @@ fn frames(path: &str, bank: u8) -> Vec<Vec<u8>> {
     assert_eq!(frames.len(), 128);
     for (program, frame) in frames.iter().enumerate() {
         match parse_sysex(frame).expect("frame parses") {
-            SysExMessage::SingleDump { bank: b, program: p, checksum_ok, .. } => {
+            SysExMessage::SingleDump {
+                bank: b,
+                program: p,
+                checksum_ok,
+                ..
+            } => {
                 assert_eq!((b, p as usize), (bank, program));
                 assert!(checksum_ok, "bank {bank} program {program}");
             }
@@ -40,7 +49,13 @@ fn bank_a_round_trips_byte_identically() {
 
     // Program 10 (0x0A) is the one the damaged .mid file lost.
     let (patch, target) = Patch::from_sysex(&frames[10]).unwrap();
-    assert_eq!(target, DumpTarget::Bank { bank: SingleBank::A, program: 10 });
+    assert_eq!(
+        target,
+        DumpTarget::Bank {
+            bank: SingleBank::A,
+            program: 10
+        }
+    );
     assert_eq!(patch.name(), "BASSEY  NH");
     assert_eq!(patch.sound_version(), 6);
 
