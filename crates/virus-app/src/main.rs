@@ -4,7 +4,11 @@
 
 mod app;
 mod audition;
+mod compare;
+mod comforts;
+mod history;
 mod library;
+mod sections;
 mod session;
 mod storage;
 mod views;
