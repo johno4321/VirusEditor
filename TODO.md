@@ -167,7 +167,8 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 
 | # | Status | Item | Notes |
 |---|---|---|---|
-| V1 | ⬜ | **Match the Virus Rack's colours: red and black** (owner, 24 Nov). The front panel is signal red with black legends; the chassis, knobs and buttons are black or dark grey; the LEDs are amber; the LCD is dark with light characters | Palette in SPEC §5.10. Apply to the egui `Visuals` theme, knob widget, LEDs, tabs/headers and curve views. Keep text contrast readable (WCAG AA) on red. One central `theme.rs` so it can be tuned later |
+| V1 | ✅ | **Match the Virus Rack's colours: red and black** (owner, 24 Nov). The front panel is signal red with black legends; the chassis, knobs and buttons are black or dark grey; the LEDs are amber; the LCD is dark with light characters | Done 24 Nov in `theme.rs` (red `#E8352F` for contrast, WCAG test). **Needs an on-screen check** on the laptop. Not done: the outlined "VIRUS" watermark and amber section LEDs (V2) |
+| V2 | ⬜ | Optional polish: outlined "VIRUS" wordmark watermark in dark red; amber LED dots on the tabs like the panel's section LEDs | `theme.rs` |
 
 ## 🧹 Housekeeping
 
@@ -179,7 +180,8 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | H4 | ✅ | `Patch::from_sysex` returns `InvalidPayloadLength` for any non-dump message; add a proper error | `SyxError::NotASingleDump` |
 | H5 | ✅ | Short-message parsing: check `F7` sits right after the payload | Test `fixed_size_messages_require_exact_length` |
 | H6 | ✅ | SPEC.md: `D:\VirusEditor` paths and the unverified "Phase 1" claims corrected (24 Nov rewrite) | |
-| H7 | ⬜ | Add a CI workflow (build, test, clippy) on GitHub Actions | |
+| H7 | ✅ | Add a CI workflow (build, test, clippy) on GitHub Actions | `.github/workflows/ci.yml` (Windows + Ubuntu: clippy `-D warnings`, tests, release build; Windows exe as artifact); toolchain pinned in `rust-toolchain.toml` (1.100.0, keep in sync with ci.yml). Ubuntu job not yet run (first push) |
 | H8 | ✅ | **16 `float_literal_f32_fallback` warnings will become hard errors** in a future Rust release: write `1.0_f32` (e.g. in `Stroke::new(1.0, …)`) | Done: app rewritten with typed literals; no warnings or future-incompat notes |
 | H9 | ✅ | Q4 decided: the repo stays private, so the Access material stays | |
 | H10 | ⬜ | README: say "Virus Rack (classic), OS 2.00" as the verified target, and mention open questions Q1/Q5 | |
+| H11 | ⬜ | Run `cargo fmt --all` once the open app branches (comforts, settings, review fixes, multi) are merged, then add `cargo fmt --all -- --check` to CI | ~4,000 lines would change today, so doing it now would conflict with every open branch |

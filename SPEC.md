@@ -317,7 +317,8 @@ The UI should look like the Virus Rack's front panel: **red and black**. Startin
 
 | Role | Colour | Where |
 |---|---|---|
-| Panel red | `#D7262B` (signal red) | Header bar, section frames, selected tab, active knob arc, accents |
+| Panel red | `#E8352F` (signal red; the photo's `#D7262B` was too dark for black legends: 3.96:1, below WCAG AA) | Header bar, section frames, selected tab, active knob arc, accents |
+| Accent text | `#FF5A5F` | Red text on black backgrounds |
 | Panel red, dark | `#9E1B1F` | Hover/pressed states, the big "VIRUS" lettering style for watermarks |
 | Chassis black | `#141414` | Window and panel backgrounds |
 | Control black | `#1E1E1E` / `#2A2A2A` | Knob bodies, buttons, combo boxes |
@@ -325,7 +326,7 @@ The UI should look like the Virus Rack's front panel: **red and black**. Startin
 | LED amber | `#FFB000` | Rx/Tx and section LEDs, knob pointer |
 | LCD | dark slate `#1C2A33` with light text `#CFE3EA` | Patch name / value readouts |
 
-Keep all colours in one theme module so they can be adjusted in one place.
+Keep all colours in one theme module so they can be adjusted in one place. **Implemented** in `crates/virus-app/src/theme.rs`; a unit test checks WCAG AA contrast (≥ 4.5:1 for text, ≥ 3:1 for graphics) for every colour pair, so retuning can't silently break readability.
 
 ---
 

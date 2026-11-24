@@ -44,6 +44,14 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
+The Rust version is pinned in `rust-toolchain.toml` (rustup installs it automatically). CI (`.github/workflows/ci.yml`) runs clippy, the tests and a release build on Windows and Ubuntu; the Windows `virus-app.exe` can be downloaded from each run's artifacts.
+
+To check the MIDI connection without the GUI, the read-only probe lists ports, fetches the edit buffer, backs up banks A and B, or monitors incoming MIDI. It never changes the synth:
+
+```powershell
+cargo run -p virus-app --example virus_probe --release -- [ports|fetch|backup|monitor] [--in <name part>] [--out <name part>] [--device 1-16|omni]
+```
+
 The library is stored in your user data folder (on Windows `%APPDATA%\VirusEditor\data\virus_library.db`); the path is shown in the bottom bar. If it can't be opened, the app runs with an in-memory library and shows a red warning that nothing will be saved.
 
 The app needs OpenGL 2.0 or later (it won't start in a remote desktop session on a VM without a GPU).
