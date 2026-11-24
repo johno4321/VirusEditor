@@ -166,7 +166,7 @@ Page C parameter changes, independent of MIDI channel and of the program-change 
 * **Owner's studio (24 Nov plan):**
   * The Virus MIDI IN comes through a Kenton MERGE-4: the editor's output (mioXC OUT) is merged with the Maschine+ (notes and MIDI clock, via THRU-5). Virus OUT goes straight to mioXC IN, so replies arrive unmerged.
   * Our SysEx can therefore have Maschine+ notes and real-time bytes (`F8` clock etc.) between messages, or real-time bytes inside them. That's legal MIDI. Our own parsers ignore `F8`–`FF` anywhere (`virus-midi` parser, `virus-syx` file reader), and these bytes don't count as line activity.
-  * The editor can't see clock arriving at the Virus, so **stop the transport before bank sends and dump requests**. That stays the user's job; the bank-send confirmations remind them.
+  * The editor can't see clock arriving at the Virus, so **stop the transport before bank sends and dump requests**. That stays the user's job; the bank-send confirmations remind them. The Maschine+ may keep sending `F8` with its transport stopped (unchecked). Interleaved clock is legal, but it needs a live test with `--verify` (TODO G2). If it causes errors, switch the Maschine+ clock output off for transfers.
   * Virus globals: C120 Soft Thru Off; C121 Panel Destination Int+MIDI (knob moves reach the editor); C94 Low Page Contr; **C95 High Page stays SysEx** (the default). With PolyPrs, poly aftertouch from the Maschine+ on the Virus channel would change Page B parameters. The editor never relies on Poly Pressure. With Low Page = Contr, CCs on channel 11 do change Page A parameters (e.g. CC40 = cutoff).
 
 ---
