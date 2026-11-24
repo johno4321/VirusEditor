@@ -1,0 +1,22 @@
+[package]
+name = "virus-cli"
+version.workspace = true
+edition.workspace = true
+description = "Headless command-line tool for live sessions with the Access Virus Rack: fetch, send, banks, monitor, Q1/Q3 probes, self-test"
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "virus"
+path = "src/main.rs"
+
+[dependencies]
+virus-syx = { path = "../virus-syx" }
+virus-midi = { path = "../virus-midi" }
+virus-db = { path = "../virus-db" }
+clap = { version = "4.6.9", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+directories = "6.0.0"
+
+[dev-dependencies]

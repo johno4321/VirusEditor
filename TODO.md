@@ -1,6 +1,6 @@
 # VirusEditor todo list
 
-**Updated Tue 2026-11-24 10:15 UTC**, after the code review and a full re-read of the manual, both addenda, the patch list and the OS 2.00 readme. Reference facts are in [SPEC.md](SPEC.md).
+**Updated Tue 2026-11-24 11:20 UTC**: added the `virus` CLI for the live session. Reference facts are in [SPEC.md](SPEC.md).
 Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ parked
 
 ## ☀️ Start here
@@ -11,19 +11,19 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 2. ✅ **Sources re-read (24 Nov)** and SPEC.md rewritten from them.
 3. ✅ **Data-loss bugs** D1–D8, **patch model** P1–P8, **import rules** L1–L4, **golden tests** T1–T4 (24 Nov, sub-agents + sub-chats).
 4. **Next without hardware:** G1 (the GUI can't start on this VM), the note audition feature (N items, sub-chat in progress), then features F1–F7 and U5.
-5. **When the MIDI cable arrives:** live tests (G2), then Q1–Q3.
+5. **When the MIDI cable arrives:** use the **`virus` CLI** (`crates/virus-cli`, branch `rework/cli`). Follow the runbook in its README: back up RAM banks A/B first, then `selftest` (G2), then the Q1–Q3 probes.
 6. Review and merge `rework/integration` into `main`.
 
 ## Where we stand
 
 | Area | State |
 |---|---|
-| **Build** | Builds (debug + release); 98 tests pass; `clippy --workspace --all-targets -D warnings` clean (24 Nov, after the app rebuild) |
+| **Build** | Builds (debug + release); 137 tests pass; `clippy --workspace --all-targets -D warnings` clean (24 Nov, after adding `virus-cli`) |
 | **`virus-syx`** | Raw 256-byte `Patch`; parameter table from the addendum; lossless enums; SysEx parse/encode with checksum reporting; `.syx`/SMF reader tolerant of the damaged factory files. 30 tests incl. strict factory round trips |
 | **`virus-midi`** | Plain transport: ports by name, channel-tagged input events, robust parser (R3), paced batches, all errors reported. 11 tests |
 | **`virus-db`** | Byte-exact storage, schema v2 with migration, bank-aware import (one transaction) and export (A–D = 1–4), favourites/tags separate from data. 18 tests |
 | **`virus-app`** | Rebuilt on the raw-byte crates (24 Nov): generated editor, Assign/LFO-assign panel, librarian with import report and bank transfer, name-based MIDI ports. Logic in `session.rs`/`library.rs`/`storage.rs` with unit tests. Not yet tried with real hardware |
-
+| **`virus-cli`** | Headless `virus` tool for the live session (24 Nov, `rework/cli`). Commands: `ports`, `monitor`, `fetch`, `send`, `set`, `get-bank`, `put-bank`, Q1/Q3 probes, `selftest`. Collectors and probes are pure and tested against an in-memory fake Virus. Runbook in its README. 39 tests. Not yet tried with real hardware |
 ### Evidence from the documents and factory data
 
 - **Parameter map:** the Rack addendum's Single Dump table. Data byte `n` = parameter A`n`, byte `128+n` = B`n`. For example, Cutoff = A40, Filter Routing = A53, name = B112–121, categories = B123–124. The code uses different offsets for almost everything (SPEC §4.1–4.2).
@@ -82,9 +82,9 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 
 | # | Status | Item | Notes |
 |---|---|---|---|
-| F1 | ⬜ | **Request banks** A–D from the synth (`32 bb`) into the library, with progress | Also the backup in L4 |
+| F1 | ⬜ | **Request banks** A–D from the synth (`32 bb`) into the library, with progress | Also the backup in L4. The CLI already does this: `virus get-bank A --out-file a.syx --to-library` (progress, checksums, new library bank); the GUI still needs it |
 | F2 | ⬜ | **Send a patch to a bank slot** (single dump with `bb=01/02`), with confirmation | RAM banks only |
-| F3 | ⬜ | Read the synth's globals (Global request `35`, or Page C): device ID, global channel, C94/C95 Low/High Page, play mode | Lets the app pick the right channel and part, and warn when PolyPressure or CC is off |
+| F3 | ⬜ | Read the synth's globals (Global request `35`, or Page C): device ID, global channel, C94/C95 Low/High Page, play mode | Lets the app pick the right channel and part, and warn when PolyPressure or CC is off. `virus selftest` prints the raw answer to the Global request (`35`) as a first step |
 | F4 | ⬜ | Multi mode: choose the part (`00–0F`) for edits and fetches; part list from the Multi edit buffer | SPEC §4.4 |
 | F5 | ⬜ | Multi editor and librarian (dump `11`, layout SPEC §4.4) | Later |
 | F6 | ⬜ | "Pass through the synth" step after import (send to edit buffer, request back) so the Virus updates the sound version | SPEC §5.2 |
@@ -96,16 +96,16 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | # | Status | Item | Notes |
 |---|---|---|---|
 | G1 | ⬜ | **The GUI can't start on this dev VM** (Hyper-V over RDP, no GPU): `egui_glow requires opengl 2.0+`; wgpu also fails (`NoSuitableAdapterFound`). This happens before any app code runs; the old app had the same backend | Check on a machine with a GPU first. Fallback options: a software OpenGL (Mesa `opengl32.dll` / llvmpipe next to the exe), or the wgpu renderer with a fallback adapter. Not done |
-| G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 150 ms gaps (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items) | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
+| G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 150 ms gaps (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items) | Record results here; adjust `BANK_SEND_GAP_MS` if needed. **Tool ready:** `virus selftest` automates fetch, the A40/B36 round trips, send-and-read-back and the bank request. The rest follows the runbook in `crates/virus-cli/README.md` (`monitor`, `set`, `put-bank --verify --gap-ms`). Also record whether Memory Protect (C118) must be off for bank sends |
 | G3 | ⬜ | Persist settings between runs (ports, channel, device ID, part, window) | e.g. eframe `persistence` or a small TOML in the data dir |
 
 ## ❓ Open questions (SPEC §7)
 
 | # | Question | Blocks |
 |---|---|---|
-| Q1 | Raw value → name for assign / LFO-assign / definable destinations (factory values up to 114; the list has 105 names) | P4 labels. **Live test when the MIDI cable arrives** |
-| Q2 | SysEx addressing of ROM banks E–H | F8. Live test |
-| Q3 | Full value lists for A49 Saturation, A112 Delay/Reverb mode, A102 Input Select, B39 Vocoder mode | P7 labels. Live test |
+| Q1 | Raw value → name for assign / LFO-assign / definable destinations (factory values up to 114; the list has 105 names) | P4 labels. **Live test when the MIDI cable arrives:** `virus probe-destinations` (and `--slot lfo1` / `definable1`) writes `q1_*.json`; `virus probe-table` turns it into the name table |
+| Q2 | SysEx addressing of ROM banks E–H | F8. Live test: `virus get-bank E --out-file probe_E.syx -v` |
+| Q3 | Full value lists for A49 Saturation, A112 Delay/Reverb mode, A102 Input Select, B39 Vocoder mode | P7 labels. Live test: `virus probe-values A49` (likewise A112, A102, B39) |
 | ~~Q4~~ | ✅ Decided 24 Nov: the repo is **private** and stays private, so the Access material stays | — |
 | ~~Q5~~ | ✅ Decided 24 Nov: **Virus Rack (classic) only** for now | — |
 
