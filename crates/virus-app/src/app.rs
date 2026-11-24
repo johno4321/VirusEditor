@@ -3,15 +3,17 @@
 use std::time::Instant;
 
 use eframe::{egui, App, Frame};
-use egui::{CentralPanel, Color32, RichText, TopBottomPanel, Visuals};
+use egui::{CentralPanel, RichText, TopBottomPanel};
 use virus_db::PatchDatabase;
-use virus_midi::{MidiCommand, MidiEvent, MidiService};
+use virus_midi::{MidiCommand, MidiEvent, MidiService, ReleaseTrigger};
 use virus_syx::Patch;
 
+use crate::audition::Audition;
 use crate::session::{Activity, Incoming, Ports, Session};
 use crate::storage::{open_library, LibraryLocation};
+use crate::theme::{self, DARK_RED, ON_RED};
 use crate::views::librarian::{LibAction, LibrarianView, BANK_SEND_GAP_MS};
-use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, ACCENT, DANGER, DIM};
+use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, DANGER, DIM};
 // [multi] Multi tab (F4/F5)
 use crate::multi_session::MultiSession;
 use crate::views::multi::{MultiAction, MultiView};
@@ -35,6 +37,7 @@ pub struct VirusApp {
     tab: Tab,
     editor: EditorView,
     librarian: LibrarianView,
+    audition: Audition,
     notice: Notice,
     /// Where the edited patch came from, for the header.
     origin: String,
@@ -45,13 +48,7 @@ pub struct VirusApp {
 
 impl VirusApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut visuals = Visuals::dark();
-        visuals.panel_fill = Color32::from_rgb(22, 24, 28);
-        visuals.window_fill = Color32::from_rgb(26, 28, 34);
-        visuals.extreme_bg_color = Color32::from_rgb(14, 15, 18);
-        visuals.selection.bg_fill = Color32::from_rgb(200, 60, 40);
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(240, 160, 60));
-        cc.egui_ctx.set_visuals(visuals);
+        crate::theme::apply(&cc.egui_ctx);
 
         let mut notice = Notice::info("Ready. Select the MIDI ports, or let auto-detect find the Virus.");
         let midi = match MidiService::spawn() {
@@ -82,6 +79,7 @@ impl VirusApp {
             tab: Tab::default(),
             editor: EditorView::default(),
             librarian: LibrarianView::default(),
+            audition: Audition::new(),
             notice,
             origin: "init".to_owned(),
             multi: MultiSession::default(),    // [multi]
@@ -109,6 +107,30 @@ impl VirusApp {
         self.command(MidiCommand::Send(message));
     }
 
+    /// Sends audition notes; silently dropped without an output (the strip is disabled then).
+    fn send_notes(&mut self, messages: Vec<Vec<u8>>) {
+        if !self.ports.output_connected() {
+            return;
+        }
+        for message in messages {
+            self.command(MidiCommand::Send(message));
+        }
+    }
+
+    /// Note offs must go out before the output is closed or changed (SPEC §5.9).
+    fn release_notes_before(&mut self, commands: &[MidiCommand]) {
+        let closes_output = commands.iter().any(|c| {
+            matches!(
+                c,
+                MidiCommand::Disconnect | MidiCommand::DisconnectOutput | MidiCommand::ConnectOutput(_)
+            )
+        });
+        if closes_output && self.audition.is_active() {
+            let offs = self.audition.release_all(ReleaseTrigger::Disconnect);
+            self.send_notes(offs);
+        }
+    }
+
     fn poll_midi(&mut self) {
         let Some(midi) = &self.midi else { return };
         let events: Vec<MidiEvent> = std::iter::from_fn(|| midi.try_recv_event()).collect();
@@ -116,7 +138,9 @@ impl VirusApp {
         for event in events {
             match event {
                 MidiEvent::PortListUpdated { inputs, outputs } => {
-                    for command in self.ports.on_port_list(inputs, outputs) {
+                    let commands = self.ports.on_port_list(inputs, outputs);
+                    self.release_notes_before(&commands);
+                    for command in commands {
                         self.command(command);
                     }
                 }
@@ -237,15 +261,18 @@ impl VirusApp {
 
     fn header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("ACCESS VIRUS").strong().size(16.0).color(ACCENT));
-            ui.label(RichText::new("Rack Editor & Librarian").size(12.0).color(DIM));
+            ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, DARK_RED);
+            ui.label(RichText::new("ACCESS VIRUS").strong().size(18.0).color(ON_RED));
+            ui.label(RichText::new("Rack Editor & Librarian").size(12.0).color(ON_RED));
             ui.separator();
-            ui.selectable_value(&mut self.tab, Tab::Editor, "🎹 Sound Editor");
-            ui.selectable_value(&mut self.tab, Tab::Modulation, "🔀 Modulation");
-            ui.selectable_value(&mut self.tab, Tab::Librarian, "📚 Librarian");
-            ui.selectable_value(&mut self.tab, Tab::Multi, "🎛 Multi"); // [multi]
+            theme::tab(ui, &mut self.tab, Tab::Editor, "🎹 Sound Editor");
+            theme::tab(ui, &mut self.tab, Tab::Modulation, "🔀 Modulation");
+            theme::tab(ui, &mut self.tab, Tab::Librarian, "📚 Librarian");
+            theme::tab(ui, &mut self.tab, Tab::Multi, "🎛 Multi"); // [multi]
             ui.separator();
-            ui.label(RichText::new(self.session.patch().name()).monospace().strong())
+            theme::lcd_frame()
+                .show(ui, |ui| ui.label(theme::lcd_text(self.session.patch().name())))
+                .response
                 .on_hover_text(format!("Edited patch, from {}", self.origin));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -265,7 +292,9 @@ impl VirusApp {
         });
         match &self.location {
             LibraryLocation::InMemory { reason } => {
-                ui.colored_label(DANGER, format!("⚠ The library is in memory only — nothing will be saved ({reason})."));
+                theme::lcd_frame().show(ui, |ui| {
+                    ui.colored_label(DANGER, format!("⚠ The library is in memory only — nothing will be saved ({reason})."));
+                });
             }
             LibraryLocation::File(_) => {}
         }
@@ -276,7 +305,7 @@ impl App for VirusApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         self.poll_midi();
 
-        TopBottomPanel::top("header").show(ctx, |ui| {
+        TopBottomPanel::top("header").frame(theme::header_frame()).show(ctx, |ui| {
             ui.add_space(4.0);
             self.header(ui);
             ui.add_space(4.0);
@@ -300,9 +329,27 @@ impl App for VirusApp {
                 commands
             })
             .inner;
+        self.release_notes_before(&commands);
         for command in commands {
             self.command(command);
         }
+
+        // Above the MIDI bar, on every tab.
+        let settings = self.session.settings;
+        let multi_channel = self.multi.edited_part_channel(settings.part); // [multi] N9
+        let target = self.audition.sync_target(settings.channel, settings.part, multi_channel);
+        self.send_notes(target);
+        let output_connected = self.ports.output_connected();
+        let now_ms = (ctx.input(|i| i.time) * 1000.0) as u64;
+        let notes = TopBottomPanel::bottom("audition")
+            .show(ctx, |ui| {
+                ui.add_space(2.0);
+                let notes = self.audition.show(ui, now_ms, output_connected);
+                ui.add_space(2.0);
+                notes
+            })
+            .inner;
+        self.send_notes(notes);
 
         let mut edits = Vec::new();
         let mut actions = Vec::new();
@@ -331,6 +378,31 @@ impl App for VirusApp {
         // Only keep repainting while an activity LED is lit.
         if let Some(remaining) = self.leds.next_change(Instant::now()) {
             ctx.request_repaint_after(remaining);
+        }
+    }
+
+    /// Releases sounding notes and waits briefly for the worker to send them, so quitting
+    /// never leaves a note hanging on the synth.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let offs = self.audition.release_all(ReleaseTrigger::Exit);
+        let Some(midi) = &self.midi else { return };
+        if offs.is_empty() || !self.ports.output_connected() {
+            return;
+        }
+        let mut pending = offs.len();
+        for message in offs {
+            if midi.send_command(MidiCommand::Send(message)).is_err() {
+                return;
+            }
+        }
+        let deadline = Instant::now() + std::time::Duration::from_millis(300);
+        while pending > 0 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match midi.event_receiver().recv_timeout(left) {
+                Ok(MidiEvent::Sent { .. } | MidiEvent::Error(_)) => pending -= 1,
+                Ok(_) => {}
+                Err(_) => break,
+            }
         }
     }
 }

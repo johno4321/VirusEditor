@@ -163,13 +163,12 @@ impl MultiSession {
         self.multi.as_ref().map(|m| m.part(part).midi_channel & 0x0F)
     }
 
-    /// The channel the edited sound listens on (TODO N9): the synth channel in Single mode; in
-    /// Multi mode the part's channel from the multi, or channel *n* for part *n* when no multi
-    /// has been fetched.
-    pub fn audition_channel(&self, synth_channel: u8, part: EditPart) -> u8 {
+    /// The edited Multi part's channel from the multi, for note audition (TODO N9); `None` in
+    /// Single mode or before a multi has been fetched.
+    pub fn edited_part_channel(&self, part: EditPart) -> Option<u8> {
         match part {
-            EditPart::Single => synth_channel & 0x0F,
-            EditPart::Multi(part) => self.part_channel(part).unwrap_or(part & 0x0F),
+            EditPart::Single => None,
+            EditPart::Multi(part) => self.part_channel(part),
         }
     }
 }
@@ -495,21 +494,20 @@ mod tests {
     }
 
     #[test]
-    fn audition_channel_uses_the_multi_parts_channel() {
+    fn edited_part_channel_comes_from_the_multi() {
         let mut s = MultiSession::default();
-        assert_eq!(s.audition_channel(4, EditPart::Single), 4);
-        assert_eq!(s.audition_channel(4, EditPart::Multi(6)), 6, "no multi: part n = channel n");
+        assert_eq!(s.edited_part_channel(EditPart::Multi(6)), None, "no multi fetched");
 
         let mut multi = sample("M");
         multi.set(param("Part MIDI Channel"), 6, 0);
         s.load(multi, "test");
-        assert_eq!(s.audition_channel(4, EditPart::Multi(6)), 0);
-        assert_eq!(s.audition_channel(4, EditPart::Single), 4);
+        assert_eq!(s.edited_part_channel(EditPart::Multi(6)), Some(0));
+        assert_eq!(s.edited_part_channel(EditPart::Single), None);
 
-        // A live C34 change from the synth moves the target too.
+        // A live C34 change from the synth moves it too.
         let c34 = sysex(encode_param_change(0, Page::PageC, 6, 34, 9));
         s.handle_midi(&c34, &settings());
-        assert_eq!(s.audition_channel(4, EditPart::Multi(6)), 9);
+        assert_eq!(s.edited_part_channel(EditPart::Multi(6)), Some(9));
     }
 
     #[test]

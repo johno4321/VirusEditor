@@ -11,7 +11,7 @@ use virus_syx::{
 };
 
 use super::controls::{destination_control, param_control};
-use super::{Edit, ACCENT, DIM};
+use super::{Edit, DIM};
 
 const DEFINABLES: [u8; 2] = [62, 63];
 
@@ -65,13 +65,7 @@ pub fn show(ui: &mut Ui, patch: &Patch, edits: &mut Vec<Edit>) {
 }
 
 fn group(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
-    ui.group(|ui| {
-        ui.set_width(250.0);
-        ui.vertical(|ui| {
-            ui.label(RichText::new(title).strong().color(ACCENT));
-            add(ui);
-        });
-    });
+    crate::theme::section(ui, title, Some(250.0), add);
 }
 
 fn target(ui: &mut Ui, patch: &Patch, destination: u8, amount: u8, hints: &[&str], edits: &mut Vec<Edit>) {

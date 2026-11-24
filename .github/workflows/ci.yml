@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Private repo: cancel superseded runs for the same branch / PR to save minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Keep in sync with rust-toolchain.toml.
+  RUST_TOOLCHAIN: "1.100.0"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  ci:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # midir links libasound (ALSA). winit/glutin/xkbcommon load X11/Wayland/GL
+      # via dlopen and rfd uses the xdg-portal backend, so no GTK/X11/GL dev
+      # packages are needed to build or test.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Pushes save the cache; pull requests only restore (avoids duplicate caches).
+          save-if: ${{ github.event_name == 'push' }}
+
+      # `cargo fmt --check` is intentionally omitted until the workspace is rustfmt-clean.
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build release (virus-app)
+        run: cargo build -p virus-app --release --locked
+
+      - name: Upload virus-app.exe
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: virus-app-windows-x64
+          path: target/release/virus-app.exe
+          if-no-files-found: error
+          retention-days: 14

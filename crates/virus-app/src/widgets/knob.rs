@@ -3,6 +3,7 @@
 //! Unipolar knobs fill the arc from the minimum; bipolar knobs (stored 0..127, shown
 //! −64..+63) fill from the 12 o'clock detent at raw 64.
 
+use crate::theme;
 use egui::{pos2, vec2, Color32, Id, Pos2, Response, Sense, Stroke, Ui, Widget};
 use std::f32::consts::PI;
 
@@ -11,11 +12,11 @@ const ARC_TOTAL_ANGLE: f32 = 1.5 * PI;
 const BIPOLAR_CENTRE: u8 = 64;
 const WIDTH: f32 = 68.0;
 
-const BODY: Color32 = Color32::from_rgb(32, 34, 40);
-const BORDER: Color32 = Color32::from_rgb(60, 64, 75);
-const TRACK: Color32 = Color32::from_rgb(45, 48, 58);
-const ACTIVE: Color32 = Color32::from_rgb(220, 60, 40);
-const NEEDLE: Color32 = Color32::from_rgb(255, 230, 200);
+const BODY: Color32 = theme::KNOB_BODY;
+const BORDER: Color32 = theme::KNOB_BORDER;
+const TRACK: Color32 = theme::KNOB_TRACK;
+const ACTIVE: Color32 = theme::KNOB_ARC;
+const NEEDLE: Color32 = theme::KNOB_POINTER;
 
 pub struct Knob<'a> {
     value: &'a mut u8,
@@ -131,7 +132,7 @@ impl Widget for Knob<'_> {
                 let centre_angle = self.angle(f32::from(BIPOLAR_CENTRE));
                 painter.line_segment(
                     [centre + vec2(0.0, -track_radius - 2.0), centre + vec2(0.0, -track_radius + 2.0)],
-                    Stroke::new(1.5_f32, Color32::from_rgb(140, 145, 160)),
+                    Stroke::new(1.5_f32, theme::DIM),
                 );
                 draw_arc(painter, centre, track_radius, centre_angle.min(current), centre_angle.max(current), ACTIVE);
             } else {
@@ -148,11 +149,11 @@ impl Widget for Knob<'_> {
             let out_of_range = *self.value < self.min || *self.value > self.max;
             let neutral = if self.bipolar { *self.value == BIPOLAR_CENTRE } else { false };
             let colour = if out_of_range {
-                Color32::from_rgb(230, 190, 60)
+                theme::WARN
             } else if neutral {
-                Color32::from_rgb(120, 125, 140)
+                theme::DIM
             } else {
-                Color32::from_rgb(200, 190, 175)
+                theme::LEGEND
             };
             painter.text(
                 pos2(rect.center().x, rect.max.y - font_height * 0.5),

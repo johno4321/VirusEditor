@@ -3,10 +3,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod audition;
 mod library;
 mod multi_session;
 mod session;
 mod storage;
+mod theme;
 mod views;
 mod widgets;
 

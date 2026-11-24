@@ -252,7 +252,8 @@ impl MultiView {
                 ui.colored_label(WARN, "⚠ Tempo/delay changes are applied only when you send the multi.");
             }
             if let EditPart::Multi(part) = settings.part {
-                let channel = session.audition_channel(settings.channel, settings.part);
+                let multi_channel = session.edited_part_channel(settings.part);
+                let channel = crate::audition::auto_channel(settings.channel, settings.part, multi_channel);
                 ui.label(RichText::new(format!("Editing part {} (MIDI ch {})", part + 1, channel + 1)).color(DIM));
             }
         });

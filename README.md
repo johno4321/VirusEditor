@@ -14,6 +14,7 @@ It talks to the synth over MIDI SysEx, edits the current sound live, and keeps a
 - **Import / export:** `.syx`, `.bin` and `.mid` import honours the bank byte (edit-buffer dumps are offered as loose patches, never put into a slot), and reports wrong checksums, skipped multi dumps and other messages. Export writes a bank as `.syx`.
 - **Synth transfer:** fetch and send the edit buffer (Single mode or Multi part 1–16), request banks A–D, send library bank A or B to the synth (with a warning and a backup option).
 - **MIDI:** ports chosen by name with auto-detection (names containing "Virus", "Access" or "OSR"), synth channel, device ID (default 1, or Omni), Rx/Tx lights. Edits go out as SysEx parameter changes; incoming CC/Poly Pressure is accepted only on the synth's channel and only for sound parameters.
+- **Note audition:** a collapsible keyboard strip on every tab plays the synth so you can hear your edits without a keyboard: an on-screen piano (velocity by click height or a fixed velocity), computer keys, octave shift, Hold (for pads and the arpeggiator), an **Audition** button (C3 for 1 s, like the Virus' own), test phrases (note, chord, bass line) at a set tempo, and **Panic**. Every note gets a note off when you release it, change octave, channel or part, disconnect, switch to another window, or quit.
 
 ## Requirements
 
@@ -43,6 +44,14 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
+The Rust version is pinned in `rust-toolchain.toml` (rustup installs it automatically). CI (`.github/workflows/ci.yml`) runs clippy, the tests and a release build on Windows and Ubuntu; the Windows `virus-app.exe` can be downloaded from each run's artifacts.
+
+To check the MIDI connection without the GUI, the read-only probe lists ports, fetches the edit buffer, backs up banks A and B, or monitors incoming MIDI. It never changes the synth:
+
+```powershell
+cargo run -p virus-app --example virus_probe --release -- [ports|fetch|backup|monitor] [--in <name part>] [--out <name part>] [--device 1-16|omni]
+```
+
 The library is stored in your user data folder (on Windows `%APPDATA%\VirusEditor\data\virus_library.db`); the path is shown in the bottom bar. If it can't be opened, the app runs with an in-memory library and shows a red warning that nothing will be saved.
 
 The app needs OpenGL 2.0 or later (it won't start in a remote desktop session on a VM without a GPU).
@@ -52,9 +61,10 @@ The app needs OpenGL 2.0 or later (it won't start in a remote desktop session on
 1. Connect the Virus. Pick the MIDI in and out ports in the bottom bar (or let auto-detect find them), and set the synth's MIDI channel, device ID (global C93; default 1) and the part you're editing (Single, or a Multi part).
 2. **📥 Fetch** loads the synth's edit buffer into the editor; **📤 Send** sends the edited patch to it.
 3. Turn knobs in **🎹 Sound Editor** or **🔀 Modulation**; each change is sent straight away as a SysEx parameter change.
-4. **💾 Store…** saves the edited patch to a library slot (you're asked before overwriting).
-5. In **📚 Librarian**, import a bank file, then **Load** or **Send** any patch, edit its tags or favourite flag, or export a bank. Edit-buffer dumps from a file appear in a separate list from which you can load or store them.
-6. To put a bank on the synth, select library bank A or B and use **📤 Send bank to synth…**. This overwrites the synth's RAM bank, so back it up first: **Request bank** sends the synth's bank to the app, and **Received from synth → Import as a new library bank** keeps it safe.
+4. To hear the change, play the **🎹 Keyboard** strip above the bottom bar: click or drag on the keys (lower on a key = louder), or use the computer keys `A W S E D F T G Y H U J K` (C up to C) and `Z`/`X` for octave down/up. Computer keys don't play while you're typing in a text field. **▶ Audition** plays C3; **Note / Chord / Bass line** play short phrases at the bpm shown; **Hold** keeps notes on until you click them again (handy for pads and arpeggios); **🛑 Panic** silences everything. Notes go to the synth channel in Single mode and to channel *n* for Multi part *n*; pick another channel in the strip's channel list if your Multi is set up differently.
+5. **💾 Store…** saves the edited patch to a library slot (you're asked before overwriting).
+6. In **📚 Librarian**, import a bank file, then **Load** or **Send** any patch, edit its tags or favourite flag, or export a bank. Edit-buffer dumps from a file appear in a separate list from which you can load or store them.
+7. To put a bank on the synth, select library bank A or B and use **📤 Send bank to synth…**. This overwrites the synth's RAM bank, so back it up first: **Request bank** sends the synth's bank to the app, and **Received from synth → Import as a new library bank** keeps it safe.
 
 Factory banks to try: the clean copies `testdata/factory/Bank_A.syx` and `Bank_B.syx`. The originals in `VirusOSR200_INT/OSR200_INT/Goodies/Factory soundset/` are partly damaged; see SPEC §6.
 

@@ -2,6 +2,7 @@
 
 use std::time::Instant;
 
+use crate::theme;
 use egui::{vec2, Color32, ComboBox, RichText, Stroke, Ui};
 use virus_midi::MidiCommand;
 use virus_syx::DEVICE_ID_OMNI;
@@ -73,8 +74,8 @@ pub fn show(
         ui.separator();
 
         let now = Instant::now();
-        led(ui, "Rx", leds.rx_lit(now), Color32::from_rgb(50, 220, 80));
-        led(ui, "Tx", leds.tx_lit(now), Color32::from_rgb(255, 160, 40));
+        led(ui, "Rx", leds.rx_lit(now), theme::LED_AMBER);
+        led(ui, "Tx", leds.tx_lit(now), theme::LED_AMBER);
         ui.separator();
         ui.label(RichText::new(&notice.text).size(11.0).color(notice.colour()));
     });
@@ -119,8 +120,8 @@ fn led(ui: &mut Ui, label: &str, lit: bool, colour: Color32) {
     painter.circle(
         rect.center(),
         5.0,
-        if lit { colour } else { Color32::from_rgb(30, 35, 42) },
-        Stroke::new(1.0_f32, if lit { Color32::WHITE } else { Color32::from_rgb(60, 65, 75) }),
+        if lit { colour } else { theme::LED_OFF },
+        Stroke::new(1.0_f32, if lit { Color32::WHITE } else { theme::KEY_OUTLINE }),
     );
-    ui.label(RichText::new(label).size(10.0).color(Color32::from_rgb(140, 145, 160)));
+    ui.label(RichText::new(label).size(10.0).color(theme::DIM));
 }
