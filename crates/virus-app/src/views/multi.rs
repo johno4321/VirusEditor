@@ -268,8 +268,9 @@ impl MultiView {
                     };
                     ui.label(RichText::new(label).size(10.5)).on_hover_text(hover(def, multi.get(def, 0)));
                     let mut value = multi.get(def, 0);
-                    value_control(ui, def, 0, &mut value);
-                    if value != multi.get(def, 0) {
+                    // Only user changes count: drawing a DragValue may clamp the value (RV-M1).
+                    let changed = value_control(ui, def, 0, &mut value).changed();
+                    if changed && value != multi.get(def, 0) {
                         if let Some(message) = session.edit(settings, def, 0, value) {
                             actions.push(MultiAction::Send(message));
                         }
@@ -298,8 +299,8 @@ impl MultiView {
                 for def in multi_part_params() {
                     let raw = multi.get(def, part);
                     let mut value = raw;
-                    value_control(ui, def, part, &mut value).on_hover_text(hover(def, raw));
-                    if value != raw {
+                    let response = value_control(ui, def, part, &mut value).on_hover_text(hover(def, raw));
+                    if response.changed() && value != raw {
                         if let Some(message) = session.edit(settings, def, part, value) {
                             actions.push(MultiAction::Send(message));
                         }
@@ -418,7 +419,8 @@ fn value_control(ui: &mut Ui, def: &MultiParamDef, part: u8, value: &mut u8) -> 
         ValueKind::Choice(texts) => {
             let known = (*value as usize) < texts.len();
             let selected = display_value(def, *value);
-            ComboBox::from_id_source(("multi", def.name, part))
+            let before = *value;
+            let mut response = ComboBox::from_id_source(("multi", def.name, part))
                 .width(if texts.len() > 4 { 72.0 } else { 40.0 })
                 .selected_text(if known { RichText::new(selected) } else { RichText::new(selected).color(WARN) })
                 .show_ui(ui, |ui| {
@@ -430,7 +432,12 @@ fn value_control(ui: &mut Ui, def: &MultiParamDef, part: u8, value: &mut u8) -> 
                         ui.selectable_value(value, current, RichText::new(format!("#{current} (undocumented)")).color(WARN));
                     }
                 })
-                .response
+                .response;
+            // The combo's own response doesn't report picks made in its popup.
+            if *value != before {
+                response.mark_changed();
+            }
+            response
         }
         _ => {
             let def = *def;
