@@ -299,6 +299,7 @@ fn put_bank(conn: &ConnArgs, bank: u8, file: &Path, options: PutOptions) -> Outc
             file.display(),
             bank_label(selection.source_bank)
         );
+        println!("Stop the clock/transport on your sequencer first.");
         println!("Back up both RAM banks first, e.g.:\n  {backup_command}");
         println!("Then re-run with --yes (an automatic backup of bank {letter} is also taken unless --no-backup).");
         return Ok(false);
