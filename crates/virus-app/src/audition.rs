@@ -96,12 +96,13 @@ impl Default for AuditionSettings {
 }
 
 /// The channel the edited sound listens on (SPEC §5.9): the Global Channel (C124) in Single
-/// mode, the part's MIDI channel (C34) in Multi mode. The app doesn't read the Multi yet (F4),
-/// so part *n* is assumed to listen on channel *n*; use the channel override otherwise.
-pub fn auto_channel(synth_channel: u8, part: EditPart) -> u8 {
+/// mode, the part's MIDI channel (C34) in Multi mode. `multi_channel` is that part's channel
+/// from the fetched Multi (bytes 64..79, TODO N9); without a Multi, part *n* is assumed to
+/// listen on channel *n* (use the channel override otherwise).
+pub fn auto_channel(synth_channel: u8, part: EditPart, multi_channel: Option<u8>) -> u8 {
     match part {
         EditPart::Single => synth_channel & 0x0F,
-        EditPart::Multi(part) => part & 0x0F,
+        EditPart::Multi(part) => multi_channel.unwrap_or(part) & 0x0F,
     }
 }
 
@@ -140,8 +141,9 @@ impl Audition {
     }
 
     /// Follows the app's synth channel and edited part (call every frame). A part change
-    /// releases everything even if the channel stays the same.
-    pub fn sync_target(&mut self, synth_channel: u8, part: EditPart) -> Vec<Message> {
+    /// releases everything even if the channel stays the same. `multi_channel` is the edited
+    /// part's channel from the fetched Multi, if any (see [`auto_channel`]).
+    pub fn sync_target(&mut self, synth_channel: u8, part: EditPart, multi_channel: Option<u8>) -> Vec<Message> {
         let mut out = Vec::new();
         if part != self.part {
             out.extend(self.release_all(ReleaseTrigger::PartChange));
@@ -150,7 +152,7 @@ impl Audition {
         let channel = self
             .settings
             .channel_override
-            .unwrap_or_else(|| auto_channel(synth_channel, part));
+            .unwrap_or_else(|| auto_channel(synth_channel, part, multi_channel));
         out.extend(self.set_channel(channel));
         out
     }
@@ -632,26 +634,48 @@ mod tests {
 
     #[test]
     fn target_follows_mode_part_and_override() {
-        assert_eq!(auto_channel(3, EditPart::Single), 3);
-        assert_eq!(auto_channel(3, EditPart::Multi(5)), 5);
+        assert_eq!(auto_channel(3, EditPart::Single, None), 3);
+        assert_eq!(auto_channel(3, EditPart::Multi(5), None), 5);
 
         let mut a = Audition::new();
-        a.sync_target(3, EditPart::Single);
+        a.sync_target(3, EditPart::Single, None);
         assert_eq!(a.channel, 3);
         a.piano_events(&[PianoEvent::Press {
             note: 60,
             velocity: 90,
         }]);
         // Same channel, different part: still released.
-        assert_eq!(a.sync_target(3, EditPart::Multi(3)), vec![note_off(3, 60)]);
+        assert_eq!(a.sync_target(3, EditPart::Multi(3), None), vec![note_off(3, 60)]);
         a.piano_events(&[PianoEvent::Press {
             note: 60,
             velocity: 90,
         }]);
         a.settings.channel_override = Some(9);
-        assert_eq!(a.sync_target(3, EditPart::Multi(3)), vec![note_off(3, 60)]);
+        assert_eq!(a.sync_target(3, EditPart::Multi(3), None), vec![note_off(3, 60)]);
         assert_eq!(a.channel, 9);
-        assert!(a.sync_target(3, EditPart::Multi(3)).is_empty());
+        assert!(a.sync_target(3, EditPart::Multi(3), None).is_empty());
+    }
+
+    #[test]
+    fn multi_part_channel_comes_from_the_fetched_multi() {
+        // N9: part 6 listens on the channel stored in the Multi, not on channel 6.
+        assert_eq!(auto_channel(3, EditPart::Multi(6), Some(0)), 0);
+        assert_eq!(auto_channel(3, EditPart::Multi(6), Some(0x1F)), 0x0F);
+        assert_eq!(auto_channel(3, EditPart::Single, Some(0)), 3, "Single mode ignores the Multi");
+
+        let mut a = Audition::new();
+        assert!(a.sync_target(3, EditPart::Multi(6), Some(0)).is_empty());
+        assert_eq!(a.channel, 0);
+        a.piano_events(&[PianoEvent::Press {
+            note: 60,
+            velocity: 90,
+        }]);
+        // The part's channel changes in the Multi (e.g. C34 from the synth): release on the old one.
+        assert_eq!(a.sync_target(3, EditPart::Multi(6), Some(9)), vec![note_off(0, 60)]);
+        assert_eq!(a.channel, 9);
+        // No Multi any more: fall back to part n = channel n.
+        a.sync_target(3, EditPart::Multi(6), None);
+        assert_eq!(a.channel, 6);
     }
 
     #[test]

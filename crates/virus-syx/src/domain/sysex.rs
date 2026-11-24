@@ -147,6 +147,10 @@ pub enum SyxError {
     UnsupportedBank(u8),
     /// A byte between `F0` and `F7` is 0x80 or higher, which MIDI forbids inside SysEx.
     InvalidDataByte { offset: usize, value: u8 },
+    /// A valid message that is not a multi dump was given where one was required.
+    NotAMultiDump { command: u8 },
+    /// Multi dump bank byte other than `00` (edit buffer) or `01` (multi bank).
+    UnsupportedMultiBank(u8),
 }
 
 impl fmt::Display for SyxError {
@@ -174,6 +178,10 @@ impl fmt::Display for SyxError {
             Self::InvalidDataByte { offset, value } => {
                 write!(f, "Invalid SysEx data byte 0x{value:02X} at offset {offset} (must be below 0x80)")
             }
+            Self::NotAMultiDump { command } => {
+                write!(f, "Not a multi dump (command 0x{command:02X})")
+            }
+            Self::UnsupportedMultiBank(bank) => write!(f, "Unsupported multi bank number: 0x{bank:02X}"),
         }
     }
 }

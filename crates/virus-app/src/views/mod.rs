@@ -7,6 +7,7 @@ pub mod editor;
 pub mod librarian;
 pub mod midi_bar;
 pub mod modulation;
+pub mod multi;
 
 use egui::Color32;
 use virus_syx::Page;

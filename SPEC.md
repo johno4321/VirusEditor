@@ -6,7 +6,7 @@
 A native desktop **sound editor and patch librarian** for the **Access Virus Rack (classic), OS 2.00**, written in Rust. It must:
 
 1. **Edit** the synth's current sound live over MIDI, with every change heard immediately.
-2. **Fetch and send** single sounds (and later multis) between the synth and the computer.
+2. **Fetch and send** single sounds and multis between the synth and the computer.
 3. **Keep a library** of sounds: import and export bank files, search, categorise, and store back to the synth.
 4. **Never corrupt a sound.** A patch that goes in and comes back out, untouched, must be byte-identical (§5.1).
 
@@ -65,13 +65,14 @@ VirusEditor\
     │   │   ├── types.rs        # Unipolar7, Bipolar7, Category, AssignSource (with Unknown(u8))
     │   │   ├── params.rs       # SINGLE_PARAMS table (§4.1–4.2), classes, value kinds, format_value
     │   │   ├── patch.rs        # Patch([u8;256]) get/set, name, categories, DumpTarget, SingleBank
+    │   │   ├── multi.rs        # Multi([u8;256]), MULTI_PARAMS (§4.4) with live Page C mapping, MultiDumpTarget, PartFlag
     │   │   ├── sysex.rs        # parse_sysex → SysExMessage (checksum_ok), all encoders (§3)
     │   │   └── file.rs         # .syx and SMF (.mid) SysEx extraction, tolerant of the damaged files
-    │   └── tests\              # factory.rs (damaged originals), clean_factory.rs (strict round trips)
+    │   └── tests\              # factory.rs (damaged originals), clean_factory.rs (strict round trips), multis.rs (all multis.mid multis)
     ├── virus-midi\             # Transport: ports by name, input parser, batches, MidiService thread
-    │   └── src\ engine.rs · events.rs · parser.rs · batch.rs · ports.rs
-    ├── virus-db\               # Librarian: schema v2 + migration, byte-exact patches, import/export
-    │   └── src\ db.rs (+ db\tests.rs) · models.rs · patch_data.rs · schema.rs · error.rs
+    │   └── src\ engine.rs · events.rs · parser.rs · batch.rs · ports.rs · notes.rs (note audition, §5.9)
+    ├── virus-db\               # Librarian: schema v3 + migrations, byte-exact patches and multis, import/export
+    │   └── src\ db.rs (+ db\tests.rs, db\multis.rs) · models.rs · patch_data.rs · multi_data.rs · schema.rs · error.rs
     └── virus-app\              # GUI
         └── src\
             ├── main.rs · app.rs # Window, tabs, wiring
@@ -81,8 +82,13 @@ VirusEditor\
             ├── settings.rs     # Persisted settings (settings.json), migration, port restore, window geometry
             ├── dialogs.rs      # Off-thread file dialogs and file I/O (one task at a time)
             ├── synth_select.rs # SysEx bank/program change messages for "Select on synth" (F7)
-            ├── views\          # editor.rs (generated from SINGLE_PARAMS), modulation.rs, librarian.rs, midi_bar.rs, controls.rs
-            └── widgets\        # knob.rs, curves.rs (filter response, envelopes)
+            ├── multi_session.rs # Multi edit buffer, incoming multi dumps/Page C, live edits, multi librarian glue
+            ├── audition.rs     # Note audition state (§5.9)
+            ├── theme.rs        # Red & black palette (§5.10)
+            ├── comforts.rs · history.rs · compare.rs · sections.rs # Undo/redo, Compare, diff, section copy/paste (E1–E5)
+            ├── renderer.rs     # Renderer choice: OpenGL first, wgpu/WARP fallback (G1)
+            ├── views\          # editor.rs (generated from SINGLE_PARAMS), modulation.rs, librarian.rs, multi.rs (Multi tab), midi_bar.rs, controls.rs
+            └── widgets\        # knob.rs, curves.rs (filter response, envelopes), piano.rs
 ```
 
 ---
@@ -258,7 +264,9 @@ Page C parameter changes, independent of MIDI channel and of the program-change 
   * **176–191** output
   * **192–207** effect send
 * **208–239** internal.
-* **240–255** part state bitfield: bit 0 enable, 1 MIDI volume enable, 2 hold enable, 4 internal, 5 priority, 6 program change enable.
+* **240–255** part state bitfield: bit 0 enable, 1 MIDI volume enable, 2 hold enable, 4 internal, 5 priority, 6 program change enable. Bit 3 is undocumented but set in factory data (`0x4F`); keep it like bit 4.
+* **Observed in the factory multis (`multis.mid`):** multi 0 and the edit buffer are "Sequencer"; bytes 0–3 look like `01 00 00 mm` but stay internal; part bank values up to **2** occur (documented 0–1), so keep raw values; output select uses 1/4/7 for three stereo outputs, which suggests 0–8 = Out1 L, L+R, R, Out2 …, Out3 … (only 0–2 are documented; live test).
+* **Live editing** (`virus_syx::MULTI_PARAMS`): name → C5–C14, delay output → C22, part bank → C32 (immediate), program → C33, channel … output → C34–C41, part-state bits → C72/C73/C74/C77/C78, all addressed to the part (`72 pp nn vv`). Effect send has no Page C number; it is sent as the part's **A113** (class `ms`). Clock tempo and the other multi-delay bytes have no documented parameter change, so they reach the synth only with a Multi dump to the edit buffer (`11 00 00`). All of this needs a live test (TODO G2).
 
 ### 4.5 Value lists
 * **Categories (B123/B124), manual p. 84, 0-based:** 0 Off, 1 Lead, 2 Bass, 3 Pad, 4 Decay, 5 Pluck ("Plug" in the manual), 6 Acid, 7 Classic, 8 Arpeggiator, 9 Effects, 10 Drums, 11 Percussion, 12 Input, 13 Vocoder, 14 Favourite 1, 15 Favourite 2, 16 Favourite 3.
@@ -318,7 +326,7 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 9. Notes go out through `virus_midi::MidiCommand::Send` (immediately, never queued behind a slow bank batch); the **Tx LED** flashes through the existing `Sent` event.
 10. The feature is available on **every tab** (a collapsible strip above the MIDI bar) and greys out when no MIDI output is connected.
 
-**Implementation:** pure builders (`note_on`, `note_off`, `control_change`, `all_notes_off`, `all_sound_off`), `NoteTracker` and `PhrasePlayer` live in `virus-midi` (`notes` module) and are unit-tested. The egui piano widget and the audition state (computer-key mapping, settings) live in `virus-app` (`widgets/piano.rs`, `audition.rs`). Until the app reads the Multi (F4), Multi part *n* is assumed to listen on channel *n*, and the strip has a manual channel override (TODO N9).
+**Implementation:** pure builders (`note_on`, `note_off`, `control_change`, `all_notes_off`, `all_sound_off`), `NoteTracker` and `PhrasePlayer` live in `virus-midi` (`notes` module) and are unit-tested. The egui piano widget and the audition state (computer-key mapping, settings) live in `virus-app` (`widgets/piano.rs`, `audition.rs`). In Multi mode the target is the edited part's channel from the fetched Multi (`audition::auto_channel` with `MultiSession::edited_part_channel`, TODO N9); until a Multi has been fetched, part *n* is assumed to listen on channel *n*. The strip also has a manual channel override.
 
 ### 5.10 Look and feel (owner requirement, 24 Nov)
 The UI should look like the Virus Rack's front panel: **red and black**. Starting palette, taken from a photo of the unit (tune on a real screen):
@@ -343,7 +351,7 @@ Keep all colours in one theme module so they can be adjusted in one place. **Imp
 > ⚠️ **The factory `.mid` files are damaged.** An old LF→CR text conversion turned every `0x0A` byte into `0x0D`; the files contain no `0x0A` at all. Effects:
 > * some SMF SysEx lengths (`82 0A` → `82 0D`) are wrong;
 > * Bank A's program 10 appears as 13;
-> * checksums fail on 20 dumps in Bank A, 32 in Bank B and 170 of 418 in `multis.mid`.
+> * checksums fail on 20 dumps in Bank A, 32 in Bank B and 170 of 418 in `multis.mid` (87 of its 129 multi dumps); multi 10 reads as `mm = 13`.
 >
 > Parsers must resynchronise on `F7`. **Clean copies of Banks A and B** (256/256 recovered with certainty from the undamaged SoundDiver `.lib`, cross-checked against the `.mid` dumps) are in `testdata/factory/Bank_A.syx` and `Bank_B.syx`; see `testdata/factory/README.md`. Strict golden tests (`crates/virus-syx/tests/clean_factory.rs`) require byte-identical round trips on them. `multis.mid` is a different soundset, so it isn't a source for the Rack banks.
 
@@ -380,11 +388,11 @@ Detailed tasks are in [TODO.md](TODO.md).
 | 1. Domain crate (`virus-syx`) | ✅ Rebuilt 24 Nov: raw-byte `Patch`, parameter table from §4, lossless enums, SysEx parse/encode per §3, file reader. All 256 factory patches round-trip byte-identically |
 | 2. Git setup | ✅ Lockfile committed; binary attributes for MIDI files |
 | 3. MIDI engine (`virus-midi`) | ✅ Reworked 24 Nov as a plain transport; interpretation (§5.5) moved to the app |
-| 4. Librarian DB (`virus-db`) | ✅ Reworked 24 Nov: byte-exact storage, schema v2 + migration, bank-aware import/export (§5.6) |
+| 4. Librarian DB (`virus-db`) | ✅ Reworked 24 Nov: byte-exact storage, schema v3 + migrations (v1→v2→v3), bank-aware import/export (§5.6), Multi bank storage |
 | 5. GUI (`virus-app`) | ✅ Rebuilt 24 Nov on the new crates (generated editor, Assign panel, 128-slot librarian, synth transfer). Starts and renders on the GPU-less dev VM via the wgpu/WARP fallback (TODO G1); ⚠️ not yet started on a machine with a GPU, not yet tried with the synth (G2) |
-| 6. In progress | Note audition (keyboard, audition, panic; TODO N items) |
+| 6. Done 24 Nov | Note audition (TODO N items); **Multi editor and librarian** (F4/F5, §4.4) with the audition on the part's real channel (N9) |
 | 7. Needs the synth | Live tests (G2), destination names (Q1), value lists (Q3), banks E–H (Q2) |
-| 8. Later | Synth globals (F3), Multi part selection and Multi editing (§4.4), controller-dump sync, arrangement/total dump import |
+| 8. Later | Synth globals (F3), sending the whole Multi bank, controller-dump sync, arrangement/total dump import |
 
 ---
 
@@ -393,6 +401,10 @@ Detailed tasks are in [TODO.md](TODO.md).
   * Settings persistence (G3), off-thread file dialogs and import/export (U5) and the optional SysEx "Select on synth" (F7, C32 bank value to be verified on hardware).
 * **2026-11-24 (late morning)**
   * The GUI now starts on the dev VM: if OpenGL 2.0+ is missing, it falls back to wgpu on Direct3D 12 WARP (TODO G1, §1.5).
+* **2026-11-24 (late morning, `rework/multi`)**
+  * Multi programs (F4/F5): `virus-syx` `Multi` + `MULTI_PARAMS` with the live Page C mapping (§4.4); golden test on all 129 multi dumps of `multis.mid`; `virus-db` schema v3 (`multis` table, transactional v2→v3); Multi tab in the app.
+  * Note audition follows the edited part's MIDI channel from the fetched Multi (N9).
+  * `rework/integration` merged in (theme, CI, review, note audition); 166 workspace tests, clippy clean.
 * **2026-11-24 (afternoon)**
   * Library crates reworked in parallel (`virus-syx`, `virus-midi`, `virus-db`) and merged into `rework/integration`.
   * Factory `.mid` files found to be LF→CR damaged; clean Banks A/B recovered from the SoundDiver `.lib` into `testdata/factory`.

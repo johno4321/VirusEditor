@@ -9,6 +9,8 @@ pub enum DbError {
     Sqlite(rusqlite::Error),
     /// A stored patch blob is not exactly 256 bytes long.
     CorruptPatch { id: i64, len: usize },
+    /// A stored multi blob is not exactly 256 bytes long.
+    CorruptMulti { id: i64, len: usize },
     /// No bank with this ID exists.
     BankNotFound(i64),
     /// Program numbers must be 0..=127.
@@ -33,6 +35,9 @@ impl fmt::Display for DbError {
             Self::Sqlite(e) => write!(f, "database error: {e}"),
             Self::CorruptPatch { id, len } => {
                 write!(f, "patch {id} is corrupt: stored data is {len} bytes, expected 256")
+            }
+            Self::CorruptMulti { id, len } => {
+                write!(f, "multi {id} is corrupt: stored data is {len} bytes, expected 256")
             }
             Self::BankNotFound(id) => write!(f, "bank {id} not found"),
             Self::InvalidProgram(p) => write!(f, "invalid program number {p} (must be 0..=127)"),

@@ -9,6 +9,7 @@ mod compare;
 mod dialogs;
 mod history;
 mod library;
+mod multi_session;
 mod renderer;
 mod sections;
 mod session;

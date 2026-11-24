@@ -477,6 +477,8 @@ fn migrates_v1_database() {
 
     // Indexes were recreated on the new table and the old table is gone.
     assert!(!db.table_exists("patches_v1").unwrap());
+    // v1 → v2 → v3: the multis table exists too.
+    assert!(db.table_exists("multis").unwrap());
     let idx: i64 = db
         .conn
         .query_row(

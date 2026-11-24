@@ -18,6 +18,9 @@ use crate::synth_select::select_messages;
 use crate::views::comforts::{ComfortAction, ComfortsView};
 use crate::views::librarian::{LibAction, LibrarianView, BANK_SEND_GAP_MS};
 use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, DANGER, DIM, WARN};
+// [multi] Multi tab (F4/F5)
+use crate::multi_session::MultiSession;
+use crate::views::multi::{MultiAction, MultiView};
 
 /// [comforts] A pending replacement of the edited patch, held until the user confirms (E5).
 enum Replace {
@@ -33,6 +36,7 @@ enum Tab {
     Editor,
     Modulation,
     Librarian,
+    Multi, // [multi]
 }
 
 impl Tab {
@@ -41,6 +45,7 @@ impl Tab {
             Tab::Editor => "editor",
             Tab::Modulation => "modulation",
             Tab::Librarian => "librarian",
+            Tab::Multi => "multi",
         }
     }
 
@@ -48,6 +53,7 @@ impl Tab {
         match key {
             "modulation" => Tab::Modulation,
             "librarian" => Tab::Librarian,
+            "multi" => Tab::Multi,
             _ => Tab::Editor,
         }
     }
@@ -85,6 +91,9 @@ pub struct VirusApp {
     pending_replace: Option<Replace>,
     /// Edited part and device the editor was last in sync with (RV-M5).
     last_target: (EditPart, u8),
+    // [multi] Multi tab (F4/F5)
+    multi: MultiSession,
+    multi_view: MultiView,
 }
 
 impl VirusApp {
@@ -135,6 +144,8 @@ impl VirusApp {
             comfort_ui: ComfortsView::default(),
             pending_replace: None,
             last_target: (EditPart::default(), 0),
+            multi: MultiSession::default(),    // [multi]
+            multi_view: MultiView::default(), // [multi]
         };
         app.apply_settings(&loaded.settings);
         app
@@ -310,6 +321,11 @@ impl VirusApp {
         // [comforts] what a replacing dump would discard (RV-M5)
         let previous = self.comforts.edited(&self.session).clone();
         let was_dirty = self.comforts.is_edited(&self.session);
+        // [multi] Multi dumps and Multi parameter changes; the event still goes to the session.
+        let multi = self.multi.handle_midi(event, &self.session.settings);
+        if let Some(notice) = multi.notice(self.multi.received.len()) {
+            self.notice = notice;
+        }
         match self.session.handle_midi(event) {
             Incoming::PatchLoaded { name, checksum_ok } => {
                 self.origin = "synth".to_owned();
@@ -626,6 +642,7 @@ impl VirusApp {
             theme::tab(ui, &mut self.tab, Tab::Editor, "🎹 Sound Editor");
             theme::tab(ui, &mut self.tab, Tab::Modulation, "🔀 Modulation");
             theme::tab(ui, &mut self.tab, Tab::Librarian, "📚 Librarian");
+            theme::tab(ui, &mut self.tab, Tab::Multi, "🎛 Multi"); // [multi]
             ui.separator();
             theme::lcd_frame()
                 .show(ui, |ui| ui.label(theme::lcd_text(self.session.patch().name())))
@@ -731,7 +748,9 @@ impl App for VirusApp {
         }
 
         // Above the MIDI bar, on every tab.
-        let target = self.audition.sync_target(self.session.settings.channel, self.session.settings.part);
+        let settings = self.session.settings;
+        let multi_channel = self.multi.edited_part_channel(settings.part); // [multi] N9
+        let target = self.audition.sync_target(settings.channel, settings.part, multi_channel);
         self.send_notes(target);
         let output_connected = self.ports.output_connected();
         let now_ms = (ctx.input(|i| i.time) * 1000.0) as u64;
@@ -748,6 +767,7 @@ impl App for VirusApp {
         let mut edits = Vec::new();
         let mut actions = Vec::new();
         let comparing = self.comforts.comparing(); // [comforts] editing is disabled while comparing
+        let mut multi_actions = Vec::new(); // [multi]
         CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Editor => {
                 ui.add_enabled_ui(!comparing, |ui| self.editor.show(ui, self.session.patch(), &mut edits));
@@ -756,6 +776,8 @@ impl App for VirusApp {
                 ui.add_enabled_ui(!comparing, |ui| modulation::show(ui, self.session.patch(), &mut edits));
             }
             Tab::Librarian => self.librarian.show(ui, &self.db, &mut self.session.received, &mut actions),
+            // [multi]
+            Tab::Multi => self.multi_view.show(ui, &self.db, &mut self.multi, &mut self.session.settings, &mut multi_actions),
         });
         self.librarian.show_dialogs(ctx, &self.db, self.session.patch(), &mut actions);
         self.legacy_prompt(ctx);
@@ -774,6 +796,14 @@ impl App for VirusApp {
         self.replace_dialog(ctx);
         for action in actions {
             self.handle_library_action(action);
+        }
+        // [multi] Multi tab actions
+        for action in multi_actions {
+            match action {
+                MultiAction::Send(message) => self.send(message),
+                MultiAction::OpenEditor => self.tab = Tab::Editor,
+                MultiAction::Notice(notice) => self.notice = notice,
+            }
         }
         self.flush_paced();
         if let Some(wait) = self.paced.next_wakeup(Instant::now()) {

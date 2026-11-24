@@ -3,6 +3,7 @@
 
 pub mod checksum;
 pub mod file;
+pub mod multi;
 pub mod params;
 pub mod patch;
 pub mod sysex;
@@ -10,8 +11,14 @@ pub mod types;
 
 pub use checksum::{calculate_checksum, verify_checksum};
 pub use file::{extract_sysex_frames, read_sysex_file};
+pub use multi::{
+    multi_common_params, multi_param_for_live, multi_part_params, LiveParam, Multi, MultiDumpTarget,
+    MultiLocation, MultiParamDef, MultiPart, PartFlag, MIDI_CHANNEL_NAMES, MULTI_BANK, MULTI_BANK_SLOTS,
+    MULTI_EDIT_BUFFER_BANK, MULTI_LEN, MULTI_NAME_LEN, MULTI_PARAMS, MULTI_PARTS, OUTPUT_SELECT_NAMES,
+    PART_BANK_NAMES, PRIORITY_NAMES,
+};
 pub use params::{
-    format_value, is_sound_param, single_param, ParamClass, ParamDef, ParamFlags, ValueKind,
+    format_kind, format_value, is_sound_param, single_param, ParamClass, ParamDef, ParamFlags, ValueKind,
     SINGLE_PARAMS, UNVERIFIED_ASSIGN_DESTINATION_NAMES, UNVERIFIED_DEFINABLE_DESTINATION_NAMES,
 };
 pub use patch::{AssignSlot, AssignTarget, DumpTarget, Patch, SingleBank, PATCH_TOTAL_LEN};
