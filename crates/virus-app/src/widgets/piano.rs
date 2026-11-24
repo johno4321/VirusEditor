@@ -132,12 +132,6 @@ impl Piano {
         }
     }
 
-    pub fn key_size(mut self, white_width: f32, height: f32) -> Self {
-        self.layout.white_width = white_width;
-        self.layout.height = height;
-        self
-    }
-
     /// Notes to draw as held (bit `n` = note `n`), e.g. `NoteTracker::sounding_mask`.
     pub fn sounding(mut self, mask: u128) -> Self {
         self.sounding = mask;

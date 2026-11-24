@@ -5,6 +5,7 @@
 //! `MidiCommand::Send` (in order) and calls [`Audition::release_all`] on disconnect, part
 //! change and exit, so no note is left hanging.
 
+use crate::session::EditPart;
 use crate::widgets::piano::{Piano, PianoEvent, VelocityMode};
 use egui::{Event, Key, Modifiers, Ui};
 use virus_midi::notes::{note_name, Message, NoteTracker, Phrase, PhrasePlayer, ReleaseTrigger};
@@ -76,6 +77,8 @@ pub struct AuditionSettings {
     pub audition_length_ms: u64,
     pub tempo_bpm: u16,
     pub octaves_shown: u8,
+    /// Play on this channel (0..=15) instead of [`auto_channel`].
+    pub channel_override: Option<u8>,
 }
 
 impl Default for AuditionSettings {
@@ -87,7 +90,18 @@ impl Default for AuditionSettings {
             audition_length_ms: 1_000,
             tempo_bpm: 120,
             octaves_shown: 3,
+            channel_override: None,
         }
+    }
+}
+
+/// The channel the edited sound listens on (SPEC §5.9): the Global Channel (C124) in Single
+/// mode, the part's MIDI channel (C34) in Multi mode. The app doesn't read the Multi yet (F4),
+/// so part *n* is assumed to listen on channel *n*; use the channel override otherwise.
+pub fn auto_channel(synth_channel: u8, part: EditPart) -> u8 {
+    match part {
+        EditPart::Single => synth_channel & 0x0F,
+        EditPart::Multi(part) => part & 0x0F,
     }
 }
 
@@ -99,6 +113,7 @@ pub struct Audition {
     tracker: NoteTracker,
     player: PhrasePlayer,
     channel: u8,
+    part: EditPart,
     octave: i8,
     /// Computer keys currently down and the note each one started.
     keys_down: Vec<(Key, u8)>,
@@ -118,18 +133,26 @@ impl Audition {
             tracker: NoteTracker::new(),
             player: PhrasePlayer::new(),
             channel: 0,
+            part: EditPart::Single,
             octave: 0,
             keys_down: Vec::new(),
         }
     }
 
-    /// MIDI channel (0..=15) notes are sent on.
-    pub fn channel(&self) -> u8 {
-        self.channel
-    }
-
-    pub fn octave(&self) -> i8 {
-        self.octave
+    /// Follows the app's synth channel and edited part (call every frame). A part change
+    /// releases everything even if the channel stays the same.
+    pub fn sync_target(&mut self, synth_channel: u8, part: EditPart) -> Vec<Message> {
+        let mut out = Vec::new();
+        if part != self.part {
+            out.extend(self.release_all(ReleaseTrigger::PartChange));
+            self.part = part;
+        }
+        let channel = self
+            .settings
+            .channel_override
+            .unwrap_or_else(|| auto_channel(synth_channel, part));
+        out.extend(self.set_channel(channel));
+        out
     }
 
     /// The note played by computer key `A`.
@@ -331,17 +354,69 @@ impl Audition {
     /// clock (e.g. `ui.input(|i| i.time) * 1000`); `enabled` is false without MIDI output.
     pub fn show(&mut self, ui: &mut Ui, now_ms: u64, enabled: bool) -> Vec<Message> {
         let mut out = self.tick(now_ms);
-        let text_focus = ui.ctx().wants_keyboard_input();
-        let events = ui.input(|i| i.events.clone());
         if enabled {
-            out.extend(self.keyboard_events(&events, text_focus));
+            let text_focus = ui.ctx().wants_keyboard_input();
+            let events = ui.input(|i| i.events.clone());
+            out.extend(self.keyboard_events(&events, text_focus || !self.open));
         } else if self.is_active() {
-            out.extend(self.release_all(ReleaseTrigger::Disconnect));
+            // No output any more, so nothing can be sent.
+            self.forget_all();
+        }
+
+        ui.horizontal(|ui| {
+            let arrow = if self.open { "⏷" } else { "⏵" };
+            if ui
+                .selectable_label(self.open, format!("{arrow} 🎹 Keyboard"))
+                .on_hover_text("Play the synth to hear your edits. Computer keys: A W S E D F T G Y H U J K, Z/X = octave")
+                .clicked()
+            {
+                self.open = !self.open;
+                if !self.open {
+                    out.extend(self.release_all(ReleaseTrigger::FocusLost));
+                }
+            }
+            ui.add_enabled_ui(enabled, |ui| {
+                let auto = format!("Auto ({})", self.channel + 1);
+                let selected = match self.settings.channel_override {
+                    Some(ch) => (ch + 1).to_string(),
+                    None => auto.clone(),
+                };
+                egui::ComboBox::from_id_source("audition-channel")
+                    .width(80.0)
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.settings.channel_override, None, auto);
+                        for ch in 0..16u8 {
+                            ui.selectable_value(
+                                &mut self.settings.channel_override,
+                                Some(ch),
+                                (ch + 1).to_string(),
+                            );
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Channel the notes go to. Auto: the synth channel (Global Channel) in Single \
+                         mode; in Multi mode part n is assumed to listen on channel n",
+                    );
+                if ui
+                    .button("🛑 Panic")
+                    .on_hover_text("Note off for all notes, All Notes Off, All Sound Off")
+                    .clicked()
+                {
+                    out.extend(self.panic());
+                }
+            });
+            if !enabled {
+                ui.label(egui::RichText::new("Connect a MIDI output to play notes").weak());
+            }
+        });
+        if !self.open {
+            return out;
         }
 
         ui.add_enabled_ui(enabled, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(format!("🎹 Ch {}", self.channel + 1));
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("◀").on_hover_text("Octave down (Z)").clicked() {
                     out.extend(self.shift_octave(-1));
                 }
@@ -392,14 +467,6 @@ impl Audition {
                 );
                 if self.is_playing_phrase() && ui.small_button("■").clicked() {
                     out.extend(self.stop_phrase());
-                }
-                ui.separator();
-                if ui
-                    .button("🛑 Panic")
-                    .on_hover_text("Note off for all notes, All Notes Off, All Sound Off")
-                    .clicked()
-                {
-                    out.extend(self.panic());
                 }
             });
 
@@ -552,6 +619,30 @@ mod tests {
         assert!(a.tick(1_499).is_empty());
         assert_eq!(a.tick(1_500), vec![note_off(0, 60), note_off(0, 64)]);
         assert!(!a.is_active());
+    }
+
+    #[test]
+    fn target_follows_mode_part_and_override() {
+        assert_eq!(auto_channel(3, EditPart::Single), 3);
+        assert_eq!(auto_channel(3, EditPart::Multi(5)), 5);
+
+        let mut a = Audition::new();
+        a.sync_target(3, EditPart::Single);
+        assert_eq!(a.channel, 3);
+        a.piano_events(&[PianoEvent::Press {
+            note: 60,
+            velocity: 90,
+        }]);
+        // Same channel, different part: still released.
+        assert_eq!(a.sync_target(3, EditPart::Multi(3)), vec![note_off(3, 60)]);
+        a.piano_events(&[PianoEvent::Press {
+            note: 60,
+            velocity: 90,
+        }]);
+        a.settings.channel_override = Some(9);
+        assert_eq!(a.sync_target(3, EditPart::Multi(3)), vec![note_off(3, 60)]);
+        assert_eq!(a.channel, 9);
+        assert!(a.sync_target(3, EditPart::Multi(3)).is_empty());
     }
 
     #[test]

@@ -13,7 +13,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 4. **Add the factory golden tests** (T1) before touching the patch model, so the rework has a target.
 5. **Rebuild the patch model** (P1–P8) from SPEC §4–§5.
 6. Then the librarian import rules (L1–L4), and only then new features (F1–F8).
-7. **New (owner request): note audition** (N1–N8, SPEC §5.9): play notes on the Virus from the editor to hear patch changes — on-screen piano, computer keyboard, Audition button, hold, panic, no stuck notes. Built on branch `rework/note-audition`.
+7. **New (owner request): note audition** (N1–N9, SPEC §5.9): play notes on the Virus from the editor to hear patch changes — on-screen piano, computer keyboard, Audition button, hold, panic, no stuck notes. Done except the live test (N8) and real Multi part channels (N9).
 
 ## Where we stand
 
@@ -99,11 +99,12 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | N1 | ✅ | Pure MIDI builders `note_on`/`note_off`/`control_change`/`all_notes_off`/`all_sound_off` | `virus-midi/src/notes.rs` |
 | N2 | ✅ | `NoteTracker`: every note on tracked per channel; note offs on release, octave/channel/part change, disconnect, focus loss, exit; panic = tracked note offs + CC123 + CC120 (+ CC64 0) | `virus-midi/src/notes.rs`; tests for each trigger |
 | N3 | ✅ | `PhrasePlayer`: plays a list of (start ms, note, vel, length ms) from a clock the GUI passes in; stop releases sounding notes; built-in test phrases (note, chord, bass line) at a tempo | `virus-midi/src/notes.rs` |
-| N4 | 🔄 | egui **piano keyboard** widget: click/drag, velocity from click height or a fixed slider, held keys highlighted | `virus-app/src/widgets/piano.rs` |
-| N5 | 🔄 | Audition state: computer keys `A W S E D F T G Y H U J K` = C..C, `Z`/`X` octave, only without text focus, no key-repeat retrigger; octave shift; hold/latch; Audition button (note/chord, length) | `virus-app/src/audition.rs`. Written and unit-tested in a standalone check crate; `mod` declarations added when wired (N6) |
-| N6 | ⬜ | Wire into the app: collapsible strip above the MIDI bar on every tab; target channel = Global Channel (Single) or the edited part's channel (Multi); disabled without output | After the app rebuild lands |
-| N7 | ⬜ | Safety wiring: note offs on disconnect, part/channel change, window focus loss, app exit; Panic button | After the app rebuild lands |
-| N8 | ⬜ | **Live test when the MIDI cable arrives:** notes sound on the Global Channel in Single mode and on the part channel in Multi mode; velocity changes the sound with B60 Velocity→Amp ≠ 0; Hold latches the arp (B1 ≠ Off); Panic silences long releases; no stuck notes after unplugging/alt-tab; note 60 is C3 on the Virus display; Tx LED flashes | Needs the synth |
+| N4 | ✅ | egui **piano keyboard** widget: click/drag, velocity from click height or a fixed slider, held keys highlighted | `virus-app/src/widgets/piano.rs`; geometry and velocity tested |
+| N5 | ✅ | Audition state: computer keys `A W S E D F T G Y H U J K` = C..C, `Z`/`X` octave, only without text focus, no key-repeat retrigger; octave shift; hold/latch; Audition button (note/chord, length); test phrases with tempo | `virus-app/src/audition.rs`, tested |
+| N6 | ✅ | Wired into the app: collapsible "🎹 Keyboard" strip above the MIDI bar on every tab; channel = synth channel (Single) or part *n* → channel *n* (Multi, see N9), with a manual override; disabled without output | `app.rs`, `audition::auto_channel` / `sync_target` |
+| N7 | ✅ | Safety wiring: note offs before output disconnect/change (also when a port vanishes), on channel and part change, window focus loss, collapsing the strip, and app exit (`on_exit` waits ≤ 300 ms for the worker to send them); Panic button | `app.rs` `release_notes_before`, `on_exit` |
+| N8 | ⬜ | **Live test when the MIDI cable arrives:** notes sound on the Global Channel in Single mode and on the part channel in Multi mode; velocity changes the sound with B60 Velocity→Amp ≠ 0; Hold latches the arp (B1 ≠ Off); Panic silences long releases; no stuck notes after unplugging/alt-tab/quitting; note 60 is C3 on the Virus display; Tx LED flashes; computer keys don't play while typing in the name/search fields | Needs the synth. Also check the UI on a machine with OpenGL 2+ (this dev box can't start the app) |
+| N9 | ⬜ | Multi mode: use the part's real MIDI channel (C34 / multi dump bytes 64–79) instead of assuming part *n* = channel *n* | Needs F4 (read the Multi edit buffer) |
 
 ## ❓ Open questions (SPEC §7)
 

@@ -331,7 +331,7 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 9. Notes go out through `virus_midi::MidiCommand::Send` (immediately, never queued behind a slow bank batch); the **Tx LED** flashes through the existing `Sent` event.
 10. The feature is available on **every tab** (a collapsible strip above the MIDI bar) and greys out when no MIDI output is connected.
 
-**Implementation:** pure builders (`note_on`, `note_off`, `control_change`, `all_notes_off`, `all_sound_off`), `NoteTracker` and `PhrasePlayer` live in `virus-midi` (`notes` module) and are unit-tested. The egui piano widget and the audition state (computer-key mapping, settings) live in `virus-app` (`widgets/piano.rs`, `audition.rs`).
+**Implementation:** pure builders (`note_on`, `note_off`, `control_change`, `all_notes_off`, `all_sound_off`), `NoteTracker` and `PhrasePlayer` live in `virus-midi` (`notes` module) and are unit-tested. The egui piano widget and the audition state (computer-key mapping, settings) live in `virus-app` (`widgets/piano.rs`, `audition.rs`). Until the app reads the Multi (F4), Multi part *n* is assumed to listen on channel *n*, and the strip has a manual channel override (TODO N9).
 ---
 
 ## 6. Ground-Truth Test Data
