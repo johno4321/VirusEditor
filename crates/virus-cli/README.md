@@ -25,7 +25,7 @@ cargo build --release -p virus-cli          # → target\release\virus.exe
 | `--part <single\|1-16>` | `single` (`0x40`) | Which edit buffer to use: the Single buffer or a Multi part |
 | `--timeout-ms <ms>` | `3000` | How long to wait for an answer. For bank requests it's the longest allowed gap between two dumps |
 | `--settle-ms <ms>` | `60` | Pause after a parameter change or dump before reading it back |
-| `--quiet-ms <ms>` | `500` | Silence required on the input before each request. The Virus ignores requests that arrive too soon after it has sent or applied something (SPEC §3.7). Anything that arrives meanwhile, such as the rest of an interrupted bank stream, is dropped |
+| `--quiet-ms <ms>` | `500` | Silence required on the input before each request. The Virus ignores requests that arrive too soon after it has sent or applied something (SPEC §3.7). Anything that arrives meanwhile, such as the rest of an interrupted bank stream, is dropped. If the input never goes quiet (for 10 × this wait, at least 20 s), the command stops with "the MIDI input never went quiet" and sends nothing: stop the source (knobs, sequencer, MIDI clock) and retry |
 | `--bank-quiet-ms <ms>` | `2000` | The same before a bank request, which needs longer |
 | `-v`, `--verbose` | off | Log every sent (`TX`) and received (`RX`) message as hex to stderr, with a millisecond timestamp. Also reports how many stale messages were dropped while waiting for a quiet line |
 
@@ -38,9 +38,9 @@ Exit codes: `0` = OK; `1` = the command ran but a check failed, or it needs `--y
 | `ports` | Lists MIDI inputs and outputs, marks the ones that look like a Virus (`*`), and shows which port would be used |
 | `monitor [--seconds N]` | Prints incoming MIDI, decoded. SysEx goes through `parse_sysex`: dumps show name, categories and checksum; parameter changes show name and formatted value. CC and Poly Pressure show the Page A/B parameter they'd set on `--channel`, and flag performance controllers and other channels |
 | `fetch [--out-file x.syx] [--brief]` | Requests the edit buffer (`30 00 pp`) and prints the name, categories, sound version, every sound parameter with its formatted value, and the non-zero undocumented bytes. Saves the dump exactly as received |
-| `send <file.syx\|.mid> [--program N] [--from-bank X] [--verify]` | Sends one patch to the edit buffer (`10 00 pp`). For bank files, pick the patch with `--program`. Refuses dumps with a bad checksum unless you pass `--allow-bad-checksum` |
+| `send <file.syx\|.mid> [--program N] [--from-bank X] [--verify]` | Sends one patch to the edit buffer (`10 00 pp`). For bank files, pick the patch with `--program`. Refuses dumps with a bad checksum unless you pass `--allow-bad-checksum`. Such a dump is then sent **as stored**: its checksum is kept wrong (never silently fixed), so the Virus can still detect the damage and may show an error and ignore it |
 | `get-bank <A-D> --out-file bank.syx [--to-library] [--db file]` | Sends a bank request (`32 bb`) and collects the 128 dumps, showing progress and checking checksums. Writes them as received, in program order. `--to-library` also saves them as a new bank in the editor's library. Banks E–H are allowed for Q2 (undocumented addressing) |
-| `put-bank <A\|B> <file> --yes [--gap-ms 300] [--verify]` | Sends a bank to RAM bank A or B, paced with `SendBatch`. Refuses banks C/D. Without `--yes` it prints the warning and the exact backup command, then stops. With `--yes` it **backs up the target bank first** (`backup_bank_X_<stamp>.syx`) unless you pass `--no-backup`. `--verify` requests the bank back and compares every program |
+| `put-bank <A\|B> <file> --yes [--gap-ms 300] [--verify]` | Sends a bank to RAM bank A or B, paced with `SendBatch`: `--gap-ms` is the silence after each dump has left the wire (default `virus_midi::DUMP_GAP_MS` = 300, the same as the app: ≈385 ms start-to-start, about 50 s per bank; SPEC §3.7). Refuses banks C/D. Without `--yes` it prints the warning and the exact backup command, then stops. With `--yes` it **backs up the target bank first** (`backup_bank_X_<stamp>.syx`) unless you pass `--no-backup`. `--verify` requests the bank back and compares every program. Programs with a bad checksum in the file are refused unless you pass `--allow-bad-checksum`; they're then sent as stored, with their checksums kept wrong, like `send` |
 | `set <A\|B\|C><num> <value> [--verify]` | Sends one parameter change to `--part`, e.g. `set A40 64`, `set A10 -5` (bipolar) or `set C32 1`. Page C (`72`) covers part, multi and global settings; it isn't in the single dump, so `--verify` only works for A/B. A0 is always refused. These need `--force`: performance controllers, undocumented bytes, and globals that can break the session (C93 Device ID, C94/C95 Control Pages, C98/C99 Dump Tx/Rx, C118 Memory Protect, C120 Soft Thru, C122 Play Mode, C123 Part Number, C124 Global Channel) |
 | `send-hex "F0 … F7" [--yes] [--listen-ms 1000]` | For experiments: sends one raw SysEx message, checking that it is framed `F0 … F7` with 7-bit data. It always prints the message and what it decodes to. Nothing is sent without `--yes`, because raw messages bypass every safety check. It waits for a quiet line, sends, then prints what arrives within `--listen-ms` |
 | `panic [--all-channels]` | Silences stuck notes: sends All Notes Off (CC123) then All Sound Off (CC120) on `--channel` (default 1; the studio Virus is on 11), or on all 16 channels with `--all-channels`. Needs only the output port (`--out`) and no answer from the synth |
@@ -52,7 +52,9 @@ Exit codes: `0` = OK; `1` = the command ran but a check failed, or it needs `--y
 ### How the probes work
 
 1. The probe fetches the edit buffer and saves it to `probe_editbuffer_backup.syx` before it
-   changes anything. If the fetch fails, nothing is sent.
+   changes anything, and prints that path plus the command that sends it back. If the fetch
+   fails, nothing is sent. If you stop with Ctrl+C, the edit buffer stays changed: run that
+   command (`virus … send probe_editbuffer_backup.syx`, with the same `--part`) to restore it.
 2. It sends the setup parameter changes. For `assign1` that's Assign 1 source = ModWheel (`B64=3`)
    and amount = +63 (`B66=127`); for `lfo1` it's LFO1 assign amount = +63 (`B80=127`).
 3. For each value it sends the parameter change and requests the edit buffer back. It records the
@@ -69,8 +71,9 @@ Exit codes: `0` = OK; `1` = the command ran but a check failed, or it needs `--y
    continue later with `--resume`. By default the probe stops after 3 values in a row that read
    back differently (`--stop-after-rejected`).
 5. At the end, even after `q` or an error, the probe sends the original edit buffer back and
-   checks that it reads back byte-identically. If the restore fails, the probe prints the exact
-   `virus send probe_editbuffer_backup.syx` command.
+   checks that it reads back byte-identically. If the restore fails or reads back differently,
+   the probe prints the exact `virus send probe_editbuffer_backup.syx` command (with the same
+   `--in`/`--out`/`--device`/`--channel`/`--part` options) and exits with code 1.
 
 ### What selftest checks
 
@@ -86,7 +89,8 @@ The report ends with the G2 items that still need ears, eyes or the GUI.
 
 ### Testing C32 (F7: is Part Bank Change 0-based or 1-based?)
 
-The editor's "Select on synth" sends C32 Part Bank Change as **A = 0, B = 1, …** (unverified).
+The editor's "Select on synth" and the Multi tab's Part Bank row send C32 Part Bank Change as
+**A = 0, B = 1, …** (unverified).
 The dump byte `bb` uses A = 1. To find out which is right:
 
 1. Put the Virus in Single mode. Store anything you want to keep: selecting a program replaces the
@@ -102,8 +106,11 @@ The dump byte `bb` uses A = 1. To find out which is right:
    Multi mode with `--part 1`. Raw equivalent for experiments, with device 1 and part `0x40`:
    `virus send-hex "F0 00 20 33 01 00 72 40 20 01 F7" --yes`.
 
-Record the result in TODO F7/G2. If it's 1-based, change `virus-app/src/synth_select.rs`
-(`bank.to_raw() - 1` → `bank.to_raw()`) and its tests.
+Record the result in TODO F7/G2. If it's 1-based, change `PART_BANK_C32_BASE` from 0 to 1 in
+`virus-syx/src/domain/sysex.rs` and update its test (`part_bank_c32_counts_from_zero_until_f7_is_verified`).
+The shared helpers then fix both places in the app that use C32: "Select on synth"
+(`synth_select.rs`) and the Multi tab's Part Bank row. Later, in the GUI, change a part's Bank on
+the Multi tab and check the synth's part switches to that bank.
 
 ## First cable session runbook
 
@@ -142,9 +149,9 @@ dump requests and bank sends.
 | 10 | **Q1:** `virus probe-destinations` | Show Assign 1 destination on the Virus display (Mod Matrix / Assign 1). Type the name it shows for each value. Then `--slot lfo1 --out-file q1_lfo1.json` and `--slot definable1 --out-file q1_definable1.json` |
 | 11 | **Q3:** `virus probe-values A49`, `A112`, `A102`, `B39` | Show that parameter on the display and type each value's name. Watch for values that read back differently: that's where the range ends |
 | 12 | **Q2:** `virus get-bank E --out-file probe_E.syx --timeout-ms 2000` | Do dumps arrive for `bb=05`? With which bank byte? Use `-v` to see the raw answers. Repeat for F–H |
-| 12a | **F7 C32:** `virus set C32 1`, `virus set C33 5`, `virus fetch --brief` (and the cross-check with `C32 0`) | Which bank's program 5 loaded? See "Testing C32" above. Needs the bank backups from step 4, because selecting a program replaces the edit buffer |
+| 12a | **F7 C32:** `virus set C32 1`, `virus set C33 5`, `virus fetch --brief` (and the cross-check with `C32 0`) | Which bank's program 5 loaded? See "Testing C32" above. Needs the bank backups from step 4, because selecting a program replaces the edit buffer. Later, in the GUI, also change a part's Bank on the 🎛 Multi tab (it sends the same C32) and check the part plays from that bank |
 | 13 | `virus monitor` with the Virus set to Multi mode, then `virus fetch --part 1 --brief` | Multi part addressing |
-| 14 | **Bank send last** (G2): `virus put-bank A backup_A.syx --yes --verify` | Stop the clock/transport on your sequencer first. This sends your own backup back, so the content doesn't change. It takes a fresh automatic backup first. Watch the Virus display for a checksum or buffer error during the 128 dumps (with 300 ms gaps it takes about 50 s). Verify should say "all 128 program(s) read back byte-identical". If you see errors, retry with `--gap-ms 500`. If Memory Protect is on, the Virus may ignore the bank. The Maschine+ may still send MIDI clock with its transport stopped: if verify fails, switch its clock output off and retry |
+| 14 | **Bank send last** (G2): `virus put-bank A backup_A.syx --yes --verify` | Stop the clock/transport on your sequencer first. This sends your own backup back, so the content doesn't change. It takes a fresh automatic backup first. Watch the Virus display for a checksum or buffer error during the 128 dumps (each dump is followed by 300 ms of silence, so it takes about 50 s). Verify should say "all 128 program(s) read back byte-identical". If you see errors, retry with `--gap-ms 500`. If Memory Protect is on, the Virus may ignore the bank. The Maschine+ may still send MIDI clock with its transport stopped: if verify fails, switch its clock output off and retry |
 
 Record the results (pass/fail and the gap that worked) in TODO G2. Keep the probe JSON files: run
 `virus probe-table q1_destinations.json --name ASSIGN_DESTINATION_NAMES` to turn them into the
@@ -158,7 +165,7 @@ The modules that hold the logic are pure and unit-tested without hardware:
 |---|---|
 | `settings`, `address` | Parse device IDs, parts, channels, bank letters, `A40`/`B39`/`C32` and values; guard risky parameters (`--force`) |
 | `messages` | Build every outgoing message; parse and check `send-hex` input |
-| `transport` | The `Transport` trait, plus collectors fed with `MidiEvent`s: edit buffer, 128-dump bank, first Virus answer. Also `exchange()`, which handles idle timeouts and diagnostics |
+| `transport` | The `Transport` trait, plus collectors fed with `MidiEvent`s: edit buffer, 128-dump bank, first Virus answer. Also `exchange()`, which handles idle timeouts, its overall deadline and diagnostics, and `wait_quiet`, which gives up after 10 × `--quiet-ms` (at least 20 s) |
 | `ops` | Fetch, send, set, get/put bank, verify |
 | `probe` | Plans, records/JSON, the runner with restore, and the prompter |
 | `selftest` | Checks and the report |

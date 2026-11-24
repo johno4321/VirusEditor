@@ -113,9 +113,18 @@ impl MidiLink {
         format!("{:>7}ms", self.started.elapsed().as_millis())
     }
 
-    /// The next event from the worker, logged when verbose. `Sent` events are not logged.
+    /// The next event from the worker, logged when verbose. `Sent` events are not logged;
+    /// `BatchFinished` is dropped here: `send_paced` counts `Sent` events itself, and it must not
+    /// count as line activity in `wait_quiet`.
     fn next_event(&mut self, timeout: Duration) -> Option<MidiEvent> {
-        let event = self.service.event_receiver().recv_timeout(timeout).ok()?;
+        let deadline = Instant::now() + timeout;
+        let event = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.service.event_receiver().recv_timeout(remaining).ok()? {
+                MidiEvent::BatchFinished { .. } => {}
+                event => break event,
+            }
+        };
         if self.verbose {
             match &event {
                 MidiEvent::SysEx(frame) => eprintln!("{} RX {}", self.stamp(), hex(frame)),
@@ -184,6 +193,9 @@ impl Transport for MidiLink {
         let mut dropped = self.pending.len();
         self.pending.clear();
         while let Ok(event) = self.service.event_receiver().try_recv() {
+            if matches!(event, MidiEvent::BatchFinished { .. }) {
+                continue;
+            }
             if self.verbose {
                 if let MidiEvent::SysEx(frame) = &event {
                     eprintln!("{} RX (stale, dropped) {}", self.stamp(), hex(frame));

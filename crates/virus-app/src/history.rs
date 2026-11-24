@@ -2,13 +2,15 @@
 //!
 //! A step stores `(offset, before, after)` for every changed byte of the 256-byte dump, so undo
 //! and redo restore exact bytes (SPEC §5.1) and never touch anything else. Applying a step goes
-//! through [`Session::edit`], i.e. the same path as a normal edit, so the synth gets the same
-//! SysEx parameter changes.
+//! through [`apply_step`]: a small step of sound parameters is sent as the same SysEx parameter
+//! changes as a normal edit; any other step (e.g. undoing an adopted synth dump) is sent as one
+//! edit-buffer dump, so performance controllers and undocumented bytes are never sent as
+//! parameter changes (SPEC §1.4).
 //!
 //! Policy: loading or fetching a patch starts a new, empty history (the caller creates a fresh
 //! [`History`]); the replaced edits are not undoable.
 
-use virus_syx::{Page, Patch, PATCH_TOTAL_LEN};
+use virus_syx::{is_sound_param, Page, Patch, PATCH_TOTAL_LEN};
 
 use crate::session::Session;
 
@@ -16,6 +18,9 @@ use crate::session::Session;
 pub const MAX_STEPS: usize = 200;
 /// Edits of the same control closer together than this (seconds) merge into one step.
 pub const COALESCE_GAP: f64 = 1.0;
+/// A step that changes more bytes than this is sent as one edit-buffer dump, not as a burst of
+/// unpaced parameter changes.
+pub const MAX_PARAM_CHANGES: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteChange {
@@ -58,7 +63,9 @@ pub fn page_number(offset: usize) -> (Page, u8) {
     }
 }
 
-/// Writes `(offset, value)` pairs through [`Session::edit`] and returns the SysEx messages to send.
+/// Writes `(offset, value)` pairs through [`Session::edit`] and returns one parameter change per
+/// changed byte. Only for changes the caller has limited to sound parameters (section paste);
+/// undo, redo and compare use [`apply_step`].
 pub fn apply_values(session: &mut Session, values: impl IntoIterator<Item = (usize, u8)>) -> Vec<Vec<u8>> {
     values
         .into_iter()
@@ -67,6 +74,30 @@ pub fn apply_values(session: &mut Session, values: impl IntoIterator<Item = (usi
             session.edit(page, number, value)
         })
         .collect()
+}
+
+/// Writes `(offset, value)` pairs to the session's patch (A0 is never changed) and returns the
+/// SysEx to send for undo, redo and compare. If the change is at most [`MAX_PARAM_CHANGES`]
+/// bytes, all of them documented sound parameters, it is sent as parameter changes like a
+/// normal edit. Otherwise (performance controllers such as A64 Hold Pedal, undocumented bytes,
+/// or a whole other patch) the session takes the new bytes and one edit-buffer dump
+/// (`10 00 pp`) is returned; its A0 is the session's current one.
+pub fn apply_step(session: &mut Session, values: impl IntoIterator<Item = (usize, u8)>) -> Vec<Vec<u8>> {
+    let mut target = session.patch().clone();
+    for (offset, value) in values {
+        let (page, number) = page_number(offset);
+        target.set(page, number, value);
+    }
+    let changes = changes_between(session.patch(), &target);
+    let only_sound_params = changes.iter().all(|c| {
+        let (page, number) = page_number(c.offset);
+        is_sound_param(page, number)
+    });
+    if changes.len() <= MAX_PARAM_CHANGES && only_sound_params {
+        return apply_values(session, changes.iter().map(|c| (c.offset, c.after)));
+    }
+    session.load_patch(target);
+    vec![session.edit_buffer_dump(session.patch())]
 }
 
 impl History {
@@ -137,7 +168,7 @@ impl History {
     pub fn undo(&mut self, session: &mut Session) -> Vec<Vec<u8>> {
         self.open = None;
         let Some(step) = self.undo.pop() else { return Vec::new() };
-        let messages = apply_values(session, step.changes.iter().map(|c| (c.offset, c.before)));
+        let messages = apply_step(session, step.changes.iter().map(|c| (c.offset, c.before)));
         self.redo.push(step);
         messages
     }
@@ -145,7 +176,7 @@ impl History {
     pub fn redo(&mut self, session: &mut Session) -> Vec<Vec<u8>> {
         self.open = None;
         let Some(step) = self.redo.pop() else { return Vec::new() };
-        let messages = apply_values(session, step.changes.iter().map(|c| (c.offset, c.after)));
+        let messages = apply_step(session, step.changes.iter().map(|c| (c.offset, c.after)));
         self.undo.push(step);
         messages
     }
@@ -180,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn undo_redo_restore_exact_bytes_and_send_param_changes() {
+    fn undo_redo_restore_exact_bytes() {
         let start = factory(3);
         let mut s = session_with(start.clone());
         let mut h = History::default();
@@ -189,9 +220,7 @@ mod tests {
         let edited = s.patch().clone();
         assert_ne!(edited, start);
 
-        let messages = h.undo(&mut s);
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0], s.param_message(Page::PageB, 22, start.get(Page::PageB, 22)));
+        h.undo(&mut s);
         h.undo(&mut s);
         assert_eq!(s.patch(), &start);
         assert!(!h.can_undo() && h.can_redo());
@@ -199,6 +228,67 @@ mod tests {
         h.redo(&mut s);
         h.redo(&mut s);
         assert_eq!(s.patch(), &edited);
+    }
+
+    #[test]
+    fn undoing_a_knob_edit_sends_one_parameter_change() {
+        let start = factory(3);
+        let mut s = session_with(start.clone());
+        let mut h = History::default();
+        edit(&mut h, &mut s, 40, start.get(Page::PageA, 40) ^ 0x10, None, 0.0);
+
+        let messages = h.undo(&mut s);
+        assert_eq!(messages, vec![s.param_message(Page::PageA, 40, start.get(Page::PageA, 40))]);
+    }
+
+    #[test]
+    fn undoing_an_undocumented_byte_sends_one_dump() {
+        let start = factory(3);
+        let mut s = session_with(start.clone());
+        let mut h = History::default();
+        edit(&mut h, &mut s, 128 + 22, start.get(Page::PageB, 22) ^ 0x01, None, 0.0);
+
+        let messages = h.undo(&mut s);
+        assert_eq!(s.patch(), &start);
+        assert_eq!(messages, vec![s.edit_buffer_dump(&start)]);
+    }
+
+    /// `count` documented sound parameters (not the name), each changed by one step.
+    fn change_sound_params(patch: &Patch, count: usize) -> Patch {
+        let mut changed = patch.clone();
+        let sound = virus_syx::SINGLE_PARAMS.iter().filter(|d| d.is_sound() && d.section != "Name" && d.page != Page::PageC);
+        for def in sound.take(count) {
+            changed.set(def.page, def.number, patch.get(def.page, def.number) ^ 0x01);
+        }
+        assert_eq!(changes_between(patch, &changed).len(), count);
+        changed
+    }
+
+    #[test]
+    fn undoing_many_sound_parameters_sends_one_dump() {
+        let start = factory(6);
+        let changed = change_sound_params(&start, MAX_PARAM_CHANGES + 1);
+        let mut s = session_with(changed.clone());
+        let mut h = History::default();
+        h.record(&start, &changed, "many", None, 0.0);
+
+        let messages = h.undo(&mut s);
+        assert_eq!(s.patch(), &start);
+        assert_eq!(messages, vec![s.edit_buffer_dump(&start)]);
+    }
+
+    #[test]
+    fn undoing_the_maximum_number_of_sound_parameters_still_sends_parameter_changes() {
+        let start = factory(6);
+        let changed = change_sound_params(&start, MAX_PARAM_CHANGES);
+        let mut s = session_with(changed.clone());
+        let mut h = History::default();
+        h.record(&start, &changed, "many", None, 0.0);
+
+        let messages = h.undo(&mut s);
+        assert_eq!(s.patch(), &start);
+        assert_eq!(messages.len(), MAX_PARAM_CHANGES);
+        assert!(messages.iter().all(|m| m[6] == 0x70 || m[6] == 0x71), "parameter changes only");
     }
 
     #[test]

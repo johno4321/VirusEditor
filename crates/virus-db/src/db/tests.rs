@@ -74,7 +74,7 @@ fn save_and_load_is_byte_exact() {
         tags: "warm".into(),
         favorite: true,
     };
-    let id = db.save_patch(a, 5, &data, &meta).unwrap();
+    let id = db.save_patch(a, 5, &data, &meta, true).unwrap();
 
     let rec = db.get_patch_by_id(id).unwrap().unwrap();
     assert_eq!(rec.data, data);
@@ -90,7 +90,7 @@ fn save_and_load_is_byte_exact() {
     // Upsert into the same slot keeps the ID and replaces data and derived columns.
     let data2 = synthetic_patch("Other", 3, 0);
     assert_eq!(
-        db.save_patch(a, 5, &data2, &PatchMeta::default()).unwrap(),
+        db.save_patch(a, 5, &data2, &PatchMeta::default(), true).unwrap(),
         id
     );
     let rec = db.get_patch_by_id(id).unwrap().unwrap();
@@ -100,11 +100,11 @@ fn save_and_load_is_byte_exact() {
     );
 
     assert!(matches!(
-        db.save_patch(a, 128, &data, &meta),
+        db.save_patch(a, 128, &data, &meta, true),
         Err(DbError::InvalidProgram(128))
     ));
     assert!(matches!(
-        db.save_patch(9999, 0, &data, &meta),
+        db.save_patch(9999, 0, &data, &meta, true),
         Err(DbError::BankNotFound(9999))
     ));
 }
@@ -114,7 +114,7 @@ fn favourite_and_tags_do_not_touch_data() {
     let db = PatchDatabase::open_in_memory().unwrap();
     let a = bank_id(&db, "A");
     let data = synthetic_patch("Keep Me", 1, 6);
-    let id = db.save_patch(a, 0, &data, &PatchMeta::default()).unwrap();
+    let id = db.save_patch(a, 0, &data, &PatchMeta::default(), true).unwrap();
 
     assert!(db.set_favorite(id, true).unwrap());
     assert!(db.set_tags(id, "acid, squelch").unwrap());
@@ -130,13 +130,14 @@ fn favourite_and_tags_do_not_touch_data() {
 fn bank_slots_have_128_entries_with_gaps() {
     let db = PatchDatabase::open_in_memory().unwrap();
     let b = bank_id(&db, "B");
-    db.save_patch(b, 0, &synthetic_patch("First", 0, 0), &PatchMeta::default())
+    db.save_patch(b, 0, &synthetic_patch("First", 0, 0), &PatchMeta::default(), true)
         .unwrap();
     db.save_patch(
         b,
         127,
         &synthetic_patch("Last", 0, 0),
         &PatchMeta::default(),
+        true,
     )
     .unwrap();
 
@@ -165,15 +166,17 @@ fn query_filters_and_like_escaping() {
         0,
         &synthetic_patch("100% Acid", 6, 2),
         &PatchMeta::default(),
+        true,
     )
     .unwrap();
-    db.save_patch(a, 1, &synthetic_patch("Moog_Bass", 2, 7), &fav)
+    db.save_patch(a, 1, &synthetic_patch("Moog_Bass", 2, 7), &fav, true)
         .unwrap();
     db.save_patch(
         a,
         2,
         &synthetic_patch("HyperPad", 3, 127),
         &PatchMeta::default(),
+        true,
     )
     .unwrap();
 
@@ -292,9 +295,9 @@ fn import_keeps_metadata_only_for_same_name() {
         tags: "mine".into(),
         favorite: true,
     };
-    db.save_patch(a, 0, &synthetic_patch("Same", 1, 0), &meta)
+    db.save_patch(a, 0, &synthetic_patch("Same", 1, 0), &meta, true)
         .unwrap();
-    db.save_patch(a, 1, &synthetic_patch("Old", 1, 0), &meta)
+    db.save_patch(a, 1, &synthetic_patch("Old", 1, 0), &meta, true)
         .unwrap();
 
     let mut same = dump(1, 0, "Same");
@@ -342,8 +345,8 @@ fn export_frames_use_bank_byte_and_exact_data() {
     let a = bank_id(&db, "A");
     let p0 = synthetic_patch("Zero", 1, 127);
     let p9 = synthetic_patch("Nine", 2, 0);
-    db.save_patch(a, 9, &p9, &PatchMeta::default()).unwrap();
-    db.save_patch(a, 0, &p0, &PatchMeta::default()).unwrap();
+    db.save_patch(a, 9, &p9, &PatchMeta::default(), true).unwrap();
+    db.save_patch(a, 0, &p0, &PatchMeta::default(), true).unwrap();
 
     let frames = db.export_bank_dumps(a, 0x10, None).unwrap();
     assert_eq!(frames.len(), 2);
@@ -360,7 +363,7 @@ fn export_frames_use_bank_byte_and_exact_data() {
     assert_eq!(db.export_bank_syx(a, 0x10, None).unwrap(), frames.concat());
 
     let user = db.create_bank("Mine").unwrap();
-    db.save_patch(user, 3, &p0, &PatchMeta::default()).unwrap();
+    db.save_patch(user, 3, &p0, &PatchMeta::default(), true).unwrap();
     assert!(matches!(
         db.export_bank_dumps(user, 0, None),
         Err(DbError::NoBankLetter(_))
@@ -371,7 +374,7 @@ fn export_frames_use_bank_byte_and_exact_data() {
     ));
     assert_eq!(db.export_bank_dumps(user, 0, Some(2)).unwrap()[0][7], 0x02);
     let d = bank_id(&db, "D");
-    db.save_patch(d, 0, &p0, &PatchMeta::default()).unwrap();
+    db.save_patch(d, 0, &p0, &PatchMeta::default(), true).unwrap();
     assert_eq!(db.export_bank_dumps(d, 0, None).unwrap()[0][7], 0x04);
 }
 
@@ -380,7 +383,7 @@ fn corrupt_blob_is_an_error() {
     let db = PatchDatabase::open_in_memory().unwrap();
     let a = bank_id(&db, "A");
     let id = db
-        .save_patch(a, 0, &synthetic_patch("Ok", 0, 0), &PatchMeta::default())
+        .save_patch(a, 0, &synthetic_patch("Ok", 0, 0), &PatchMeta::default(), true)
         .unwrap();
     db.conn
         .execute(
@@ -406,7 +409,7 @@ fn data_version_changes_on_writes_only() {
     db.query_patches(&PatchFilter::default()).unwrap();
     assert_eq!(db.data_version(), v0);
     let id = db
-        .save_patch(a, 0, &synthetic_patch("V", 0, 0), &PatchMeta::default())
+        .save_patch(a, 0, &synthetic_patch("V", 0, 0), &PatchMeta::default(), true)
         .unwrap();
     let v1 = db.data_version();
     assert_ne!(v1, v0);
@@ -597,7 +600,7 @@ fn factory_bank_a_round_trip() {
 fn plan_import_lists_overwrites_without_writing() {
     let db = PatchDatabase::open_in_memory().unwrap();
     let a = bank_id(&db, "A");
-    db.save_patch(a, 5, &synthetic_patch("Mine", 1, 0), &PatchMeta::default())
+    db.save_patch(a, 5, &synthetic_patch("Mine", 1, 0), &PatchMeta::default(), true)
         .unwrap();
     let dumps = [dump(1, 5, "Incoming"), dump(1, 6, "Fresh"), dump(0, 0, "Loose")];
     let before = db.data_version();
@@ -644,7 +647,7 @@ fn eight_bit_data_is_rejected_on_import_and_save() {
     assert_eq!((report.imported, report.skipped), (1, 1));
     let a = bank_id(&db, "A");
     assert!(matches!(
-        db.save_patch(a, 2, &bad.data, &PatchMeta::default()),
+        db.save_patch(a, 2, &bad.data, &PatchMeta::default(), true),
         Err(DbError::NotSevenBit { offset: 100 })
     ));
 }
@@ -757,4 +760,128 @@ fn on_disk_v1_database_is_backed_up_including_wal() {
     assert_eq!((version, name.as_str()), (0, "Walled"));
     drop(old);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn save_patch_stores_the_given_flag() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    let a = bank_id(&db, "A");
+    let id = db
+        .save_patch(a, 3, &synthetic_patch("Flagged", 1, 0), &PatchMeta::default(), false)
+        .unwrap();
+    assert!(!db.get_patch_by_id(id).unwrap().unwrap().checksum_ok);
+    assert_eq!(db.export_bank(a, 0, None, BadChecksumPolicy::Skip).unwrap().skipped_flagged, 1);
+}
+
+#[test]
+fn storing_a_clean_patch_over_a_flagged_slot_takes_the_new_flag() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    let a = bank_id(&db, "A");
+    db.save_patch(a, 3, &synthetic_patch("Old", 1, 0), &PatchMeta::default(), false)
+        .unwrap();
+    db.save_patch(a, 3, &synthetic_patch("New", 1, 0), &PatchMeta::default(), true)
+        .unwrap();
+    assert!(db.get_patch_by_slot(a, 3).unwrap().unwrap().checksum_ok);
+}
+
+#[test]
+fn a_fresh_library_is_empty() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    assert!(db.is_empty_library().unwrap());
+}
+
+#[test]
+fn a_library_with_only_a_patch_is_not_empty() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    db.save_patch(bank_id(&db, "B"), 0, &synthetic_patch("P", 1, 0), &PatchMeta::default(), true)
+        .unwrap();
+    assert!(!db.is_empty_library().unwrap());
+}
+
+#[test]
+fn a_library_with_only_a_multi_is_not_empty() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    db.save_multi(None, &[0u8; crate::MULTI_LEN], &PatchMeta::default(), true)
+        .unwrap();
+    assert!(!db.is_empty_library().unwrap());
+}
+
+#[test]
+fn a_library_with_only_an_empty_user_bank_is_not_empty() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    db.create_bank("Backup").unwrap();
+    assert!(!db.is_empty_library().unwrap());
+}
+
+#[test]
+fn a_writer_waits_for_another_connection_instead_of_failing() {
+    let dir = std::env::temp_dir().join(format!(
+        "virus-db-busy-timeout-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("library.db");
+    let db = PatchDatabase::open(&path).unwrap();
+
+    // Another program (the CLI) holds the write lock for a moment.
+    let other = Connection::open(&path).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        other.execute_batch("COMMIT;").unwrap();
+    });
+
+    let a = bank_id(&db, "A");
+    let saved = db.save_patch(a, 0, &synthetic_patch("Waited", 1, 0), &PatchMeta::default(), true);
+    release.join().unwrap();
+    assert!(saved.is_ok(), "{saved:?}");
+    drop(db);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The clean factory bank A file (SPEC §6 ground truth): 128 single dumps, device ID 0x10.
+fn factory_bank_a_syx() -> Vec<u8> {
+    std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/factory/Bank_A.syx"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn factory_bank_a_syx_imports_all_128_patches_cleanly() {
+    let dumps: Vec<IncomingDump> = scan_single_dumps(&factory_bank_a_syx())
+        .into_iter()
+        .map(|(_, d)| d)
+        .collect();
+    assert_eq!(dumps.len(), 128);
+
+    let db = PatchDatabase::open_in_memory().unwrap();
+    let report = db
+        .import_single_dumps(&dumps, ImportTarget::OriginalBanks)
+        .unwrap();
+    assert_eq!(report.imported, 128);
+    assert_eq!(report.per_bank, [("Bank A".to_string(), 128)]);
+    assert_eq!(
+        (report.bad_checksum, report.skipped, report.duplicates.len()),
+        (0, 0, 0)
+    );
+}
+
+/// SPEC §6 "import → export is byte-identical", through the database's own encoder.
+#[test]
+fn factory_bank_a_syx_exports_byte_identical() {
+    let file = factory_bank_a_syx();
+    let dumps: Vec<IncomingDump> = scan_single_dumps(&file)
+        .into_iter()
+        .map(|(_, d)| d)
+        .collect();
+    let db = PatchDatabase::open_in_memory().unwrap();
+    db.import_single_dumps(&dumps, ImportTarget::OriginalBanks)
+        .unwrap();
+
+    let exported = db.export_bank_syx(bank_id(&db, "A"), 0x10, Some(1)).unwrap();
+    assert_eq!(exported.len(), file.len());
+    assert!(exported == file, "the exported bank differs from Bank_A.syx");
 }

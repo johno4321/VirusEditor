@@ -192,8 +192,8 @@ impl Piano {
 
     fn paint(&self, ui: &Ui, rect: Rect, mouse_note: Option<u8>) {
         let painter = ui.painter_at(rect);
-        let held_colour = theme::KEY_HELD;
-        let outline = Stroke::new(1.0_f32, theme::KEY_OUTLINE);
+        let held_colour = theme::palette().key_held;
+        let outline = Stroke::new(1.0_f32, theme::palette().edge);
         let dim = |c: Color32| {
             if self.enabled {
                 c

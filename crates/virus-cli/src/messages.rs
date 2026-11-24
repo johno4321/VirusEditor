@@ -33,12 +33,44 @@ pub fn global_request(target: &Target) -> Vec<u8> {
     encode_global_request(target.device.0)
 }
 
-/// One single dump `10 bb ss` per `(program, data)` pair, data copied verbatim and with a
-/// correct checksum.
-pub fn bank_dumps(target: &Target, bank: u8, programs: &[(u8, [u8; 256])]) -> Vec<Vec<u8>> {
+/// Index of the checksum byte in a single dump frame `F0 00 20 33 01 dd 10 bb ss [256] cs F7`.
+const SINGLE_DUMP_CHECKSUM_INDEX: usize = 265;
+
+/// Makes the checksum of an encoded single dump deliberately wrong (`+1`, 7-bit), so a dump
+/// whose checksum was wrong in the file is sent "as stored" and the Virus can still detect
+/// the damage and show its error. Never silently fix a bad checksum (SPEC §3.2); the app's
+/// `BadChecksumPolicy::KeepInvalid` does the same.
+fn keep_checksum_wrong(mut frame: Vec<u8>) -> Vec<u8> {
+    let checksum = &mut frame[SINGLE_DUMP_CHECKSUM_INDEX];
+    *checksum = (*checksum + 1) & 0x7F;
+    frame
+}
+
+/// [`edit_buffer_dump`] for a dump from a file: with `checksum_ok == false` (sent because of
+/// `--allow-bad-checksum`) the checksum is kept wrong, as stored.
+pub fn edit_buffer_dump_as_stored(target: &Target, data: &[u8; 256], checksum_ok: bool) -> Vec<u8> {
+    let frame = edit_buffer_dump(target, data);
+    if checksum_ok {
+        frame
+    } else {
+        keep_checksum_wrong(frame)
+    }
+}
+
+/// One single dump `10 bb ss` per `(program, data)` pair, data copied verbatim. The checksum
+/// is correct, except for the programs in `bad_checksums` (wrong in the file and sent because
+/// of `--allow-bad-checksum`): those keep a deliberately wrong checksum, as stored.
+pub fn bank_dumps(target: &Target, bank: u8, programs: &[(u8, [u8; 256])], bad_checksums: &[u8]) -> Vec<Vec<u8>> {
     programs
         .iter()
-        .map(|(program, data)| encode_program_dump(target.device.0, bank, *program, data))
+        .map(|(program, data)| {
+            let frame = encode_program_dump(target.device.0, bank, *program, data);
+            if bad_checksums.contains(program) {
+                keep_checksum_wrong(frame)
+            } else {
+                frame
+            }
+        })
         .collect()
 }
 
@@ -132,7 +164,7 @@ mod tests {
     #[test]
     fn bank_dumps_are_addressed_per_program_with_exact_data() {
         let programs: Vec<(u8, [u8; 256])> = (0..128u8).map(|p| (p, [p; 256])).collect();
-        let frames = bank_dumps(&target(), 2, &programs);
+        let frames = bank_dumps(&target(), 2, &programs, &[]);
         assert_eq!(frames.len(), 128);
         for (n, frame) in frames.iter().enumerate() {
             match parse_sysex(frame).unwrap() {
@@ -143,6 +175,38 @@ mod tests {
                 }
                 other => panic!("unexpected {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn bank_dumps_keep_the_checksum_wrong_for_programs_flagged_in_the_file() {
+        let programs: Vec<(u8, [u8; 256])> = (0..4u8).map(|p| (p, [p; 256])).collect();
+        let frames = bank_dumps(&target(), 1, &programs, &[2]);
+        let checksums: Vec<bool> = frames
+            .iter()
+            .map(|frame| match parse_sysex(frame).unwrap() {
+                SysExMessage::SingleDump { checksum_ok, .. } => checksum_ok,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(checksums, [true, true, false, true]);
+    }
+
+    #[test]
+    fn an_edit_buffer_dump_as_stored_keeps_a_bad_checksum_bad() {
+        let data = [0x7F; 256];
+        let good = edit_buffer_dump_as_stored(&target(), &data, true);
+        assert_eq!(good, edit_buffer_dump(&target(), &data));
+        let bad = edit_buffer_dump_as_stored(&target(), &data, false);
+        assert_eq!(bad.len(), good.len());
+        assert_eq!(bad[..265], good[..265], "only the checksum differs");
+        assert!(bad[265] <= 0x7F, "the checksum stays a 7-bit data byte");
+        match parse_sysex(&bad).unwrap() {
+            SysExMessage::SingleDump { bank: 0, program: 0x40, data: sent, checksum_ok, .. } => {
+                assert_eq!(*sent, data);
+                assert!(!checksum_ok);
+            }
+            other => panic!("unexpected {other:?}"),
         }
     }
 }

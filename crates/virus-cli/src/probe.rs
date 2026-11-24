@@ -407,7 +407,8 @@ fn probe_values<T: Transport>(
     Ok(())
 }
 
-/// Sends the original edit buffer back and checks it reads back byte-identically.
+/// Sends the original edit buffer back and checks it reads back byte-identically. A read-back
+/// that differs is an error too, so the caller prints the restore command and exits non-zero.
 fn restore<T: Transport>(
     synth: &mut Synth<T>,
     original: &ReceivedDump,
@@ -415,12 +416,14 @@ fn restore<T: Transport>(
 ) -> Result<(), String> {
     synth.send_edit_buffer(&original.data)?;
     let back = synth.fetch().map_err(|e| format!("restore read-back failed: {e}"))?;
-    let differences = diff(&original.data, &back.data);
-    report(ProbeEvent::Restored {
-        identical: differences.is_empty(),
-        differences: list_addresses(&differences, 8),
-    });
-    Ok(())
+    let differences = list_addresses(&diff(&original.data, &back.data), 8);
+    let identical = differences.is_empty();
+    report(ProbeEvent::Restored { identical, differences: differences.clone() });
+    if identical {
+        Ok(())
+    } else {
+        Err(format!("the edit buffer read back differs from the original at {differences}"))
+    }
 }
 
 #[cfg(test)]
@@ -557,6 +560,21 @@ mod tests {
         );
         assert!(result.unwrap_err().contains("fetch the edit buffer first"));
         assert!(s.transport.received.iter().all(|m| m[6] == 0x30), "only the request was sent");
+    }
+
+    #[test]
+    fn a_restore_that_reads_back_differently_is_a_restore_error() {
+        let mut fake = FakeVirus::new(0);
+        fake.ignore_dumps = true;
+        fake.edit_buffers.insert(0x40, crate::fake::pattern(0)); // A112 = 80, so probing 0..=1 changes it
+        let mut s = synth(fake);
+        let plan = value_plan(ParamAddress::a(112), range(0, 1).unwrap()).unwrap();
+        let (outcome, events, _) =
+            run(&mut s, &plan, ProbeFile::new(&plan, 0, 0x40), &options(false), &mut Scripted(VecDeque::new(), vec![]));
+        assert!(outcome.error.is_none());
+        let error = outcome.restore_error.expect("the restore did not take");
+        assert!(error.contains("differs from the original at A112"), "{error}");
+        assert!(events.contains(&ProbeEvent::Restored { identical: false, differences: "A112".to_owned() }));
     }
 
     #[test]

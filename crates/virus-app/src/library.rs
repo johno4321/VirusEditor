@@ -92,6 +92,9 @@ impl ImportOutcome {
             if m.skipped > 0 {
                 parts.push(format!("{} multi dump(s) skipped (unsupported bank or program)", m.skipped));
             }
+            if !m.duplicates.is_empty() {
+                parts.push(multi_duplicates_text(&m.duplicates));
+            }
         }
         if !self.multis_left_out.is_empty() {
             parts.push(format!(
@@ -110,7 +113,8 @@ impl ImportOutcome {
 
     pub fn has_warnings(&self) -> bool {
         let r = &self.report;
-        let multi_warnings = self.multis.as_ref().is_some_and(|m| m.bad_checksum > 0 || m.skipped > 0);
+        let multi_warnings =
+            self.multis.as_ref().is_some_and(|m| m.bad_checksum > 0 || m.skipped > 0 || !m.duplicates.is_empty());
         r.bad_checksum > 0
             || r.skipped > 0
             || !r.duplicates.is_empty()
@@ -118,6 +122,17 @@ impl ImportOutcome {
             || multi_warnings
             || !self.multis_left_out.is_empty()
     }
+}
+
+/// "⚠ 1 Multi bank slot(s) were addressed by more than one dump…" for import summaries (CR-M9).
+pub fn multi_duplicates_text(slots: &[u8]) -> String {
+    let list: Vec<String> = slots.iter().take(6).map(|s| format!("M{s:03}")).collect();
+    let more = if slots.len() > 6 { ", …" } else { "" };
+    format!(
+        "⚠ {} Multi bank slot(s) were addressed by more than one dump, the later one was kept ({}{more})",
+        slots.len(),
+        list.join(", ")
+    )
 }
 
 /// A Multi bank slot an import would overwrite.
@@ -332,17 +347,33 @@ pub struct ExportResult {
 impl ExportResult {
     /// Suffix for the status line, e.g. "; 3 flagged ⚠ patch(es) left out".
     pub fn notes(&self) -> String {
+        self.notes_for("patch(es)")
+    }
+
+    /// [`Self::notes`] for another kind of item, e.g. "multi(s)".
+    pub fn notes_for(&self, items: &str) -> String {
         let mut s = String::new();
         if self.skipped_flagged > 0 {
-            s.push_str(&format!("; {} flagged ⚠ patch(es) left out", self.skipped_flagged));
+            s.push_str(&format!("; {} flagged ⚠ {items} left out", self.skipped_flagged));
         }
         if self.included_flagged > 0 {
-            s.push_str(&format!("; {} flagged ⚠ patch(es) included", self.included_flagged));
+            s.push_str(&format!("; {} flagged ⚠ {items} included", self.included_flagged));
         }
         if self.skipped_invalid > 0 {
-            s.push_str(&format!("; {} patch(es) with invalid data left out", self.skipped_invalid));
+            s.push_str(&format!("; {} {items} with invalid data left out", self.skipped_invalid));
         }
         s
+    }
+}
+
+impl From<&virus_db::BankExport> for ExportResult {
+    fn from(export: &virus_db::BankExport) -> Self {
+        Self {
+            written: export.frames.len(),
+            skipped_flagged: export.skipped_flagged,
+            included_flagged: export.included_flagged,
+            skipped_invalid: export.skipped_invalid,
+        }
     }
 }
 
@@ -373,12 +404,7 @@ pub fn export_bank_bytes(
     let export = db
         .export_bank(bank_id, virus_syx::DEVICE_ID_OMNI, target_bank, policy)
         .map_err(|e| format!("Export failed: {e}"))?;
-    let result = ExportResult {
-        written: export.frames.len(),
-        skipped_flagged: export.skipped_flagged,
-        included_flagged: export.included_flagged,
-        skipped_invalid: export.skipped_invalid,
-    };
+    let result = ExportResult::from(&export);
     if export.frames.is_empty() {
         let why = if result.skipped_flagged > 0 { " (all patches are flagged ⚠)" } else { "" };
         return Err(format!("Export failed: the bank is empty{why}."));
@@ -412,12 +438,14 @@ it, sending it to the synth and listening to it.";
 pub enum MarkChecked {
     Patch { id: i64, label: String },
     Bank { id: i64, name: String, flagged: usize },
+    /// A multi on the Multi tab; `label` names its slot, e.g. "M005".
+    Multi { id: i64, label: String },
 }
 
 impl MarkChecked {
     pub fn question(&self) -> String {
         match self {
-            Self::Patch { label, .. } => format!("Mark {label} as checked?"),
+            Self::Patch { label, .. } | Self::Multi { label, .. } => format!("Mark {label} as checked?"),
             Self::Bank { name, flagged, .. } => format!("Mark all {flagged} flagged patch(es) in {name} as checked?"),
         }
     }
@@ -434,6 +462,76 @@ impl MarkChecked {
                 .mark_bank_checked(*id)
                 .map(|n| format!("{n} patch(es) in {name} marked as checked."))
                 .map_err(|e| format!("Cannot mark {name} as checked: {e}")),
+            Self::Multi { id, label } => match db.mark_multi_checked(*id) {
+                Ok(true) => Ok(format!("{label} marked as checked.")),
+                Ok(false) => Err("That multi no longer exists.".to_owned()),
+                Err(e) => Err(format!("Cannot mark {label} as checked: {e}")),
+            },
+        }
+    }
+}
+
+/// A "Clear slot…" or "Delete bank…" waiting for the user's confirmation (CR-L2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Removal {
+    /// Any bank: deletes the patch in one slot.
+    Slot { id: i64, label: String, name: String },
+    /// User banks only (no synth letter): deletes the bank and every patch in it.
+    Bank { id: i64, name: String, patches: usize },
+}
+
+impl Removal {
+    /// "Delete bank…" is offered for user banks only: the letter banks A–D mirror the synth.
+    pub fn bank(bank: &BankRecord, slots: &[Option<PatchSummary>]) -> Option<Self> {
+        if bank.bank_letter.is_some() {
+            return None;
+        }
+        Some(Self::Bank { id: bank.id, name: bank.name.clone(), patches: slots.iter().flatten().count() })
+    }
+
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::Slot { .. } => "Clear slot",
+            Self::Bank { .. } => "Delete bank",
+        }
+    }
+
+    /// What is lost, shown before the user confirms.
+    pub fn question(&self) -> String {
+        match self {
+            Self::Slot { label, name, .. } => format!(
+                "Clear {label}? The patch '{name}' is deleted from the library, with its tags and favourite. \
+                 This can't be undone."
+            ),
+            Self::Bank { name, patches, .. } => format!(
+                "Delete the bank '{name}'? Its {patches} patch(es) are deleted from the library, with their tags \
+                 and favourites. This can't be undone."
+            ),
+        }
+    }
+
+    /// Deletes; returns the status-bar text.
+    pub fn apply(&self, db: &PatchDatabase) -> Result<String, String> {
+        match self {
+            Self::Slot { id, label, name } => match db.delete_patch(*id) {
+                Ok(true) => Ok(format!("{label} cleared ('{name}' deleted).")),
+                Ok(false) => Err("That patch no longer exists.".to_owned()),
+                Err(e) => Err(format!("Cannot clear {label}: {e}")),
+            },
+            Self::Bank { id, name, .. } => {
+                match db.get_bank_by_id(*id) {
+                    Ok(Some(bank)) if bank.bank_letter.is_some() => {
+                        return Err(format!("{name} is a synth bank (A–D); it can't be deleted."));
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => return Err("That bank no longer exists.".to_owned()),
+                    Err(e) => return Err(format!("Cannot delete {name}: {e}")),
+                }
+                match db.delete_bank(*id) {
+                    Ok(_) => Ok(format!("Bank '{name}' deleted.")),
+                    Err(e) => Err(format!("Cannot delete {name}: {e}")),
+                }
+            }
         }
     }
 }
@@ -468,14 +566,65 @@ pub fn queue_received(list: &mut Vec<IncomingDump>, dump: IncomingDump) {
 /// Stores `patch` byte-exact in a slot. The slot's tags and favourite flag are kept when the
 /// slot already holds a patch of the same name (a re-store of an edited sound), and reset
 /// otherwise (a different sound replaces it).
-pub fn store_patch(db: &PatchDatabase, bank_id: i64, program: u8, patch: &Patch) -> Result<i64, DbError> {
+///
+/// `checksum_ok = false` stores it flagged ⚠: the patch came from a flagged slot or a dump with
+/// a wrong checksum (CR-H1). Storing never clears a flag; only "Mark as checked" does.
+pub fn store_patch(
+    db: &PatchDatabase,
+    bank_id: i64,
+    program: u8,
+    patch: &Patch,
+    checksum_ok: bool,
+) -> Result<i64, DbError> {
     let meta = match db.get_patch_by_slot(bank_id, program)? {
         Some(existing) if existing.name == patch.name() => {
             PatchMeta { tags: existing.tags, favorite: existing.favorite }
         }
         _ => PatchMeta::default(),
     };
-    db.save_patch(bank_id, program, patch.as_bytes(), &meta)
+    db.save_patch(bank_id, program, patch.as_bytes(), &meta, checksum_ok)
+}
+
+/// Shown in the Store dialogs when the patch or multi is flagged (CR-H1).
+pub const STORES_FLAGGED: &str = "⚠ This comes from a flagged source (wrong checksum, or a flagged library slot): \
+it will be stored flagged ⚠; use Mark as checked after checking it.";
+
+/// Whether the editor's patch came from a flagged source (CR-H1): a flagged library slot, a
+/// flagged edit-buffer dump from a file, or a synth edit-buffer dump with a wrong checksum.
+/// Editing doesn't clear it; Init does. The app keeps one and stores the patch with its flag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EditorFlag {
+    flagged: bool,
+    /// The flag of a Load / Send that may still wait for the "replace the edited patch?" answer.
+    requested: bool,
+}
+
+impl EditorFlag {
+    pub fn flagged(&self) -> bool {
+        self.flagged
+    }
+
+    /// A library patch or an edit-buffer dump was asked to replace the editor's. A later
+    /// request replaces this one, like the pending replace itself.
+    pub fn request(&mut self, flagged: bool) {
+        self.requested = flagged;
+    }
+
+    /// The requested Load / Send happened.
+    pub fn loaded(&mut self) {
+        self.flagged = self.requested;
+    }
+
+    /// Init: a neutral sound, never flagged.
+    pub fn init(&mut self) {
+        self.flagged = false;
+    }
+
+    /// The synth's edit buffer replaced the editor's patch. With `kept_history` the replaced
+    /// bytes stay reachable through Undo, so an existing flag is kept as well.
+    pub fn received(&mut self, checksum_ok: bool, kept_history: bool) {
+        self.flagged = !checksum_ok || (kept_history && self.flagged);
+    }
 }
 
 /// What the Store button does with the patch.
@@ -710,7 +859,7 @@ mod tests {
     #[test]
     fn occupied_multi_slots_need_confirmation_and_new_banks_leave_them_alone() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        crate::multi_session::store_multi(&db, Some(3), &multi("Mine")).unwrap();
+        crate::multi_session::store_multi(&db, Some(3), &multi("Mine"), true).unwrap();
         let file = [
             encode_program_dump(DEVICE_ID_OMNI, 1, 0, named("A zero").as_bytes()),
             multi_dump(1, 3, "Theirs"),
@@ -795,7 +944,7 @@ mod tests {
     fn mixed_banks_become_one_new_bank_each_without_touching_existing() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let a = bank_id(&db, "A");
-        db.save_patch(a, 0, named("Mine").as_bytes(), &PatchMeta::default()).unwrap();
+        db.save_patch(a, 0, named("Mine").as_bytes(), &PatchMeta::default(), true).unwrap();
         let dumps = vec![dump(1, 0, "Rx A0"), dump(2, 5, "Rx B5"), dump(1, 1, "Rx A1")];
 
         let pending = PendingImport::from_dumps(&db, "received", &dumps, ImportTarget::OriginalBanks).unwrap();
@@ -813,7 +962,7 @@ mod tests {
     fn overwrite_is_planned_before_it_is_written() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let a = bank_id(&db, "A");
-        db.save_patch(a, 0, named("Mine").as_bytes(), &PatchMeta::default()).unwrap();
+        db.save_patch(a, 0, named("Mine").as_bytes(), &PatchMeta::default(), true).unwrap();
         let pending = prepare_import_bytes(&db, "f", &mixed_file(), ImportTarget::OriginalBanks).unwrap();
         assert_eq!(pending.plan.overwrites[0].old_name, "Mine");
         assert_eq!(db.get_patch_by_slot(a, 0).unwrap().unwrap().name, "Mine", "planning must not write");
@@ -839,9 +988,11 @@ mod tests {
         let r = &outcome.report;
         assert_eq!(r.loose.len(), 33);
         let multis = outcome.multis.as_ref().unwrap();
-        // Multi 10 reads as mm = 13 in the damaged file, so slot 13 is written twice.
-        assert_eq!((multis.imported, multis.loose.len()), (128, 1));
+        // Multi 10 reads as mm = 13 in the damaged file, so slot 13 is addressed twice (CR-M9).
+        assert_eq!((multis.imported, multis.loose.len()), (127, 1));
+        assert_eq!(multis.duplicates, [13]);
         assert_eq!(db.get_multi_slots().unwrap().iter().flatten().count(), 127);
+        assert!(outcome.summary().contains("1 Multi bank slot(s) were addressed by more than one dump"));
         assert_eq!(outcome.parsed_other_messages, 1);
         // The damaged file has one slot addressed twice per bank.
         assert_eq!((r.imported, r.duplicates.len()), (254, 2));
@@ -910,18 +1061,18 @@ mod tests {
     fn store_patch_keeps_meta_only_for_same_name() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let a = bank_id(&db, "A");
-        let id = db.save_patch(a, 7, named("Lead").as_bytes(), &PatchMeta::default()).unwrap();
+        let id = db.save_patch(a, 7, named("Lead").as_bytes(), &PatchMeta::default(), true).unwrap();
         db.set_tags(id, "bright").unwrap();
         db.set_favorite(id, true).unwrap();
 
         let mut edited = named("Lead");
         edited.set(Page::PageA, 40, 3);
-        store_patch(&db, a, 7, &edited).unwrap();
+        store_patch(&db, a, 7, &edited, true).unwrap();
         let record = db.get_patch_by_slot(a, 7).unwrap().unwrap();
         assert_eq!((record.tags.as_str(), record.favorite), ("bright", true));
         assert_eq!(&record.data, edited.as_bytes());
 
-        store_patch(&db, a, 7, &named("Other")).unwrap();
+        store_patch(&db, a, 7, &named("Other"), true).unwrap();
         let record = db.get_patch_by_slot(a, 7).unwrap().unwrap();
         assert_eq!((record.tags.as_str(), record.favorite), ("", false));
     }
@@ -929,8 +1080,8 @@ mod tests {
     #[test]
     fn store_patch_reports_errors() {
         let db = PatchDatabase::open_in_memory().unwrap();
-        assert!(matches!(store_patch(&db, 9999, 0, &Patch::init()), Err(DbError::BankNotFound(9999))));
-        assert!(matches!(store_patch(&db, bank_id(&db, "A"), 128, &Patch::init()), Err(DbError::InvalidProgram(128))));
+        assert!(matches!(store_patch(&db, 9999, 0, &Patch::init(), true), Err(DbError::BankNotFound(9999))));
+        assert!(matches!(store_patch(&db, bank_id(&db, "A"), 128, &Patch::init(), true), Err(DbError::InvalidProgram(128))));
     }
 
     #[test]
@@ -963,7 +1114,7 @@ mod tests {
         assert!(!cache.refresh(&db, &query));
         assert!(!cache.refresh(&db, &query));
 
-        db.save_patch(a, 2, named("New").as_bytes(), &PatchMeta::default()).unwrap();
+        db.save_patch(a, 2, named("New").as_bytes(), &PatchMeta::default(), true).unwrap();
         assert!(cache.refresh(&db, &query));
         assert_eq!(cache.slots[2].as_ref().unwrap().name, "New");
 
@@ -979,5 +1130,106 @@ mod tests {
         assert_eq!(slot_label(Some(&bank), 5), "A005");
         let user = BankRecord { id: 2, name: "Backup".into(), bank_letter: None, is_rom: false };
         assert_eq!(slot_label(Some(&user), 127), "Backup 127");
+    }
+
+    #[test]
+    fn store_patch_keeps_the_flag_of_a_flagged_source() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let a = bank_id(&db, "A");
+        store_patch(&db, a, 4, &named("Damaged"), false).unwrap();
+        assert!(!db.get_patch_by_slot(a, 4).unwrap().unwrap().checksum_ok);
+    }
+
+    #[test]
+    fn a_flagged_slot_loaded_and_stored_elsewhere_stays_flagged() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let a = bank_id(&db, "A");
+        db.import_single_dumps(&[IncomingDump { checksum_ok: false, ..dump(1, 0, "Flagged") }], ImportTarget::OriginalBanks)
+            .unwrap();
+        let record = db.get_patch_by_slot(a, 0).unwrap().unwrap();
+
+        let mut editor = EditorFlag::default();
+        editor.request(!record.checksum_ok);
+        editor.loaded();
+        store_patch(&db, a, 9, &Patch::from_bytes(&record.data), !editor.flagged()).unwrap();
+        assert!(!db.get_patch_by_slot(a, 9).unwrap().unwrap().checksum_ok);
+    }
+
+    #[test]
+    fn editor_flag_follows_the_loaded_source_and_init_clears_it() {
+        let mut flag = EditorFlag::default();
+        flag.request(true);
+        assert!(!flag.flagged(), "nothing is loaded until the replace happens");
+        flag.loaded();
+        assert!(flag.flagged());
+        flag.init();
+        assert!(!flag.flagged());
+        flag.request(false);
+        flag.loaded();
+        assert!(!flag.flagged());
+    }
+
+    #[test]
+    fn a_later_request_replaces_a_cancelled_one() {
+        let mut flag = EditorFlag::default();
+        flag.request(true); // held for confirmation, then cancelled
+        flag.request(false);
+        flag.loaded();
+        assert!(!flag.flagged());
+    }
+
+    #[test]
+    fn a_synth_dump_with_a_wrong_checksum_flags_the_editor() {
+        let mut flag = EditorFlag::default();
+        flag.received(false, false);
+        assert!(flag.flagged());
+        flag.received(true, false);
+        assert!(!flag.flagged(), "a clean dump that resets the history replaces the flagged bytes");
+    }
+
+    #[test]
+    fn a_clean_synth_dump_keeps_the_flag_while_undo_can_bring_the_flagged_bytes_back() {
+        let mut flag = EditorFlag::default();
+        flag.request(true);
+        flag.loaded();
+        flag.received(true, true);
+        assert!(flag.flagged());
+    }
+
+    #[test]
+    fn clearing_a_slot_deletes_only_that_patch() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let a = bank_id(&db, "A");
+        let id = db.save_patch(a, 1, named("Gone").as_bytes(), &PatchMeta::default(), true).unwrap();
+        db.save_patch(a, 2, named("Stays").as_bytes(), &PatchMeta::default(), true).unwrap();
+        let clear = Removal::Slot { id, label: "A001".into(), name: "Gone".into() };
+        assert!(clear.question().contains("'Gone'"), "{}", clear.question());
+        assert_eq!(clear.apply(&db).unwrap(), "A001 cleared ('Gone' deleted).");
+        assert_eq!(db.get_patch_by_slot(a, 1).unwrap(), None);
+        assert!(db.get_patch_by_slot(a, 2).unwrap().is_some());
+        assert!(clear.apply(&db).unwrap_err().contains("no longer exists"));
+    }
+
+    #[test]
+    fn deleting_a_user_bank_names_what_is_lost_and_deletes_its_patches() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let user = db.create_bank("Backup").unwrap();
+        db.save_patch(user, 0, named("Old").as_bytes(), &PatchMeta::default(), true).unwrap();
+        let bank = db.get_bank_by_id(user).unwrap().unwrap();
+        let removal = Removal::bank(&bank, &db.get_bank_slots(user).unwrap()).unwrap();
+        assert!(removal.question().contains("'Backup'") && removal.question().contains("1 patch(es)"));
+        assert_eq!(removal.apply(&db).unwrap(), "Bank 'Backup' deleted.");
+        assert_eq!(db.get_bank_by_id(user).unwrap(), None);
+        assert_eq!(db.patch_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn letter_banks_cannot_be_deleted() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let a = db.get_bank_by_id(bank_id(&db, "A")).unwrap().unwrap();
+        assert_eq!(Removal::bank(&a, &[]), None);
+        let forced = Removal::Bank { id: a.id, name: a.name.clone(), patches: 0 };
+        assert!(forced.apply(&db).unwrap_err().contains("synth bank"));
+        assert!(db.get_bank_by_id(a.id).unwrap().is_some());
     }
 }

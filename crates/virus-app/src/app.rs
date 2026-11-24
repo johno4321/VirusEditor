@@ -5,22 +5,23 @@ use std::time::{Duration, Instant};
 use eframe::{egui, App, Frame};
 use egui::{CentralPanel, RichText, TopBottomPanel};
 use virus_db::{BadChecksumPolicy, PatchDatabase};
-use virus_midi::{MidiCommand, MidiEvent, MidiService, ReleaseTrigger};
+use virus_midi::{MidiCommand, MidiEvent, MidiService, ReleaseTrigger, DUMP_GAP_MS};
 use virus_syx::Patch;
 
 use crate::audition::Audition;
 use crate::comforts::{Comforts, Replace, ReplaceRequest};
-use crate::library::{slot_label, store_patch, PendingStore};
-use crate::session::{Activity, EditPart, Incoming, MidiSettings, PacedSend, Ports, Session};
+use crate::dialogs::SharedFolders;
+use crate::library::{slot_label, store_patch, EditorFlag, PendingStore};
+use crate::session::{Activity, EditPart, Incoming, MidiSettings, PacedSend, Ports, Session, Submitted, Ticket, PORT_POLL_INTERVAL};
 use crate::settings::{self, FolderPrefs, Loaded, Settings, SettingsStore, WindowPrefs};
 use crate::storage::{adopt_legacy_library, open_library, open_library_at, pending_legacy_library, LibraryLocation};
-use crate::theme::{self, DARK_RED, ON_RED};
+use crate::theme::{self, ThemeKind};
 use crate::synth_select::select_messages;
 use crate::views::comforts::{ComfortAction, ComfortsView};
-use crate::views::librarian::{LibAction, LibrarianView, BANK_SEND_GAP_MS};
-use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, DANGER, DIM, WARN};
+use crate::views::librarian::{LibAction, LibrarianView};
+use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, DIM, WARN};
 // [multi] Multi tab (F4/F5)
-use crate::multi_session::{MultiSession, MULTI_BANK_SEND_GAP_MS};
+use crate::multi_session::MultiSession;
 use crate::views::multi::{MultiAction, MultiView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -87,20 +88,45 @@ pub struct VirusApp {
     // [multi] Multi tab (F4/F5)
     multi: MultiSession,
     multi_view: MultiView,
-    /// A store waiting for the synth's edit-buffer dump ("Fetch from synth first").
+    /// A store waiting for the synth's edit-buffer dump ("Fetch from synth first"). It exists
+    /// only once the request has gone out; its timeout starts then (CR-M6).
     pending_store: Option<PendingStore>,
+    /// A "Fetch from synth first" store whose request still waits in `PacedSend`.
+    store_waiting: Option<WaitingStore>,
+    /// A bank send is running (from its start until the worker reports `BatchFinished`).
+    batch_running: bool,
+    /// [CR-H1] The edited patch came from a flagged ⚠ source; storing it keeps the flag.
+    editor_flag: EditorFlag,
+    /// [CR-M5] The legacy library the user answered "Not now" for (saved in settings).
+    legacy_dismissed: Option<String>,
+    /// The panel look, chosen from the header's 🎨 menu (saved in settings).
+    theme: ThemeKind,
+    /// Import/export folders shared by the Librarian and the Multi tab (saved in settings).
+    folders: SharedFolders,
 }
+
+/// A store whose edit-buffer request is still queued in `PacedSend`.
+#[derive(Debug, Clone, Copy)]
+struct WaitingStore {
+    bank_id: i64,
+    program: u8,
+    ticket: Ticket,
+    since: Instant,
+}
+
+/// How long a store's fetch request may wait for a quiet line before the store is given up.
+const STORE_REQUEST_WAIT: Duration = Duration::from_secs(10);
 
 impl VirusApp {
     pub fn new(cc: &eframe::CreationContext<'_>, store: SettingsStore, loaded: Loaded) -> Self {
-        theme::apply(&cc.egui_ctx);
-
         let mut notice = Notice::info("Ready. Select the MIDI ports, or let auto-detect find the Virus.");
         let midi = match MidiService::spawn() {
             Ok(service) => {
                 // Repaint as soon as MIDI arrives instead of polling every frame (U2).
                 let ctx = cc.egui_ctx.clone();
                 service.set_event_notifier(Box::new(move || ctx.request_repaint()));
+                // Notice ports that vanish, return or are renamed without a manual rescan (R10).
+                let _ = service.send_command(MidiCommand::SetPortPolling(Some(PORT_POLL_INTERVAL)));
                 Some(service)
             }
             Err(e) => {
@@ -114,7 +140,7 @@ impl VirusApp {
             notice = Notice::error(format!("Library is in memory only and will NOT be saved: {reason}"));
         }
 
-        let legacy = pending_legacy_library(&db, &location);
+        let legacy = pending_legacy_library(&db, &location, loaded.settings.ui.legacy_prompt_dismissed.as_deref());
         let mut app = Self {
             session: Session::default(),
             ports: Ports::default(),
@@ -142,8 +168,15 @@ impl VirusApp {
             multi: MultiSession::default(),    // [multi]
             multi_view: MultiView::default(), // [multi]
             pending_store: None,
+            store_waiting: None,
+            batch_running: false,
+            editor_flag: EditorFlag::default(),
+            legacy_dismissed: None,
+            theme: ThemeKind::default(),
+            folders: SharedFolders::default(),
         };
         app.apply_settings(&loaded.settings);
+        theme::apply(&cc.egui_ctx, app.theme);
         app
     }
 
@@ -160,16 +193,22 @@ impl VirusApp {
         self.tab = Tab::from_key(&s.ui.tab);
         self.librarian.select_on_synth = s.ui.select_on_synth;
         self.librarian.fetch_before_store = s.ui.fetch_before_store;
+        self.legacy_dismissed.clone_from(&s.ui.legacy_prompt_dismissed);
+        self.theme = ThemeKind::from_key(&s.ui.theme);
         if let (Some(name), Ok(banks)) = (&s.ui.bank, self.db.get_banks()) {
             self.librarian.set_bank_id(banks.iter().find(|b| &b.name == name).map(|b| b.id));
         }
-        self.librarian.files.import_dir = FolderPrefs::existing(&s.folders.import);
-        self.librarian.files.export_dir = FolderPrefs::existing(&s.folders.export);
+        self.folders = SharedFolders {
+            import: FolderPrefs::existing(&s.folders.import),
+            export: FolderPrefs::existing(&s.folders.export),
+        };
+        self.folders.offer(&mut self.librarian.files, &mut self.multi_view.files);
         self.window = s.window;
     }
 
     /// Everything worth keeping between runs, as it is now.
     fn snapshot(&mut self) -> Settings {
+        self.folders.sync(&mut self.librarian.files, &mut self.multi_view.files);
         let bank_id = self.librarian.bank_id();
         if self.bank_name.0 != bank_id {
             let name = bank_id.and_then(|id| self.db.get_banks().ok()?.into_iter().find(|b| b.id == id)).map(|b| b.name);
@@ -202,10 +241,12 @@ impl VirusApp {
                 bank: self.bank_name.1.clone(),
                 select_on_synth: self.librarian.select_on_synth,
                 fetch_before_store: self.librarian.fetch_before_store,
+                legacy_prompt_dismissed: self.legacy_dismissed.clone(),
+                theme: self.theme.key().to_owned(),
             },
             folders: FolderPrefs {
-                import: FolderPrefs::from_path(&self.librarian.files.import_dir),
-                export: FolderPrefs::from_path(&self.librarian.files.export_dir),
+                import: FolderPrefs::from_path(&self.folders.import),
+                export: FolderPrefs::from_path(&self.folders.export),
             },
             window: self.window,
             ..Settings::default()
@@ -249,10 +290,18 @@ impl VirusApp {
         self.command(MidiCommand::Send(message));
     }
 
-    /// Sends the live messages that waited for a bank transfer to finish.
+    /// Sends the live messages that waited for a bank transfer to finish. A waiting store's
+    /// request that goes out now starts its answer timeout.
     fn flush_paced(&mut self) {
-        for message in self.paced.drain_ready(Instant::now()) {
+        let now = Instant::now();
+        for message in self.paced.drain_ready(now) {
             self.command(MidiCommand::Send(message));
+        }
+        if let Some(waiting) = self.store_waiting {
+            if !self.paced.is_queued(waiting.ticket) {
+                self.store_waiting = None;
+                self.pending_store = Some(PendingStore::new(waiting.bank_id, waiting.program, now));
+            }
         }
     }
 
@@ -322,6 +371,15 @@ impl VirusApp {
                     self.leds.tx(now);
                     self.paced.note_activity(now);
                 }
+                MidiEvent::BatchFinished { sent, dropped } => {
+                    self.paced.finish(now);
+                    self.batch_running = false;
+                    self.notice = if dropped == 0 {
+                        Notice::info(format!("Bank send finished: {sent} sent."))
+                    } else {
+                        Notice::warning(format!("Bank send aborted after {sent} sent; {dropped} not sent."))
+                    };
+                }
                 MidiEvent::Error(e) => self.notice = Notice::error(format!("MIDI: {e}")),
                 incoming => {
                     self.leds.rx(now);
@@ -359,6 +417,7 @@ impl VirusApp {
                         "Received '{name}' from the synth; your unsaved edits were replaced — Undo brings them back."
                     ));
                 }
+                self.editor_flag.received(checksum_ok, was_dirty); // [CR-H1]
                 self.complete_pending_store(checksum_ok);
             }
             Incoming::DumpQueued { bank, program, checksum_ok } => {
@@ -422,14 +481,19 @@ impl VirusApp {
     fn perform_replace(&mut self, action: Replace) {
         match action {
             Replace::Load { patch, origin, select } => {
+                self.editor_flag.loaded(); // [CR-H1]
                 self.load(patch, origin);
                 if let Some(slot) = select {
                     self.select_on_synth(slot.bank_id, slot.program); // [E6]
                 }
             }
-            Replace::Init => self.load(Patch::init(), "init".to_owned()),
+            Replace::Init => {
+                self.editor_flag.init(); // [CR-H1]
+                self.load(Patch::init(), "init".to_owned());
+            }
             Replace::Fetch => self.send(self.session.fetch_request()),
             Replace::SendToEditBuffer { patch, origin } => {
+                self.editor_flag.loaded(); // [CR-H1]
                 let message = self.session.edit_buffer_dump(&patch);
                 self.load(patch, origin);
                 self.send(message);
@@ -519,8 +583,12 @@ impl VirusApp {
 
     fn handle_library_action(&mut self, action: LibAction) {
         match action {
-            LibAction::Load { patch, origin, select } => self.request_replace(Replace::Load { patch, origin, select }),
-            LibAction::SendToEditBuffer { patch, origin } => {
+            LibAction::Load { patch, origin, select, flagged } => {
+                self.editor_flag.request(flagged); // [CR-H1]
+                self.request_replace(Replace::Load { patch, origin, select });
+            }
+            LibAction::SendToEditBuffer { patch, origin, flagged } => {
+                self.editor_flag.request(flagged); // [CR-H1]
                 self.request_replace(Replace::SendToEditBuffer { patch, origin });
             }
             LibAction::StoredEditor { label } => {
@@ -539,23 +607,58 @@ impl VirusApp {
             LibAction::SendBank { bank_id, policy } => self.send_bank(bank_id, policy),
             LibAction::CancelBatch => {
                 self.command(MidiCommand::CancelBatch);
-                self.paced.cancel();
+                // A running batch ends with the worker's BatchFinished, which keeps the gap after
+                // the last dump; with none running nothing else will release waiting messages.
+                if !self.batch_running {
+                    self.paced.cancel();
+                }
                 self.notice = Notice::info("Pending bank transfer cancelled.");
             }
             LibAction::Notice(notice) => self.notice = notice,
             LibAction::LooseMultis(dumps) => self.multi_view.add_loose(dumps), // [F9]
-            LibAction::FetchThenStore { bank_id, program } => {
-                self.pending_store = Some(PendingStore::new(bank_id, program, Instant::now()));
-                self.send(self.session.fetch_request());
-                self.notice = Notice::info("Fetching the synth's edit buffer; it is stored when it arrives…");
-            }
+            LibAction::FetchThenStore { bank_id, program } => self.fetch_then_store(bank_id, program),
         }
     }
 
-    /// Gives up on a store whose edit-buffer dump never came; nothing is stored then.
-    fn expire_pending_store(&mut self, ctx: &egui::Context) {
-        let Some(pending) = self.pending_store else { return };
+    /// Requests the synth's edit buffer for a store. The answer timeout starts only when the
+    /// request actually goes out (`PacedSend` may hold it for a quiet line, CR-M6).
+    fn fetch_then_store(&mut self, bank_id: i64, program: u8) {
+        if !self.ports.output_connected() || self.batch_running {
+            self.notice = Notice::warning("Cannot fetch from the synth now (no MIDI output, or a bank send is running): nothing was stored.");
+            return;
+        }
+        if let Some(previous) = self.store_waiting.take() {
+            self.paced.remove(previous.ticket);
+        }
         let now = Instant::now();
+        match self.paced.submit_tracked(self.session.fetch_request(), now) {
+            Submitted::Now(request) => {
+                self.pending_store = Some(PendingStore::new(bank_id, program, now));
+                self.command(MidiCommand::Send(request));
+            }
+            Submitted::Queued(ticket) => {
+                self.pending_store = None;
+                self.store_waiting = Some(WaitingStore { bank_id, program, ticket, since: now });
+            }
+        }
+        self.notice = Notice::info("Fetching the synth's edit buffer; it is stored when it arrives…");
+    }
+
+    /// Gives up on a store whose request never got a quiet line (and withdraws the request), or
+    /// whose edit-buffer dump never came; nothing is stored then.
+    fn expire_pending_store(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+        if let Some(waiting) = self.store_waiting {
+            let deadline = waiting.since + STORE_REQUEST_WAIT;
+            if now >= deadline {
+                self.paced.remove(waiting.ticket);
+                self.store_waiting = None;
+                self.notice = Notice::warning("The MIDI line never went quiet for the fetch request: nothing was stored.");
+            } else {
+                ctx.request_repaint_after(deadline - now);
+            }
+        }
+        let Some(pending) = self.pending_store else { return };
         if pending.expired(now) {
             self.pending_store = None;
             self.notice = Notice::warning("The synth did not send its edit buffer: nothing was stored.");
@@ -572,7 +675,7 @@ impl VirusApp {
             return;
         }
         let patch = self.session.patch().clone();
-        match store_patch(&self.db, pending.bank_id, pending.program, &patch) {
+        match store_patch(&self.db, pending.bank_id, pending.program, &patch, !self.editor_flag.flagged()) {
             Ok(_) => {
                 let bank = self.db.get_banks().ok().and_then(|banks| banks.into_iter().find(|b| b.id == pending.bank_id));
                 let label = slot_label(bank.as_ref(), pending.program);
@@ -622,8 +725,9 @@ impl VirusApp {
                     self.notice = Notice::warning("Nothing to send: every stored patch was left out (flagged ⚠).");
                     return;
                 }
-                self.paced.start(Instant::now(), count, Duration::from_millis(BANK_SEND_GAP_MS));
-                self.command(MidiCommand::SendBatch { messages: export.frames, gap_ms: BANK_SEND_GAP_MS });
+                self.paced.start(Instant::now(), count, Duration::from_millis(DUMP_GAP_MS));
+                self.batch_running = true;
+                self.command(MidiCommand::SendBatch { messages: export.frames, gap_ms: DUMP_GAP_MS });
                 let mut text = format!("Sending {count} patch(es) to the synth…");
                 if export.skipped_flagged > 0 {
                     text.push_str(&format!(" {} flagged ⚠ patch(es) left out.", export.skipped_flagged));
@@ -646,8 +750,9 @@ impl VirusApp {
             }
             Ok(export) => {
                 let count = export.frames.len();
-                self.paced.start(Instant::now(), count, Duration::from_millis(MULTI_BANK_SEND_GAP_MS));
-                self.command(MidiCommand::SendBatch { messages: export.frames, gap_ms: MULTI_BANK_SEND_GAP_MS });
+                self.paced.start(Instant::now(), count, Duration::from_millis(DUMP_GAP_MS));
+                self.batch_running = true;
+                self.command(MidiCommand::SendBatch { messages: export.frames, gap_ms: DUMP_GAP_MS });
                 let mut text = format!("Sending {count} multi(s) to the synth's Multi bank…");
                 if export.skipped_flagged > 0 {
                     text.push_str(&format!(" {} flagged ⚠ multi(s) left out.", export.skipped_flagged));
@@ -670,14 +775,18 @@ impl VirusApp {
         egui::Window::new("Existing library found").collapsible(false).resizable(false).show(ctx, |ui| {
             ui.label(format!("An older library was found at {}.", legacy.display()));
             ui.label(format!("The library is now stored at {}, and is empty.", target.display()));
-            ui.label("Copy it there and upgrade it? The original file is left untouched, and a .v1.bak backup is kept.");
+            ui.label(
+                "Copy it there and upgrade it? The original file is left untouched, a .v1.bak backup is kept, \
+                 and the current (empty) library is backed up as .pre-adopt.bak first.",
+            );
             ui.horizontal(|ui| {
                 accept = ui.button("Copy and upgrade").clicked();
-                dismiss = ui.button("Not now").clicked();
+                dismiss = ui.button("Not now").on_hover_text("Don't ask again for this file").clicked();
             });
         });
         if dismiss {
             self.legacy = None;
+            self.legacy_dismissed = Some(legacy.to_string_lossy().into_owned()); // [CR-M5] saved in settings
         }
         if !accept {
             return;
@@ -690,11 +799,16 @@ impl VirusApp {
         );
         drop(old);
         match adopt_legacy_library(&legacy, &target) {
-            Ok(db) => {
-                let backup = db.v1_backup().map(|p| format!(" Backup: {}.", p.display())).unwrap_or_default();
-                self.db = db;
+            Ok(adopted) => {
+                let backup = adopted.db.v1_backup().map(|p| format!(" Backup: {}.", p.display())).unwrap_or_default();
+                let replaced = adopted
+                    .pre_adopt_backup
+                    .as_ref()
+                    .map(|p| format!(" The previous library was saved as {}.", p.display()))
+                    .unwrap_or_default();
+                self.db = adopted.db;
                 self.notice = Notice::info(format!(
-                    "Imported the old library. Its patches are flagged ⚠ until you re-check them.{backup}"
+                    "Imported the old library. Its patches are flagged ⚠ until you re-check them.{backup}{replaced}"
                 ));
             }
             Err(e) => {
@@ -707,9 +821,9 @@ impl VirusApp {
 
     fn header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, DARK_RED);
-            ui.label(RichText::new("ACCESS VIRUS").strong().size(18.0).color(ON_RED));
-            ui.label(RichText::new("Rack Editor & Librarian").size(12.0).color(ON_RED));
+            ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, theme::palette().header_edge);
+            theme::logo(ui).on_hover_text("Access Virus");
+            ui.label(theme::app_name("Rack Editor & Librarian"));
             ui.separator();
             theme::tab(ui, &mut self.tab, Tab::Editor, "🎹 Sound Editor");
             theme::tab(ui, &mut self.tab, Tab::Modulation, "🔀 Modulation");
@@ -722,6 +836,17 @@ impl VirusApp {
                 .on_hover_text(format!("Edited patch, from {}", self.origin));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("🎨", |ui| {
+                    for kind in ThemeKind::ALL {
+                        if ui.radio(self.theme == kind, kind.label()).clicked() {
+                            self.theme = kind;
+                            theme::apply(ui.ctx(), kind);
+                            ui.close_menu();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Theme");
                 let store = egui::Button::new("💾 Store…");
                 // [comforts] the store dialog saves the session patch, which is the original while comparing
                 if ui
@@ -742,18 +867,20 @@ impl VirusApp {
                 }
                 if ui
                     .add_enabled(self.ports.output_connected(), egui::Button::new("🛑 Panic"))
-                    .on_hover_text("Silence the synth: note offs, All Notes Off and All Sound Off on its channel (every enabled part's channel in Multi mode)")
+                    .on_hover_text(
+                        "Silence the synth: note offs, All Notes Off and All Sound Off on its channel (every enabled \
+                         part's channel in Multi mode). It doesn't stop a running bank send: use ⏹ Cancel sending.",
+                    )
                     .clicked()
                 {
                     self.panic();
                 }
-                theme::watermark(ui, ui.available_rect_before_wrap()); // [V2] only in the empty gap
             });
         });
         match &self.location {
             LibraryLocation::InMemory { reason } => {
                 theme::lcd_frame().show(ui, |ui| {
-                    ui.colored_label(DANGER, format!("⚠ The library is in memory only — nothing will be saved ({reason})."));
+                    ui.colored_label(theme::palette().lcd_alert, format!("⚠ The library is in memory only — nothing will be saved ({reason})."));
                 });
             }
             LibraryLocation::File(_) => {}
@@ -774,9 +901,14 @@ impl VirusApp {
 impl App for VirusApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         self.poll_midi();
+        self.batch_running = self.paced.batch_running(Instant::now());
         self.expire_pending_store(ctx);
+        // "Fetch from synth first" needs the output, and no bank send in the way (CR-M6).
         self.librarian.output_connected = self.ports.output_connected();
+        self.librarian.batch_running = self.batch_running;
+        self.multi_view.batch_running = self.batch_running; // [CR-L11]
         self.librarian.editor_edited = self.comforts.is_edited(&self.session);
+        self.librarian.editor_flagged = self.editor_flag.flagged(); // [CR-H1]
         let shortcut = self.comfort_shortcuts(ctx); // [comforts]
         let now_secs = ctx.input(|i| i.time);
         if let Some(action) = shortcut {
@@ -864,6 +996,8 @@ impl App for VirusApp {
             Tab::Multi => self.multi_view.show(ui, &self.db, &mut self.multi, &mut self.session.settings, &mut multi_actions),
         });
         self.librarian.show_dialogs(ctx, &self.db, self.session.patch(), &mut actions);
+        self.multi_view.show_dialogs(ctx, &self.db, &mut self.multi, &mut multi_actions); // [CR-M4/H2/L2]
+        self.folders.sync(&mut self.librarian.files, &mut self.multi_view.files);
         self.legacy_prompt(ctx);
         // [comforts] snapshot around the edits so undo records exact byte changes
         let before = self.session.patch().clone();

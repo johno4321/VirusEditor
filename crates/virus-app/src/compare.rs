@@ -2,7 +2,7 @@
 
 use virus_syx::{format_value, single_param, Patch, PATCH_TOTAL_LEN};
 
-use crate::history::{apply_values, changes_between, page_number};
+use crate::history::{apply_step, changes_between, page_number};
 use crate::session::Session;
 
 /// "A40" / "B112" style label of a dump offset.
@@ -29,7 +29,7 @@ impl Compare {
     }
 
     /// Parks the edited patch and makes the session (and synth) play `original`.
-    /// Returns the SysEx messages to send. No-op if already active.
+    /// Returns the SysEx messages to send (see [`apply_step`]). No-op if already active.
     pub fn enter(&mut self, session: &mut Session, original: &Patch) -> Vec<Vec<u8>> {
         if self.is_active() {
             return Vec::new();
@@ -37,15 +37,15 @@ impl Compare {
         self.edited = Some(session.patch().clone());
         let target = *original.as_bytes();
         let values: Vec<_> = changes_between(session.patch(), original).iter().map(|c| (c.offset, target[c.offset])).collect();
-        apply_values(session, values)
+        apply_step(session, values)
     }
 
-    /// Restores the parked edited patch. Returns the SysEx messages to send.
+    /// Restores the parked edited patch. Returns the SysEx messages to send (see [`apply_step`]).
     pub fn leave(&mut self, session: &mut Session) -> Vec<Vec<u8>> {
         let Some(edited) = self.edited.take() else { return Vec::new() };
         let target = *edited.as_bytes();
         let values: Vec<_> = changes_between(session.patch(), &edited).iter().map(|c| (c.offset, target[c.offset])).collect();
-        apply_values(session, values)
+        apply_step(session, values)
     }
     /// Forgets the parked patch without touching the session (the patch is being replaced).
     pub fn discard(&mut self) {
@@ -94,7 +94,7 @@ pub fn diff(a: &Patch, b: &Patch) -> Vec<DiffEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use virus_syx::{parse_sysex, read_sysex_file, Page, SysExMessage};
+    use virus_syx::{is_sound_param, parse_sysex, read_sysex_file, Page, SysExMessage};
 
     fn bank_a() -> Vec<Patch> {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/factory/Bank_A.syx");
@@ -122,12 +122,25 @@ mod tests {
             let mut expected = *original.as_bytes();
             expected[0] = edited.as_bytes()[0];
             assert_eq!(session.patch().as_bytes(), &expected);
-            let differing = changes_between(edited, original).iter().filter(|c| c.offset != 0).count();
-            assert_eq!(to_original.len(), differing);
+            assert_sent_safely(&to_original);
 
-            compare.leave(&mut session);
+            let to_edited = compare.leave(&mut session);
             assert!(!compare.is_active());
             assert_eq!(session.patch(), edited);
+            assert_sent_safely(&to_edited);
+        }
+    }
+
+    /// Only sound parameters go out as parameter changes; anything else is one edit-buffer dump.
+    fn assert_sent_safely(messages: &[Vec<u8>]) {
+        for message in messages {
+            match parse_sysex(message).expect("valid SysEx") {
+                SysExMessage::ParamChange { page, param, .. } => {
+                    assert!(is_sound_param(page, param), "parameter change for {page:?} {param}");
+                }
+                SysExMessage::SingleDump { bank: 0, .. } => assert_eq!(messages.len(), 1, "a dump is sent alone"),
+                other => panic!("unexpected {other:?}"),
+            }
         }
     }
 

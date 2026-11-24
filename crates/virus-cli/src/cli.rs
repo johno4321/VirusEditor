@@ -43,7 +43,8 @@ pub struct ConnArgs {
     #[arg(long, value_name = "MS", default_value_t = 60, global = true)]
     pub settle_ms: u64,
     /// Silence required on the MIDI input before each request, in ms. The Virus ignores
-    /// requests that arrive too soon after it has sent or applied something.
+    /// requests that arrive too soon after it has sent or applied something. If the input never
+    /// goes quiet, the command gives up after 10 × this (at least 20 s) and sends nothing.
     #[arg(long, value_name = "MS", default_value_t = 500, global = true)]
     pub quiet_ms: u64,
     /// Silence required before a bank request, in ms (a bank request right after another
@@ -60,7 +61,8 @@ impl ConnArgs {
         Target { device: self.device, channel: self.channel, part: self.part }
     }
 
-    /// The port/device options as they'd be typed again, for printing suggested commands.
+    /// The port, device, channel and part options as they'd be typed again, for printing
+    /// suggested commands (backup, restore) that must address the same synth and edit buffer.
     pub fn repeat_options(&self) -> String {
         let mut options = String::new();
         if let Some(input) = &self.input {
@@ -75,6 +77,12 @@ impl ConnArgs {
                 n => (n + 1).to_string(),
             };
             options.push_str(&format!(" --device {device}"));
+        }
+        if self.channel != 0 {
+            options.push_str(&format!(" --channel {}", self.channel + 1));
+        }
+        if let Part::Multi(part) = self.part {
+            options.push_str(&format!(" --part {}", part + 1));
         }
         options
     }
@@ -127,7 +135,8 @@ pub enum Command {
         /// Which bank of the file, when it holds several (A-D).
         #[arg(long, value_name = "A-D", value_parser = parse_bank_letter)]
         from_bank: Option<u8>,
-        /// Send even if the dump in the file has a wrong checksum (data may be damaged).
+        /// Send even if the dump in the file has a wrong checksum (data may be damaged). It is
+        /// sent as stored: the checksum stays wrong, so the Virus can still detect the damage.
         #[arg(long)]
         allow_bad_checksum: bool,
         /// Fetch the edit buffer afterwards and compare byte by byte.
@@ -161,8 +170,8 @@ pub enum Command {
         /// Confirm that the RAM bank on the synth will be overwritten.
         #[arg(long)]
         yes: bool,
-        /// Pause between dumps in ms. The Virus sends its own bank dumps ≈340 ms apart (SPEC §3.7).
-        #[arg(long, value_name = "MS", default_value_t = 300)]
+        /// Silence after each dump in ms (SPEC §3.7): ≈385 ms start-to-start, ≈49 s per bank.
+        #[arg(long, value_name = "MS", default_value_t = virus_midi::DUMP_GAP_MS)]
         gap_ms: u64,
         /// Which bank of the file, when it holds several (A-D).
         #[arg(long, value_name = "A-D", value_parser = parse_bank_letter)]
@@ -170,7 +179,8 @@ pub enum Command {
         /// Send even when the file doesn't hold all 128 programs.
         #[arg(long)]
         allow_partial: bool,
-        /// Send even if dumps in the file have wrong checksums (data may be damaged).
+        /// Send even if dumps in the file have wrong checksums (data may be damaged). They are
+        /// sent as stored: their checksums stay wrong, so the Virus can still detect the damage.
         #[arg(long)]
         allow_bad_checksum: bool,
         /// Skip the automatic backup of the target bank before sending.
@@ -319,5 +329,13 @@ mod tests {
         assert_eq!(cli.conn.repeat_options(), " --in \"UM-ONE\" --out \"UM-ONE\" --device omni");
         let cli = Cli::try_parse_from(["virus", "ports"]).unwrap();
         assert_eq!(cli.conn.repeat_options(), "");
+    }
+
+    #[test]
+    fn repeat_options_keep_the_channel_and_multi_part() {
+        let cli = Cli::try_parse_from(["virus", "fetch", "--channel", "11", "--part", "3"]).unwrap();
+        assert_eq!(cli.conn.repeat_options(), " --channel 11 --part 3");
+        let cli = Cli::try_parse_from(["virus", "fetch", "--part", "single"]).unwrap();
+        assert_eq!(cli.conn.repeat_options(), "", "the single buffer is the default");
     }
 }

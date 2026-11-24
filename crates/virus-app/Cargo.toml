@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Native desktop editor, patch librarian, and real-time SysEx controller for Access Virus"
 authors.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 virus-syx = { path = "../virus-syx" }

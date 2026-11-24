@@ -88,15 +88,16 @@ impl Widget for FilterCurve {
             return response;
         }
         let painter = ui.painter();
+        let palette = theme::palette();
         painter.rect_filled(rect, egui::Rounding::same(4.0), theme::SCOPE_BG);
-        painter.rect_stroke(rect, egui::Rounding::same(4.0), Stroke::new(1.0_f32, theme::SCOPE_BORDER));
+        painter.rect_stroke(rect, egui::Rounding::same(4.0), Stroke::new(1.0_f32, palette.edge));
 
         let log_span = 20_000.0_f32.log10() - 20.0_f32.log10();
         for f in [100.0_f32, 1_000.0, 10_000.0] {
             let x = rect.min.x + (f.log10() - 20.0_f32.log10()) / log_span * rect.width();
             painter.line_segment(
                 [pos2(x, rect.min.y), pos2(x, rect.max.y)],
-                Stroke::new(1.0_f32, theme::SCOPE_GRID),
+                Stroke::new(1.0_f32, palette.control_black),
             );
         }
 
@@ -120,7 +121,7 @@ impl Widget for FilterCurve {
                 pos2(rect.min.x + t * rect.width(), rect.min.y + y * rect.height())
             })
             .collect();
-        painter.add(egui::Shape::line(points, Stroke::new(2.0_f32, theme::TRACE_PRIMARY)));
+        painter.add(egui::Shape::line(points, Stroke::new(2.0_f32, palette.arc)));
 
         let routing = ROUTING_NAMES.get(p.routing as usize).map_or_else(|| format!("#{}", p.routing), |s| (*s).to_owned());
         painter.text(
@@ -166,7 +167,7 @@ impl Widget for EnvelopeCurve<'_> {
         }
         let painter = ui.painter();
         painter.rect_filled(rect, egui::Rounding::same(4.0), theme::SCOPE_BG);
-        painter.rect_stroke(rect, egui::Rounding::same(4.0), Stroke::new(1.0_f32, theme::SCOPE_BORDER));
+        painter.rect_stroke(rect, egui::Rounding::same(4.0), Stroke::new(1.0_f32, theme::palette().edge));
 
         let pad = 8.0;
         let (width, height) = (rect.width() - 2.0 * pad, rect.height() - 2.0 * pad - 10.0);
@@ -193,7 +194,7 @@ impl Widget for EnvelopeCurve<'_> {
         let p2 = pos2(p1.x + d * width, level(sustain_start));
         let p3 = pos2(p2.x + s * width, level(sustain_end));
         let p4 = pos2(p3.x + r * width, bottom);
-        let line = theme::TRACE_SECONDARY;
+        let line = theme::palette().led_on;
         for segment in [[p0, p1], [p1, p2], [p2, p3], [p3, p4]] {
             painter.line_segment(segment, Stroke::new(2.0_f32, line));
         }

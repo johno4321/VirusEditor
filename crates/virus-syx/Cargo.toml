@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Access Virus Rack (OS 2.00) SysEx protocol, parameter table and byte-exact patch model"
 authors.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 

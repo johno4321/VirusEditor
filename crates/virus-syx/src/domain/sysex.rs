@@ -133,14 +133,9 @@ pub enum SyxError {
     InvalidFraming,
     NotAccessManufacturer,
     UnsupportedProduct(u8),
-    /// Kept for API compatibility; `parse_sysex` reports unknown commands as `SysExMessage::Other`.
-    UnknownCommand(u8),
     MessageTooShort,
-    /// Kept for API compatibility; `parse_sysex` reports checksum status via `checksum_ok`.
-    ChecksumMismatch { calculated: u8, expected: u8 },
     /// A message with a known fixed size had the wrong length.
     InvalidPayloadLength { expected: usize, found: usize },
-    InvalidPart(u8),
     /// A valid message that is not a single dump was given where one was required.
     NotASingleDump { command: u8 },
     /// Single dump bank byte outside `00..=04` (banks E–H addressing is undocumented).
@@ -161,16 +156,10 @@ impl fmt::Display for SyxError {
                 write!(f, "Manufacturer ID does not match Access Music (00 20 33)")
             }
             Self::UnsupportedProduct(id) => write!(f, "Unsupported Product ID: 0x{id:02X}"),
-            Self::UnknownCommand(cmd) => write!(f, "Unknown Virus Command byte: 0x{cmd:02X}"),
             Self::MessageTooShort => write!(f, "SysEx message is too short"),
-            Self::ChecksumMismatch { calculated, expected } => write!(
-                f,
-                "Checksum mismatch (calculated: 0x{calculated:02X}, expected: 0x{expected:02X})"
-            ),
             Self::InvalidPayloadLength { expected, found } => {
                 write!(f, "Invalid message length (expected {expected} bytes, got {found})")
             }
-            Self::InvalidPart(part) => write!(f, "Invalid part address: 0x{part:02X}"),
             Self::NotASingleDump { command } => {
                 write!(f, "Not a single dump (command 0x{command:02X})")
             }
@@ -406,9 +395,28 @@ pub fn encode_part_bank_select(device_id: u8, part: u8, value: u8) -> Vec<u8> {
     encode_param_change(device_id, Page::PageC, part, PAGE_C_PART_BANK_SELECT, value)
 }
 
-/// C32 Part Bank Change: immediate.
+/// C32 Part Bank Change: immediate. `value` is the C32 value; convert a bank index with
+/// [`part_bank_to_c32`].
 pub fn encode_part_bank_change(device_id: u8, part: u8, value: u8) -> Vec<u8> {
     encode_param_change(device_id, Page::PageC, part, PAGE_C_PART_BANK_CHANGE, value)
+}
+
+/// C32 Part Bank Change value of bank A. **Unverified on hardware (TODO F7, runbook step 12a).**
+/// The addendum lists C31/C32 as 0..3, so A is assumed to be 0, unlike the single dump byte
+/// `bb` (A = 1). If the live test shows C32 counts from 1, change only this constant: every
+/// C32 value goes through [`part_bank_to_c32`] / [`part_bank_from_c32`] ("Select on synth" and
+/// the Multi tab's Part Bank row).
+pub const PART_BANK_C32_BASE: u8 = 0;
+
+/// The C32 value for bank `index` counted from 0 (A = 0, as stored in the Multi dump's Part
+/// Bank bytes 32..47).
+pub fn part_bank_to_c32(index: u8) -> u8 {
+    index.wrapping_add(PART_BANK_C32_BASE) & 0x7F
+}
+
+/// The bank index (A = 0) of a received C32 value; `None` if it is below bank A.
+pub fn part_bank_from_c32(value: u8) -> Option<u8> {
+    (value & 0x7F).checked_sub(PART_BANK_C32_BASE)
 }
 
 /// C33 Part Program Change.
@@ -527,5 +535,18 @@ mod tests {
             assert_eq!(parse_sysex(&encoded).unwrap(), expected);
         }
         assert_eq!(encode_part_bank_change(0x10, 3, 1)[6..10], [0x72, 0x03, 0x20, 0x01]);
+    }
+
+    #[test]
+    fn part_bank_c32_round_trips_every_bank() {
+        for index in 0..4 {
+            assert_eq!(part_bank_from_c32(part_bank_to_c32(index)), Some(index));
+        }
+    }
+
+    #[test]
+    fn part_bank_c32_counts_from_zero_until_f7_is_verified() {
+        assert_eq!(PART_BANK_C32_BASE, 0);
+        assert_eq!([0, 1, 2, 3].map(part_bank_to_c32), [0, 1, 2, 3]);
     }
 }

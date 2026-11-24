@@ -2,7 +2,7 @@
 //! SysEx Part Bank Change (C32) and Part Program Change (C33) (SPEC §3.5). Both are independent
 //! of the MIDI channel and of the synth's program-change enables.
 
-use virus_syx::{encode_part_bank_change, encode_part_program_change, SingleBank};
+use virus_syx::{encode_part_bank_change, encode_part_program_change, part_bank_to_c32, SingleBank};
 
 use crate::session::EditPart;
 
@@ -16,9 +16,9 @@ pub fn select_messages(device_id: u8, part: EditPart, bank_letter: Option<&str>,
     if program > 127 {
         return Vec::new();
     }
-    // C32 counts banks from 0 (A = 0), unlike the dump byte `bb` (A = 1). Unverified on
-    // hardware (Q-series live tests).
-    let value = bank.to_raw() - 1;
+    // C32 counts banks from PART_BANK_C32_BASE, unlike the dump byte `bb` (A = 1); the shared
+    // helper is unverified on hardware (TODO F7).
+    let value = part_bank_to_c32(bank.to_raw() - 1);
     vec![
         encode_part_bank_change(device_id, part.raw(), value),
         encode_part_program_change(device_id, part.raw(), program),
@@ -58,6 +58,14 @@ mod tests {
             assert_eq!(param(&messages[0]), (Page::PageC, 5, 32, value));
             assert_eq!(param(&messages[1]), (Page::PageC, 5, 33, 127));
             assert_eq!(messages[0][5], 0x0F);
+        }
+    }
+
+    #[test]
+    fn bank_value_comes_from_the_shared_c32_helper() {
+        for (index, letter) in ["A", "B", "C", "D"].into_iter().enumerate() {
+            let messages = select_messages(0, EditPart::Single, Some(letter), 0);
+            assert_eq!(param(&messages[0]).3, part_bank_to_c32(index as u8));
         }
     }
 

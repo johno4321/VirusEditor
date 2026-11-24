@@ -29,7 +29,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
 
       # midir links libasound (ALSA). winit/glutin/xkbcommon load X11/Wayland/GL
       # via dlopen and rfd uses the xdg-portal backend, so no GTK/X11/GL dev
@@ -40,12 +40,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
 
-      - uses: dtolnay/rust-toolchain@master
+      # The action has no release tags; pinned to its `master` commit of 24 Nov 2026.
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 (v2.9.3)
         with:
           # Pushes save the cache; pull requests only restore (avoids duplicate caches).
           save-if: ${{ github.event_name == 'push' }}
@@ -61,11 +62,24 @@ jobs:
       - name: Build release (virus-app)
         run: cargo build -p virus-app --release --locked
 
+      # The `virus` CLI is the tool used in live sessions with the synth.
+      - name: Build release (virus-cli)
+        run: cargo build -p virus-cli --release --locked
+
       - name: Upload virus-app.exe
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (v4.6.2)
         with:
           name: virus-app-windows-x64
           path: target/release/virus-app.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload virus.exe
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (v4.6.2)
+        with:
+          name: virus-cli-windows-x64
+          path: target/release/virus.exe
           if-no-files-found: error
           retention-days: 14

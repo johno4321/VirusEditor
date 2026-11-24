@@ -2,25 +2,25 @@
 //! import/export, bank transfer to/from the synth, and storing the edited patch.
 
 use egui::{Align, Button, ComboBox, Context, Layout, RichText, ScrollArea, TextEdit, Ui, Window};
+use std::time::Duration;
 use virus_db::{
     BadChecksumPolicy, ImportTarget, IncomingDump, IncomingMultiDump, PatchDatabase, PatchSummary, SoundCategory,
 };
+use virus_midi::DUMP_GAP_MS;
 use virus_syx::{Patch, SingleBank};
 
-use super::{Notice, ACCENT, DANGER, DIM, WARN};
+use super::{Notice, accent, DANGER, DIM, WARN};
 use crate::comforts::LibrarySlot;
 use crate::dialogs::FileJobs;
 use crate::library::{
     first_free_slot, flagged_count, import_as_new_banks, plan_store, sendable_count, slot_label, store_patch,
-    ImportOutcome, LibraryCache, LibraryQuery, MarkChecked, PendingImport, StorePlan, MARK_CHECKED_EXPLANATION,
+    ImportOutcome, LibraryCache, LibraryQuery, MarkChecked, PendingImport, Removal, StorePlan, MARK_CHECKED_EXPLANATION,
+    STORES_FLAGGED,
 };
+use crate::session::dump_batch_duration;
 
 mod files;
 use files::PendingFile;
-
-/// Pause between dumps when sending a bank, so the synth can write each program. The Virus sends
-/// its own bank dumps ≈340 ms apart (SPEC §3.7), so ours shouldn't come faster.
-pub const BANK_SEND_GAP_MS: u64 = 300;
 
 /// Shown in the bank-send confirmations: clock merged into the Virus MIDI IN can't be seen by the editor.
 pub const TRANSPORT_REMINDER: &str = "Stop the clock/transport on your sequencer first.";
@@ -29,8 +29,9 @@ pub const TRANSPORT_REMINDER: &str = "Stop the clock/transport on your sequencer
 #[derive(Debug, Clone)]
 pub enum LibAction {
     /// `select`: the library slot, for "Select on synth" (F7) once the load has happened (E6).
-    Load { patch: Patch, origin: String, select: Option<LibrarySlot> },
-    SendToEditBuffer { patch: Patch, origin: String },
+    /// `flagged`: the patch comes from a flagged ⚠ slot or dump, so storing it keeps the flag.
+    Load { patch: Patch, origin: String, select: Option<LibrarySlot>, flagged: bool },
+    SendToEditBuffer { patch: Patch, origin: String, flagged: bool },
     RequestBank(SingleBank),
     /// `Skip` leaves patches flagged ⚠ out, `KeepInvalid` sends them as stored.
     SendBank { bank_id: i64, policy: BadChecksumPolicy },
@@ -47,6 +48,8 @@ pub enum LibAction {
 struct StoreDialog {
     /// `None` = the editor's patch.
     patch: Option<Patch>,
+    /// The edit-buffer dump in `patch` had a wrong checksum (the editor's flag comes from the app).
+    flagged: bool,
     program: u8,
     error: Option<String>,
 }
@@ -96,12 +99,23 @@ pub struct LibrarianView {
     /// Set by the app every frame: a MIDI output is connected, and the editor has unstored edits.
     pub output_connected: bool,
     pub editor_edited: bool,
+    /// Set by the app every frame: a bank or Multi bank send is running (CR-M6, CR-L11).
+    pub batch_running: bool,
+    /// Set by the app every frame: the editor's patch came from a flagged source (CR-H1).
+    pub editor_flagged: bool,
+    /// [CR-L2] A "Clear slot…" or "Delete bank…" waiting for confirmation.
+    removal: Option<Removal>,
 }
 
 /// [E6] Hover text for the store buttons while the editor compares.
 const LEAVE_COMPARE_FIRST: &str = "Leave Compare first: the editor is playing the original patch, not your edits.";
 
 impl LibrarianView {
+    /// "Fetch from synth first" needs an output and no bank send in the way (CR-M6).
+    fn can_fetch_first(&self) -> bool {
+        self.output_connected && !self.batch_running
+    }
+
     pub fn bank_id(&self) -> Option<i64> {
         self.query.bank_id
     }
@@ -132,12 +146,48 @@ impl LibrarianView {
         self.cache.slots.iter().flatten().chain(&self.cache.results).find(|s| s.id == id)
     }
 
-    /// Opens the "store" dialog for the editor's patch (`None`) or another patch, preset to the
-    /// selected slot or the first free slot of the selected bank.
-    pub fn open_store_dialog(&mut self, db: &PatchDatabase, patch: Option<Patch>) {
+    /// Opens the "store" dialog for the editor's patch (`None`) or an edit-buffer dump with its
+    /// flag (`Some((patch, flagged))`), preset to the selected slot or the first free slot of the
+    /// selected bank.
+    pub fn open_store_dialog(&mut self, db: &PatchDatabase, dump: Option<(Patch, bool)>) {
         self.refresh(db);
         let program = self.selected_program.or_else(|| first_free_slot(&self.cache.slots)).unwrap_or(0);
-        self.store = Some(StoreDialog { patch, program, error: None });
+        let (patch, flagged) = match dump {
+            Some((patch, flagged)) => (Some(patch), flagged),
+            None => (None, false),
+        };
+        self.store = Some(StoreDialog { patch, flagged, program, error: None });
+    }
+
+    /// Whether the patch in the Store dialog is flagged ⚠, so it is stored flagged (CR-H1).
+    fn store_flagged(&self, dialog: &StoreDialog) -> bool {
+        if dialog.patch.is_some() {
+            dialog.flagged
+        } else {
+            self.editor_flagged
+        }
+    }
+
+    /// Stores the dialog's patch in `bank_id` at once, with its flag.
+    fn store_now(
+        &mut self,
+        db: &PatchDatabase,
+        bank_id: i64,
+        label: &str,
+        dialog: &StoreDialog,
+        patch: &Patch,
+        actions: &mut Vec<LibAction>,
+    ) -> Result<(), String> {
+        let flagged = self.store_flagged(dialog);
+        let id = store_patch(db, bank_id, dialog.program, patch, !flagged).map_err(|e| format!("Store failed: {e}"))?;
+        let flag = if flagged { ", flagged ⚠" } else { "" };
+        actions.push(LibAction::Notice(Notice::info(format!("Stored '{}' to {label}{flag}.", patch.name()))));
+        if dialog.patch.is_none() {
+            actions.push(LibAction::StoredEditor { label: label.to_owned() }); // [comforts]
+        }
+        self.selected_program = Some(dialog.program);
+        self.selected_id = Some(id);
+        Ok(())
     }
 
     /// [E6] Why the editor's patch can't be stored right now, if it can't.
@@ -177,7 +227,7 @@ impl LibrarianView {
         received: &mut Vec<IncomingDump>,
         actions: &mut Vec<LibAction>,
     ) {
-        ui.label(RichText::new("Banks").strong().color(ACCENT));
+        ui.label(RichText::new("Banks").strong().color(accent()));
         let mut picked = None;
         for bank in &self.cache.banks {
             let mut text = bank.name.clone();
@@ -197,12 +247,19 @@ impl LibrarianView {
         if let Some(id) = picked {
             self.select_bank(id);
         }
+        // [CR-L2] user banks (backups, imports) can be deleted; the letter banks mirror the synth
+        let removal = self.query.bank_id.and_then(|id| self.cache.bank(id)).and_then(|b| Removal::bank(b, &self.cache.slots));
+        if let Some(removal) = removal {
+            if ui.small_button("🗑 Delete bank…").on_hover_text("Delete this user bank and its patches (asks first)").clicked() {
+                self.removal = Some(removal);
+            }
+        }
         if let Some(error) = &self.cache.error {
             ui.colored_label(DANGER, format!("Database error: {error}"));
         }
 
         ui.separator();
-        ui.label(RichText::new("Files").strong().color(ACCENT));
+        ui.label(RichText::new("Files").strong().color(accent()));
         let busy = self.files.busy();
         if let Some(label) = busy {
             ui.horizontal(|ui| {
@@ -244,7 +301,7 @@ impl LibrarianView {
         });
 
         ui.separator();
-        ui.label(RichText::new("Synth").strong().color(ACCENT));
+        ui.label(RichText::new("Synth").strong().color(accent()));
         ui.horizontal(|ui| {
             ui.label("Request bank");
             for bank in SingleBank::ALL {
@@ -275,7 +332,8 @@ impl LibrarianView {
             self.send_without_backup = false;
             self.send_flagged = false;
         }
-        if ui.button("⏹ Cancel sending").clicked() {
+        let cancel = ui.add_enabled(self.batch_running, Button::new("⏹ Cancel sending"));
+        if cancel.on_disabled_hover_text("Nothing is being sent.").clicked() {
             actions.push(LibAction::CancelBatch);
         }
 
@@ -285,7 +343,7 @@ impl LibrarianView {
         }
         if let Some(outcome) = &self.last_import {
             ui.separator();
-            ui.label(RichText::new("Last import").strong().color(ACCENT));
+            ui.label(RichText::new("Last import").strong().color(accent()));
             let colour = if outcome.has_warnings() { WARN } else { DIM };
             ui.label(RichText::new(outcome.summary()).color(colour).size(11.0));
         }
@@ -302,7 +360,7 @@ impl LibrarianView {
         received: &mut Vec<IncomingDump>,
         actions: &mut Vec<LibAction>,
     ) {
-        ui.label(RichText::new("Received from synth").strong().color(ACCENT));
+        ui.label(RichText::new("Received from synth").strong().color(accent()));
         let mut banks: Vec<(u8, usize)> = Vec::new();
         for dump in received.iter() {
             match banks.iter_mut().find(|(b, _)| *b == dump.bank) {
@@ -489,7 +547,7 @@ impl LibrarianView {
     }
 
     fn loose_panel(&mut self, ui: &mut Ui, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
-        ui.label(RichText::new("Edit-buffer dumps").strong().color(ACCENT))
+        ui.label(RichText::new("Edit-buffer dumps").strong().color(accent()))
             .on_hover_text("Dumps with bank byte 00 are never put in a slot by their part number (SPEC §5.6).");
         let mut store = None;
         let mut remove = None;
@@ -509,18 +567,19 @@ impl LibrarianView {
                         patch: patch.clone(),
                         origin: format!("edit-buffer dump ({part})"),
                         select: None,
+                        flagged: !dump.checksum_ok,
                     });
                 }
                 if ui.small_button("Store…").clicked() {
-                    store = Some(patch.clone());
+                    store = Some((patch.clone(), !dump.checksum_ok));
                 }
                 if ui.small_button("✖").on_hover_text("Remove from this list").clicked() {
                     remove = Some(index);
                 }
             });
         }
-        if let Some(patch) = store {
-            self.open_store_dialog(db, Some(patch));
+        if let Some(dump) = store {
+            self.open_store_dialog(db, Some(dump));
         }
         if let Some(index) = remove {
             self.loose.remove(index);
@@ -621,7 +680,7 @@ impl LibrarianView {
     }
 
     fn details(&mut self, ui: &mut Ui, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
-        ui.label(RichText::new("Selected").strong().color(ACCENT));
+        ui.label(RichText::new("Selected").strong().color(accent()));
         let bank = self.query.bank_id.and_then(|id| self.cache.bank(id)).cloned();
         let Some(summary) = self.selected_summary().cloned() else {
             match (self.selected_program, &bank) {
@@ -678,6 +737,10 @@ impl LibrarianView {
             if ui.button("Send").on_hover_text("Load and send to the synth's edit buffer").clicked() {
                 load(db, summary.id, true, actions);
             }
+            if ui.button("🗑 Clear slot…").on_hover_text("Delete this patch from the library (asks first)").clicked() {
+                let label = slot_label(summary_bank.as_ref(), summary.program_number);
+                self.removal = Some(Removal::Slot { id: summary.id, label, name: summary.name.clone() });
+            }
         });
         if summary_bank.as_ref().map(|b| b.id) == self.query.bank_id && self.store_editor_button(ui) {
             self.selected_program = Some(summary.program_number);
@@ -691,9 +754,53 @@ impl LibrarianView {
             self.refresh(db);
         }
         self.store_dialog(ctx, db, editor_patch, actions);
-        self.send_bank_dialog(ctx, actions);
+        self.send_bank_dialog(ctx, db, actions);
         self.mark_checked_dialog(ctx, db, actions);
+        self.removal_dialog(ctx, db, actions);
         self.poll_files(ctx, db, actions);
+    }
+
+    /// [CR-L2] Names what "Clear slot" / "Delete bank" would delete before doing it.
+    fn removal_dialog(&mut self, ctx: &Context, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
+        let Some(request) = self.removal.take() else { return };
+        let mut open = true;
+        let mut answer = None;
+        Window::new(request.title()).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+            ui.set_max_width(400.0);
+            ui.label(request.question());
+            ui.horizontal(|ui| {
+                if ui.add(Button::new(RichText::new(format!("🗑 {}", request.title())).color(DANGER))).clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        match answer {
+            Some(true) => self.apply_removal(db, &request, actions),
+            Some(false) => {}
+            None if open => self.removal = Some(request),
+            None => {}
+        }
+    }
+
+    fn apply_removal(&mut self, db: &PatchDatabase, request: &Removal, actions: &mut Vec<LibAction>) {
+        match request.apply(db) {
+            Ok(text) => {
+                match request {
+                    Removal::Slot { .. } => self.selected_id = None,
+                    Removal::Bank { id, .. } if self.query.bank_id == Some(*id) => {
+                        self.query.bank_id = None;
+                        self.selected_program = None;
+                        self.selected_id = None;
+                    }
+                    Removal::Bank { .. } => {}
+                }
+                actions.push(LibAction::Notice(Notice::info(text)));
+            }
+            Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
+        }
     }
 
     /// [R9] Explains what clearing the ⚠ flag means before doing it.
@@ -771,45 +878,45 @@ impl LibrarianView {
             if let Some(error) = &dialog.error {
                 ui.colored_label(DANGER, error);
             }
+            if self.store_flagged(&dialog) {
+                ui.colored_label(WARN, STORES_FLAGGED);
+            }
             // [E6] Compare started while the dialog was open: the session holds the original.
             let blocked = self.editor_store_blocked(dialog.patch.as_ref());
             if let Some(reason) = blocked {
                 ui.colored_label(WARN, reason);
             }
             let editor_patch = dialog.patch.is_none();
+            let can_fetch = self.can_fetch_first();
             if editor_patch {
-                ui.add_enabled(
-                    self.output_connected,
-                    egui::Checkbox::new(&mut self.fetch_before_store, "Fetch from synth first"),
-                )
-                .on_hover_text(
-                    "Other controllers can change the synth behind the editor's back. Request the synth's \
-                     edit buffer and store that sound instead of the editor's copy (needs a MIDI output).",
-                )
-                .on_disabled_hover_text("Connect a MIDI output to fetch from the synth.");
-                if self.fetch_before_store && self.output_connected && self.editor_edited {
+                ui.add_enabled(can_fetch, egui::Checkbox::new(&mut self.fetch_before_store, "Fetch from synth first"))
+                    .on_hover_text(
+                        "Other controllers can change the synth behind the editor's back. Request the synth's \
+                         edit buffer and store that sound instead of the editor's copy (needs a MIDI output).",
+                    )
+                    .on_disabled_hover_text(if self.output_connected {
+                        "Unavailable while a bank is being sent: the request would wait for the whole send. \
+                         Wait for it to finish, or use ⏹ Cancel sending."
+                    } else {
+                        "Connect a MIDI output to fetch from the synth."
+                    });
+                if self.fetch_before_store && can_fetch && self.editor_edited {
                     ui.colored_label(WARN, "Your unsaved edits will be replaced by the synth's sound (Undo brings them back).");
                 }
             }
+            let bank_id = bank.map(|b| b.id);
             ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
-                if ui.add_enabled(bank.is_some() && blocked.is_none(), confirm).clicked() {
-                    let bank_id = bank.map(|b| b.id).unwrap_or_default();
-                    if plan_store(self.fetch_before_store, editor_patch, self.output_connected) == StorePlan::FetchThenStore {
+                if ui.add_enabled(bank_id.is_some() && blocked.is_none(), confirm).clicked() {
+                    let bank_id = bank_id.unwrap_or_default();
+                    if plan_store(self.fetch_before_store, editor_patch, can_fetch) == StorePlan::FetchThenStore {
                         actions.push(LibAction::FetchThenStore { bank_id, program: dialog.program });
                         self.selected_program = Some(dialog.program);
                         done = true;
                     } else {
-                        match store_patch(db, bank_id, dialog.program, &patch) {
-                            Ok(id) => {
-                                actions.push(LibAction::Notice(Notice::info(format!("Stored '{}' to {label}.", patch.name()))));
-                                if dialog.patch.is_none() {
-                                    actions.push(LibAction::StoredEditor { label: label.clone() }); // [comforts]
-                                }
-                                self.selected_program = Some(dialog.program);
-                                self.selected_id = Some(id);
-                                done = true;
-                            }
-                            Err(e) => dialog.error = Some(format!("Store failed: {e}")),
+                        let label = label.clone();
+                        match self.store_now(db, bank_id, &label, &dialog, &patch, actions) {
+                            Ok(()) => done = true,
+                            Err(e) => dialog.error = Some(e),
                         }
                     }
                 }
@@ -826,7 +933,7 @@ impl LibrarianView {
         }
     }
 
-    fn send_bank_dialog(&mut self, ctx: &Context, actions: &mut Vec<LibAction>) {
+    fn send_bank_dialog(&mut self, ctx: &Context, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
         let Some(bank_id) = self.confirm_send_bank else { return };
         let Some(bank) = self.cache.bank(bank_id).cloned() else {
             self.confirm_send_bank = None;
@@ -834,8 +941,16 @@ impl LibrarianView {
         };
         let letter = bank.bank_letter.clone().unwrap_or_default();
         let synth_bank = bank.bank_letter.as_deref().and_then(|l| SingleBank::ALL.into_iter().find(|b| b.letter().to_string() == l));
-        let count = if self.query.bank_id == Some(bank_id) { self.cache.slots.iter().flatten().count() } else { 0 };
-        let flagged = if self.query.bank_id == Some(bank_id) { flagged_count(&self.cache.slots) } else { 0 };
+        // The bank being sent, even when another bank is selected in the list meanwhile (CR-L11).
+        let slots = if self.query.bank_id == Some(bank_id) {
+            Ok(self.cache.slots.clone())
+        } else {
+            db.get_bank_slots(bank_id)
+        };
+        let (count, flagged, slots_error) = match &slots {
+            Ok(slots) => (slots.iter().flatten().count(), flagged_count(slots), None),
+            Err(e) => (0, 0, Some(format!("Cannot read bank {letter} from the library: {e}"))),
+        };
         let mut open = true;
         let mut close = false;
         Window::new(format!("Send bank {letter} to the synth")).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
@@ -846,11 +961,19 @@ impl LibrarianView {
                      {count} stored slot(s) will be sent; empty library slots are skipped."
                 ),
             );
+            let n = sendable_count(count, flagged, self.send_flagged);
+            ui.label(format!(
+                "Each dump is followed by {DUMP_GAP_MS} ms of silence (about {} s in all).",
+                dump_batch_duration(n, Duration::from_millis(DUMP_GAP_MS)).as_secs_f64().ceil()
+            ));
             ui.label(TRANSPORT_REMINDER);
+            if let Some(error) = &slots_error {
+                ui.colored_label(DANGER, error);
+            }
             ui.label("Back up the synth's bank first: request it, then import it as a new library bank under 'Received from synth'.");
             let backed_up = synth_bank.is_some_and(|b| self.backed_up.contains(&b.to_raw()));
             if backed_up {
-                ui.colored_label(ACCENT, format!("✔ Bank {letter} was backed up from the synth in this session."));
+                ui.colored_label(accent(), format!("✔ Bank {letter} was backed up from the synth in this session."));
             } else {
                 ui.checkbox(&mut self.send_without_backup, "Send without a backup (the synth's current bank is lost)");
             }
@@ -891,11 +1014,12 @@ fn load(db: &PatchDatabase, id: i64, send: bool, actions: &mut Vec<LibAction>) {
         Ok(Some(record)) => {
             let patch = Patch::from_bytes(&record.data);
             let origin = format!("library ({})", record.name);
+            let flagged = !record.checksum_ok;
             actions.push(if send {
-                LibAction::SendToEditBuffer { patch, origin }
+                LibAction::SendToEditBuffer { patch, origin, flagged }
             } else {
                 let select = LibrarySlot { bank_id: record.bank_id, program: record.program_number };
-                LibAction::Load { patch, origin, select: Some(select) }
+                LibAction::Load { patch, origin, select: Some(select), flagged }
             });
         }
         Ok(None) => actions.push(LibAction::Notice(Notice::error("That patch no longer exists."))),
@@ -961,7 +1085,7 @@ mod tests {
     fn loading_a_library_patch_is_one_action_carrying_its_slot() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let a = bank_a(&db);
-        let id = db.save_patch(a, 9, Patch::init().as_bytes(), &PatchMeta::default()).unwrap();
+        let id = db.save_patch(a, 9, Patch::init().as_bytes(), &PatchMeta::default(), true).unwrap();
         let mut actions = Vec::new();
         load(&db, id, false, &mut actions);
         match actions.as_slice() {
@@ -971,6 +1095,79 @@ mod tests {
         actions.clear();
         load(&db, id, true, &mut actions);
         assert!(matches!(actions.as_slice(), [LibAction::SendToEditBuffer { .. }]));
+    }
+
+    /// [CR-H1] A flagged slot loads (and sends) as flagged, so the app stores it flagged.
+    #[test]
+    fn loading_a_flagged_slot_carries_the_flag() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let a = bank_a(&db);
+        let id = db.save_patch(a, 9, Patch::init().as_bytes(), &PatchMeta::default(), false).unwrap();
+        let mut actions = Vec::new();
+        load(&db, id, false, &mut actions);
+        load(&db, id, true, &mut actions);
+        assert!(matches!(actions[0], LibAction::Load { flagged: true, .. }));
+        assert!(matches!(actions[1], LibAction::SendToEditBuffer { flagged: true, .. }));
+    }
+
+    fn view_on_bank_a(db: &PatchDatabase) -> LibrarianView {
+        let mut view = LibrarianView::default();
+        view.set_bank_id(Some(bank_a(db)));
+        view.refresh(db);
+        view
+    }
+
+    /// [CR-H1] "Store…" on a flagged loose edit-buffer dump keeps ⚠.
+    #[test]
+    fn storing_a_flagged_loose_dump_keeps_the_flag() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let mut view = view_on_bank_a(&db);
+        view.open_store_dialog(&db, Some((Patch::init(), true)));
+        let dialog = view.store.take().unwrap();
+        let mut actions = Vec::new();
+        view.store_now(&db, bank_a(&db), "A000", &dialog, &Patch::init(), &mut actions).unwrap();
+        assert!(!db.get_patch_by_slot(bank_a(&db), dialog.program).unwrap().unwrap().checksum_ok);
+        assert!(matches!(&actions[0], LibAction::Notice(n) if n.text.contains("flagged ⚠")));
+    }
+
+    /// [CR-H1] The editor's patch is stored with the flag the app reports.
+    #[test]
+    fn storing_a_flagged_editor_patch_keeps_the_flag() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let mut view = view_on_bank_a(&db);
+        view.editor_flagged = true;
+        view.open_store_dialog(&db, None);
+        let dialog = view.store.take().unwrap();
+        let mut actions = Vec::new();
+        view.store_now(&db, bank_a(&db), "A000", &dialog, &Patch::init(), &mut actions).unwrap();
+        assert!(!db.get_patch_by_slot(bank_a(&db), dialog.program).unwrap().unwrap().checksum_ok);
+        assert!(actions.iter().any(|a| matches!(a, LibAction::StoredEditor { .. })));
+    }
+
+    #[test]
+    fn a_clean_loose_dump_is_stored_clean() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let mut view = view_on_bank_a(&db);
+        view.editor_flagged = true; // the editor's flag doesn't apply to a dump
+        view.open_store_dialog(&db, Some((Patch::init(), false)));
+        let dialog = view.store.take().unwrap();
+        view.store_now(&db, bank_a(&db), "A000", &dialog, &Patch::init(), &mut Vec::new()).unwrap();
+        assert!(db.get_patch_by_slot(bank_a(&db), dialog.program).unwrap().unwrap().checksum_ok);
+    }
+
+    /// [CR-L2] Deleting the selected user bank also clears the selection.
+    #[test]
+    fn deleting_the_selected_user_bank_clears_the_selection() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let user = db.create_bank("Backup").unwrap();
+        let mut view = LibrarianView::default();
+        view.set_bank_id(Some(user));
+        view.refresh(&db);
+        let removal = Removal::bank(view.cache.bank(user).unwrap(), &view.cache.slots).unwrap();
+        let mut actions = Vec::new();
+        view.apply_removal(&db, &removal, &mut actions);
+        assert_eq!(view.bank_id(), None);
+        assert_eq!(db.get_bank_by_id(user).unwrap(), None);
     }
 
     /// [E6] While comparing, the session holds the original, so the editor patch can't be stored.

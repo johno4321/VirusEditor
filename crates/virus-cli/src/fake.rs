@@ -26,6 +26,11 @@ pub struct FakeVirus {
     pub received: Vec<Vec<u8>>,
     /// Answer nothing at all.
     pub silent: bool,
+    /// Ignore every single dump sent to it (like a synth that rejects or never receives them).
+    pub ignore_dumps: bool,
+    /// Someone keeps turning a knob: whenever nothing else is queued, another CC arrives, so
+    /// the MIDI input never goes quiet.
+    pub chatter: bool,
     queue: VecDeque<MidiEvent>,
 }
 
@@ -54,6 +59,8 @@ impl FakeVirus {
             max_values: HashMap::new(),
             received: Vec::new(),
             silent: false,
+            ignore_dumps: false,
+            chatter: false,
             queue: VecDeque::new(),
         }
     }
@@ -99,6 +106,7 @@ impl FakeVirus {
                     self.reply(dump);
                 }
             }
+            SysExMessage::SingleDump { .. } if self.ignore_dumps => {}
             SysExMessage::SingleDump { bank: 0, program: part, data, .. } => {
                 self.edit_buffers.insert(part, *data);
             }
@@ -143,7 +151,10 @@ impl Transport for FakeVirus {
     }
 
     fn recv(&mut self, _timeout: Duration) -> Option<MidiEvent> {
-        self.queue.pop_front()
+        match self.queue.pop_front() {
+            None if self.chatter => Some(MidiEvent::ControlChange { channel: 0, controller: 40, value: 64 }),
+            event => event,
+        }
     }
 
     fn discard_pending(&mut self) -> usize {

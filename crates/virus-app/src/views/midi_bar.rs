@@ -74,8 +74,9 @@ pub fn show(
         ui.separator();
 
         let now = Instant::now();
-        led(ui, "Rx", leds.rx_lit(now), theme::LED_AMBER);
-        led(ui, "Tx", leds.tx_lit(now), theme::LED_AMBER);
+        let led_on = theme::palette().led_on;
+        led(ui, "Rx", leds.rx_lit(now), led_on);
+        led(ui, "Tx", leds.tx_lit(now), led_on);
         ui.separator();
         ui.label(RichText::new(&notice.text).size(11.0).color(notice.colour()));
     });
@@ -117,11 +118,12 @@ fn led(ui: &mut Ui, label: &str, lit: bool, colour: Color32) {
     if lit {
         painter.circle_filled(rect.center(), 8.0, colour.gamma_multiply(0.25));
     }
+    let p = theme::palette();
     painter.circle(
         rect.center(),
         5.0,
-        if lit { colour } else { theme::LED_OFF },
-        Stroke::new(1.0_f32, if lit { Color32::WHITE } else { theme::KEY_OUTLINE }),
+        if lit { colour } else { p.led_off },
+        Stroke::new(1.0_f32, if lit { Color32::WHITE } else { p.edge }),
     );
     ui.label(RichText::new(label).size(10.0).color(theme::DIM));
 }

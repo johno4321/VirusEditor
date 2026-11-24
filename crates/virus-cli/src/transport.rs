@@ -58,6 +58,8 @@ pub enum CollectError {
     Timeout { idle: Duration, missing: String, notes: Vec<String> },
     /// The MIDI layer reported an error.
     Midi(String),
+    /// Messages kept arriving for longer than the quiet-wait limit, so no request was sent.
+    NeverQuiet { dropped: usize, waited: Duration },
 }
 
 impl fmt::Display for CollectError {
@@ -74,27 +76,50 @@ impl fmt::Display for CollectError {
                 Ok(())
             }
             Self::Midi(e) => write!(f, "MIDI error: {e}"),
+            Self::NeverQuiet { dropped, waited } => write!(
+                f,
+                "the MIDI input never went quiet ({dropped} messages in {:.1} s), so nothing was sent; \
+                 stop the source (knobs, sequencer, MIDI clock) and retry",
+                waited.as_secs_f64()
+            ),
         }
     }
 }
 
 impl std::error::Error for CollectError {}
 
+/// How long [`wait_quiet`] waits for a quiet line by default before giving up:
+/// 10 × `quiet`, but at least 20 s.
+pub fn default_quiet_limit(quiet: Duration) -> Duration {
+    (quiet * 10).max(Duration::from_secs(20))
+}
+
 /// Waits until no event has arrived for `quiet`, dropping whatever does arrive (stale answers,
-/// the rest of an interrupted bank stream). Returns how many events were dropped.
+/// the rest of an interrupted bank stream). Returns how many events were dropped, or
+/// [`CollectError::NeverQuiet`] when events still arrive after `limit` (continuous knob CCs,
+/// MIDI clock, a running sequencer), instead of waiting forever.
 ///
 /// The Virus Rack ignores a request that arrives shortly after it has sent or applied
 /// something (measured 24 Nov: a bank request right after an edit-buffer answer gets no reply,
 /// 2 s later it does), so every request waits for a quiet line first.
-pub fn wait_quiet<T: Transport + ?Sized>(transport: &mut T, quiet: Duration) -> usize {
+pub fn wait_quiet<T: Transport + ?Sized>(
+    transport: &mut T,
+    quiet: Duration,
+    limit: Duration,
+) -> Result<usize, CollectError> {
+    let start = Instant::now();
     let mut dropped = transport.discard_pending();
     if quiet.is_zero() {
-        return dropped;
+        return Ok(dropped);
     }
     while transport.recv(quiet).is_some() {
         dropped += 1;
+        let waited = start.elapsed();
+        if waited >= limit {
+            return Err(CollectError::NeverQuiet { dropped, waited });
+        }
     }
-    dropped
+    Ok(dropped)
 }
 
 /// Waits for a quiet line (see [`wait_quiet`]), sends `request` (if any) and feeds incoming
@@ -108,14 +133,17 @@ pub fn exchange<T: Transport + ?Sized, C: Collector>(
     idle: Duration,
     mut progress: impl FnMut(&C),
 ) -> Result<(), CollectError> {
-    wait_quiet(transport, quiet);
+    wait_quiet(transport, quiet, default_quiet_limit(quiet))?;
     if let Some(request) = request {
         transport.send(request).map_err(CollectError::Midi)?;
     }
     let mut deadline = Instant::now() + idle;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let Some(event) = transport.recv(remaining) else {
+        // Checked before `recv` too, so a stream of irrelevant events (knob CCs, MIDI clock)
+        // can't keep the exchange waiting forever.
+        let event = if remaining.is_zero() { None } else { transport.recv(remaining) };
+        let Some(event) = event else {
             return Err(CollectError::Timeout {
                 idle,
                 missing: collector.missing(),
@@ -503,7 +531,7 @@ mod tests {
         // The rest of an interrupted bank A stream, still arriving when the next command starts.
         let stale: Vec<MidiEvent> = (68..72).map(|p| dump_event(0, 1, p, 0)).collect();
         let mut t = Replay(stale.into(), Vec::new());
-        assert_eq!(wait_quiet(&mut t, Duration::from_millis(5)), 4);
+        assert_eq!(wait_quiet(&mut t, Duration::from_millis(5), Duration::from_secs(20)), Ok(4));
         assert!(t.1.is_empty(), "nothing may be sent while the line is busy");
 
         let mut t = Replay(vec![dump_event(0, 1, 68, 0), dump_event(0, 0, 0x40, 0)].into(), Vec::new());
@@ -513,5 +541,61 @@ mod tests {
         let err = exchange(&mut t, Some(&[0xF0, 0xF7]), &mut c, Duration::from_millis(5), Duration::from_millis(10), |_| {});
         assert!(matches!(err, Err(CollectError::Timeout { .. })));
         assert_eq!(t.1, vec![vec![0xF0, 0xF7]]);
+    }
+
+    /// A transport on which a knob is being turned all the time.
+    struct Chatter(Vec<Vec<u8>>);
+
+    impl Transport for Chatter {
+        fn send(&mut self, message: &[u8]) -> Result<(), String> {
+            self.0.push(message.to_vec());
+            Ok(())
+        }
+        fn send_paced(&mut self, _: &[Vec<u8>], _: Duration, _: &mut dyn FnMut(usize, usize)) -> Result<(), String> {
+            Ok(())
+        }
+        fn recv(&mut self, _: Duration) -> Option<MidiEvent> {
+            Some(MidiEvent::ControlChange { channel: 0, controller: 40, value: 64 })
+        }
+        fn discard_pending(&mut self) -> usize {
+            0
+        }
+    }
+
+    #[test]
+    fn waiting_for_a_quiet_line_gives_up_after_the_limit() {
+        let mut t = Chatter(Vec::new());
+        let limit = Duration::from_millis(30);
+        match wait_quiet(&mut t, Duration::from_millis(5), limit) {
+            Err(CollectError::NeverQuiet { dropped, waited }) => {
+                assert!(dropped > 0);
+                assert!(waited >= limit);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_never_quiet_error_says_what_to_do() {
+        let err = CollectError::NeverQuiet { dropped: 412, waited: Duration::from_millis(20_400) };
+        assert_eq!(
+            err.to_string(),
+            "the MIDI input never went quiet (412 messages in 20.4 s), so nothing was sent; \
+             stop the source (knobs, sequencer, MIDI clock) and retry"
+        );
+    }
+
+    #[test]
+    fn the_default_quiet_limit_is_ten_times_quiet_but_at_least_20_s() {
+        assert_eq!(default_quiet_limit(Duration::from_millis(500)), Duration::from_secs(20));
+        assert_eq!(default_quiet_limit(Duration::from_secs(3)), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn irrelevant_events_cannot_keep_an_exchange_waiting_forever() {
+        let mut t = Chatter(Vec::new());
+        let mut c = EditBufferCollector::new(DeviceId(0), 0x40);
+        let err = exchange(&mut t, Some(&[0xF0, 0xF7]), &mut c, Duration::ZERO, Duration::from_millis(10), |_| {});
+        assert!(matches!(err, Err(CollectError::Timeout { .. })), "{err:?}");
     }
 }

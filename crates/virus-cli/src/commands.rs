@@ -178,7 +178,13 @@ fn send(
         ));
     }
     let mut synth = open(conn)?;
-    synth.send_edit_buffer(&dump.data)?;
+    if !dump.checksum_ok {
+        eprintln!(
+            "warning: '{name}' has a wrong checksum in the file; sending it as stored, with the checksum kept wrong, \
+             so the Virus can detect the damage (it may show an error and ignore the dump)"
+        );
+    }
+    synth.send_edit_buffer_as_stored(&dump.data, dump.checksum_ok)?;
     println!("Sent '{name}' to the edit buffer ({}). It is not stored until you STORE it on the synth.", conn.part);
     if verify {
         let back = synth.fetch().map_err(|e| e.to_string())?;
@@ -291,6 +297,13 @@ fn put_bank(conn: &ConnArgs, bank: u8, file: &Path, options: PutOptions) -> Outc
             selection.bad_checksums
         ));
     }
+    if !selection.bad_checksums.is_empty() {
+        eprintln!(
+            "warning: programs {:?} have wrong checksums in the file; they are sent as stored, with the checksums \
+             kept wrong, so the Virus can detect the damage (it may show errors and ignore those dumps)",
+            selection.bad_checksums
+        );
+    }
     let backup_command =
         format!("virus{} get-bank {letter} --out-file backup_bank_{letter}_{}.syx", conn.repeat_options(), now_stamp());
     if !options.yes {
@@ -315,7 +328,8 @@ fn put_bank(conn: &ConnArgs, bank: u8, file: &Path, options: PutOptions) -> Outc
         eprintln!("No automatic backup (--no-backup). Manual backup command:\n  {backup_command}");
     }
     let label = format!("sending to bank {letter}");
-    synth.put_bank(bank, &selection.programs, Duration::from_millis(options.gap_ms), &mut |n, total| {
+    let gap = Duration::from_millis(options.gap_ms);
+    synth.put_bank(bank, &selection.programs, &selection.bad_checksums, gap, &mut |n, total| {
         progress_line(&label, n, total)
     })?;
     eprintln!();
@@ -337,6 +351,12 @@ fn put_bank(conn: &ConnArgs, bank: u8, file: &Path, options: PutOptions) -> Outc
             println!("Verify: all {} program(s) read back byte-identical.", selection.programs.len());
         } else {
             println!("Verify: programs {mismatched:?} differ from what was sent.");
+            if !selection.bad_checksums.is_empty() {
+                println!(
+                    "(Programs {:?} were sent with wrong checksums; the Virus may have rejected them.)",
+                    selection.bad_checksums
+                );
+            }
             return Ok(false);
         }
     }
@@ -447,6 +467,7 @@ fn probe_command(conn: &ConnArgs, plan: &ProbePlan, out_file: &Path, args: &Prob
 
     let mut synth = open(conn)?;
     let backup_file = args.backup_file.clone();
+    let restore_command = send_back_command(conn, &backup_file);
     let mut stdin_prompter;
     let mut no_prompt = NoPrompt;
     let prompter: &mut dyn Prompter = if interactive {
@@ -462,7 +483,13 @@ fn probe_command(conn: &ConnArgs, plan: &ProbePlan, out_file: &Path, args: &Prob
         &options,
         prompter,
         &mut |original| {
-            write_syx(&backup_file, &[&original.frame]).map_err(|e| format!("{}: {e}", backup_file.display()))
+            write_syx(&backup_file, &[&original.frame]).map_err(|e| format!("{}: {e}", backup_file.display()))?;
+            println!("Backed up the original edit buffer to {}", backup_file.display());
+            println!(
+                "The sound is restored at the end, even after q. If you stop with Ctrl+C instead, the edit buffer \
+                 stays changed; restore it with:\n  {restore_command}"
+            );
+            Ok(())
         },
         &mut |file| {
             if let Err(e) = std::fs::write(out_file, file.to_json()) {
@@ -482,18 +509,21 @@ fn probe_command(conn: &ConnArgs, plan: &ProbePlan, out_file: &Path, args: &Prob
         println!("Probing stopped by an error: {error}");
     }
     if let Some(error) = &outcome.restore_error {
-        println!(
-            "RESTORE FAILED: {error}\nSend the original back with:\n  virus{} send {}",
-            conn.repeat_options(),
-            backup_file.display()
-        );
+        println!("RESTORE FAILED: {error}\nSend the original back with:\n  {restore_command}");
     }
     Ok(outcome.error.is_none() && outcome.restore_error.is_none())
 }
 
+/// The command that sends a saved edit buffer back to the same synth and edit buffer (part).
+fn send_back_command(conn: &ConnArgs, file: &Path) -> String {
+    let path = file.display().to_string();
+    let path = if path.contains(char::is_whitespace) { format!("\"{path}\"") } else { path };
+    format!("virus{} send {path}", conn.repeat_options())
+}
+
 fn print_probe_event(event: &ProbeEvent) {
     match event {
-        ProbeEvent::Original { name } => println!("Original edit buffer: '{name}' (backed up)"),
+        ProbeEvent::Original { name } => println!("Original edit buffer: '{name}'"),
         ProbeEvent::Skipped { value } => println!("  {value:>3}: already recorded, skipped"),
         ProbeEvent::Recorded(r) => println!(
             "  {:>3}: read back {:<4} display {:<14} printed {}{}",
@@ -517,4 +547,29 @@ fn selftest(conn: &ConnArgs, options: &SelftestOptions) -> Outcome {
     println!();
     print!("{}", format_report(&checks));
     Ok(all_passed(&checks))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn conn(args: &[&str]) -> ConnArgs {
+        Cli::try_parse_from(["virus"].iter().chain(args).chain(&["ports"])).unwrap().conn
+    }
+
+    #[test]
+    fn the_restore_command_targets_the_probed_part_on_the_same_synth() {
+        let conn = conn(&["--out", "mioXC", "--channel", "11", "--part", "2"]);
+        assert_eq!(
+            send_back_command(&conn, Path::new("probe_editbuffer_backup.syx")),
+            "virus --out \"mioXC\" --channel 11 --part 2 send probe_editbuffer_backup.syx"
+        );
+    }
+
+    #[test]
+    fn the_restore_command_quotes_a_backup_path_with_spaces() {
+        assert_eq!(send_back_command(&conn(&[]), Path::new("my backup.syx")), "virus send \"my backup.syx\"");
+    }
 }

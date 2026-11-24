@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Embedded SQLite patch librarian, category indexing, and bank storage for Access Virus"
 authors.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }

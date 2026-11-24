@@ -108,7 +108,7 @@ impl Default for AuditionPrefs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiPrefs {
-    /// `editor`, `modulation` or `librarian`.
+    /// `editor`, `modulation`, `librarian` or `multi`.
     pub tab: String,
     /// Name of the last selected library bank (names survive a database rebuild, ids don't).
     pub bank: Option<String>,
@@ -117,11 +117,23 @@ pub struct UiPrefs {
     /// The Store dialog fetches the synth's edit buffer before storing (other controllers may
     /// have changed it behind the editor's back).
     pub fetch_before_store: bool,
+    /// The old v1 library the user answered "Not now" for; the adopt prompt doesn't come back
+    /// for that file (CR-M5).
+    pub legacy_prompt_dismissed: Option<String>,
+    /// Panel look: `rack` (default) or `ti`; unknown values fall back to `rack`.
+    pub theme: String,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { tab: "editor".to_owned(), bank: None, select_on_synth: false, fetch_before_store: false }
+        Self {
+            tab: "editor".to_owned(),
+            bank: None,
+            select_on_synth: false,
+            fetch_before_store: false,
+            legacy_prompt_dismissed: None,
+            theme: "rack".to_owned(),
+        }
     }
 }
 
@@ -236,7 +248,7 @@ impl Settings {
         }
         a.length_ms = a.length_ms.clamp(50, 60_000);
 
-        if !matches!(self.ui.tab.as_str(), "editor" | "modulation" | "librarian") {
+        if !matches!(self.ui.tab.as_str(), "editor" | "modulation" | "librarian" | "multi") {
             self.ui.tab = UiPrefs::default().tab;
         }
         self.window = self.window.and_then(WindowPrefs::sanitize);
@@ -447,6 +459,8 @@ mod tests {
                 bank: Some("Bank B".into()),
                 select_on_synth: true,
                 fetch_before_store: true,
+                legacy_prompt_dismissed: Some("C:\\old\\virus_library.db".into()),
+                theme: "ti".into(),
             },
             window: Some(WindowPrefs { width: 1400.0, height: 900.0, x: Some(10.0), y: Some(20.0), maximized: false }),
             ..Settings::default()
@@ -456,6 +470,15 @@ mod tests {
         s.audition.notes = vec![48, 52, 55];
         s.folders.import = Some("C:\\Patches".into());
         assert_eq!(parse(&serialize(&s)).unwrap(), s);
+    }
+
+    #[test]
+    fn the_multi_tab_round_trips() {
+        let mut s = Settings::default();
+        s.ui.tab = "multi".into();
+        s.sanitize();
+        assert_eq!(s.ui.tab, "multi", "sanitize keeps the Multi tab");
+        assert_eq!(parse(&serialize(&s)).unwrap().ui.tab, "multi");
     }
 
     #[test]

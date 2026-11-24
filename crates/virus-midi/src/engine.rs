@@ -1,9 +1,9 @@
 //! Background MIDI worker thread. The midir-specific code is kept here and kept thin.
 
-use crate::batch::BatchQueue;
+use crate::batch::{BatchQueue, BatchSummary};
 use crate::events::{MidiCommand, MidiEvent};
 use crate::parser::MidiInputParser;
-use crate::ports::{list_input_ports, list_output_ports};
+use crate::ports::{list_input_ports, list_output_ports, PortWatch};
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use std::sync::{Arc, RwLock};
@@ -94,6 +94,7 @@ struct Worker {
     input: Option<(MidiInputConnection<MidiInputParser>, String)>,
     output: Option<(MidiOutputConnection, String)>,
     batch: BatchQueue,
+    ports: PortWatch,
 }
 
 impl Worker {
@@ -103,13 +104,19 @@ impl Worker {
             input: None,
             output: None,
             batch: BatchQueue::new(),
+            ports: PortWatch::default(),
         }
     }
 
     fn run(mut self, rx_cmd: &Receiver<MidiCommand>) {
         self.refresh_ports();
         loop {
-            let cmd = match self.batch.time_until_next(Instant::now()) {
+            let now = Instant::now();
+            let wait = match (self.batch.time_until_next(now), self.ports.time_until_poll(now)) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let cmd = match wait {
                 Some(wait) => match rx_cmd.recv_timeout(wait) {
                     Ok(cmd) => Some(cmd),
                     Err(RecvTimeoutError::Timeout) => None,
@@ -124,13 +131,17 @@ impl Worker {
                 self.handle(cmd);
             }
             if let Some(message) = self.batch.pop_due(Instant::now()) {
-                if !self.send(&message) {
-                    let dropped = self.batch.clear();
-                    if dropped > 0 {
-                        self.sink
-                            .error(format!("Batch aborted: {dropped} message(s) not sent"));
-                    }
+                let finished = if self.send(&message) {
+                    self.batch.sent(Instant::now(), message.len())
+                } else {
+                    Some(self.batch.failed())
+                };
+                if let Some(summary) = finished {
+                    self.emit_batch_finished(summary);
                 }
+            }
+            if self.ports.is_due(Instant::now()) {
+                self.poll_ports();
             }
         }
     }
@@ -138,6 +149,7 @@ impl Worker {
     fn handle(&mut self, cmd: MidiCommand) {
         match cmd {
             MidiCommand::RefreshPorts => self.refresh_ports(),
+            MidiCommand::SetPortPolling(interval) => self.ports.set_interval(interval, Instant::now()),
             MidiCommand::ConnectInput(name) => {
                 // Close first: some backends cannot open the same port twice.
                 self.input = None;
@@ -175,40 +187,64 @@ impl Worker {
                 self.batch.push(messages, Duration::from_millis(gap_ms));
             }
             MidiCommand::CancelBatch => {
-                self.batch.clear();
+                if let Some(summary) = self.batch.clear() {
+                    self.emit_batch_finished(summary);
+                }
             }
         }
     }
 
     /// Sends one message, reporting the outcome as `Sent` or `Error`. Returns success.
+    /// A port that fails to send is closed and reported in `ConnectionStatus`, so the app
+    /// reopens it (a dead handle after the device dropped off the bus, R10).
     fn send(&mut self, message: &[u8]) -> bool {
-        let result = match self.output.as_mut() {
-            None => Err("Cannot send: no MIDI output connected".to_string()),
-            Some(_) if message.is_empty() => Err("Cannot send an empty MIDI message".to_string()),
-            Some((conn, name)) => conn
-                .send(message)
-                .map_err(|e| format!("Send to '{name}' failed: {e}")),
+        let Some((conn, name)) = self.output.as_mut() else {
+            self.sink.error("Cannot send: no MIDI output connected");
+            return false;
         };
-        match result {
-            Ok(()) => {
-                self.sink.emit(MidiEvent::Sent {
-                    bytes: message.len(),
-                });
-                true
+        if message.is_empty() {
+            self.sink.error("Cannot send an empty MIDI message");
+            return false;
+        }
+        if let Err(e) = conn.send(message) {
+            self.sink.error(format!("Send to '{name}' failed: {e}; the output was closed"));
+            self.output = None;
+            self.ports.forget();
+            self.emit_status();
+            return false;
+        }
+        self.sink.emit(MidiEvent::Sent {
+            bytes: message.len(),
+        });
+        true
+    }
+
+    fn emit_batch_finished(&self, summary: BatchSummary) {
+        self.sink.emit(MidiEvent::BatchFinished {
+            sent: summary.sent,
+            dropped: summary.dropped,
+        });
+    }
+
+    /// Explicit rescan: always reports the lists.
+    fn refresh_ports(&mut self) {
+        match (list_input_ports(), list_output_ports()) {
+            (Ok(inputs), Ok(outputs)) => {
+                self.ports.changed(&inputs, &outputs);
+                self.sink.emit(MidiEvent::PortListUpdated { inputs, outputs });
             }
-            Err(e) => {
-                self.sink.error(e);
-                false
-            }
+            (Err(e), _) | (_, Err(e)) => self.sink.error(format!("Port enumeration failed: {e}")),
         }
     }
 
-    fn refresh_ports(&self) {
-        match (list_input_ports(), list_output_ports()) {
-            (Ok(inputs), Ok(outputs)) => self
-                .sink
-                .emit(MidiEvent::PortListUpdated { inputs, outputs }),
-            (Err(e), _) | (_, Err(e)) => self.sink.error(format!("Port enumeration failed: {e}")),
+    /// Periodic rescan: reports the lists only when they changed; failures are silent and
+    /// retried at the next poll.
+    fn poll_ports(&mut self) {
+        self.ports.polled(Instant::now());
+        if let (Ok(inputs), Ok(outputs)) = (list_input_ports(), list_output_ports()) {
+            if self.ports.changed(&inputs, &outputs) {
+                self.sink.emit(MidiEvent::PortListUpdated { inputs, outputs });
+            }
         }
     }
 

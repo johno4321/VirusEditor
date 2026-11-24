@@ -13,3 +13,5 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Josul"]
 license = "MIT OR Apache-2.0"
+# Nothing here is meant for crates.io (and the repository bundles © Access Music material).
+publish = false

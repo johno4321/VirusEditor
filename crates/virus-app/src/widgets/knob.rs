@@ -13,9 +13,6 @@ const BIPOLAR_CENTRE: u8 = 64;
 const WIDTH: f32 = 68.0;
 
 const BODY: Color32 = theme::KNOB_BODY;
-const BORDER: Color32 = theme::KNOB_BORDER;
-const TRACK: Color32 = theme::KNOB_TRACK;
-const ACTIVE: Color32 = theme::KNOB_ARC;
 const NEEDLE: Color32 = theme::KNOB_POINTER;
 
 pub struct Knob<'a> {
@@ -126,7 +123,8 @@ impl Widget for Knob<'_> {
             );
 
             let track_radius = self.radius + 3.0;
-            draw_arc(painter, centre, track_radius, ARC_START_ANGLE, ARC_START_ANGLE + ARC_TOTAL_ANGLE, TRACK);
+            let p = theme::palette();
+            draw_arc(painter, centre, track_radius, ARC_START_ANGLE, ARC_START_ANGLE + ARC_TOTAL_ANGLE, p.control_grey);
             let current = self.angle(f32::from(*self.value));
             if self.bipolar {
                 let centre_angle = self.angle(f32::from(BIPOLAR_CENTRE));
@@ -134,12 +132,12 @@ impl Widget for Knob<'_> {
                     [centre + vec2(0.0, -track_radius - 2.0), centre + vec2(0.0, -track_radius + 2.0)],
                     Stroke::new(1.5_f32, theme::DIM),
                 );
-                draw_arc(painter, centre, track_radius, centre_angle.min(current), centre_angle.max(current), ACTIVE);
+                draw_arc(painter, centre, track_radius, centre_angle.min(current), centre_angle.max(current), p.arc);
             } else {
-                draw_arc(painter, centre, track_radius, ARC_START_ANGLE, current, ACTIVE);
+                draw_arc(painter, centre, track_radius, ARC_START_ANGLE, current, p.arc);
             }
 
-            painter.circle(centre, self.radius, BODY, Stroke::new(1.0_f32, BORDER));
+            painter.circle(centre, self.radius, BODY, Stroke::new(1.0_f32, p.edge));
             let direction = vec2(current.cos(), current.sin());
             painter.line_segment(
                 [centre + direction * self.radius * 0.35, centre + direction * self.radius * 0.85],

@@ -1,86 +1,9 @@
-//! Value types and lossless value enums for Access Virus parameters.
+//! Lossless value enums for Access Virus parameters.
 //!
 //! Every enum here keeps an `Unknown(u8)` variant so that any raw byte read from a
 //! dump can be written back unchanged (SPEC §5.1).
 
 use std::fmt;
-
-/// Unsigned 7-bit MIDI parameter value (`0..=127`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct Unipolar7(pub u8);
-
-impl Unipolar7 {
-    pub const MIN: Self = Self(0);
-    pub const MAX: Self = Self(127);
-    pub const CENTER: Self = Self(64);
-
-    #[inline]
-    pub fn new(val: u8) -> Self {
-        Self(val.min(127))
-    }
-
-    #[inline]
-    pub fn raw(self) -> u8 {
-        self.0
-    }
-
-    #[inline]
-    pub fn normalized(self) -> f32 {
-        self.0 as f32 / 127.0
-    }
-}
-
-impl fmt::Display for Unipolar7 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-/// Signed bipolar 7-bit parameter value stored with a center offset of 64 (`-64..=+63`).
-///
-/// Raw `0` → `-64`, raw `64` → `0`, raw `127` → `+63`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct Bipolar7(pub i8);
-
-impl Bipolar7 {
-    pub const MIN: Self = Self(-64);
-    pub const ZERO: Self = Self(0);
-    pub const MAX: Self = Self(63);
-
-    #[inline]
-    pub fn from_raw(raw: u8) -> Self {
-        Self((raw.min(127) as i8) - 64)
-    }
-
-    #[inline]
-    pub fn to_raw(self) -> u8 {
-        ((self.0 as i16) + 64).clamp(0, 127) as u8
-    }
-
-    #[inline]
-    pub fn new(val: i8) -> Self {
-        Self(val.clamp(-64, 63))
-    }
-
-    #[inline]
-    pub fn normalized(self) -> f32 {
-        if self.0 >= 0 {
-            self.0 as f32 / 63.0
-        } else {
-            self.0 as f32 / 64.0
-        }
-    }
-}
-
-impl fmt::Display for Bipolar7 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.0 > 0 {
-            write!(f, "+{}", self.0)
-        } else {
-            write!(f, "{}", self.0)
-        }
-    }
-}
 
 /// Defines a lossless raw-value enum: documented values get named variants, anything
 /// else is kept as `Unknown(raw)`.

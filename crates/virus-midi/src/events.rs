@@ -1,10 +1,15 @@
 //! Commands sent to the MIDI worker and events it emits.
 
+use std::time::Duration;
+
 /// Commands sent from the UI thread to the background MIDI worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MidiCommand {
     /// Re-enumerates ports and emits [`MidiEvent::PortListUpdated`].
     RefreshPorts,
+    /// Re-enumerates ports every interval (`None` = never, the default) and emits
+    /// [`MidiEvent::PortListUpdated`] only when the lists changed.
+    SetPortPolling(Option<Duration>),
     /// Connects the input port with this exact name, replacing any current input.
     ConnectInput(String),
     /// Connects the output port with this exact name, replacing any current output.
@@ -15,8 +20,9 @@ pub enum MidiCommand {
     Disconnect,
     /// Sends one complete MIDI message (channel message or SysEx frame) immediately.
     Send(Vec<u8>),
-    /// Queues messages to be sent one by one with `gap_ms` between them.
-    /// A batch sent while another is pending is appended to it.
+    /// Queues messages to be sent one by one, keeping `gap_ms` of silence after each one has
+    /// left the wire (see [`crate::BatchQueue`]). A batch sent while another is pending is
+    /// appended to it. Ends with [`MidiEvent::BatchFinished`].
     SendBatch {
         messages: Vec<Vec<u8>>,
         gap_ms: u64,
@@ -57,6 +63,11 @@ pub enum MidiEvent {
     /// A message of `bytes` length was handed to the output port successfully.
     Sent {
         bytes: usize,
+    },
+    /// A batch ended: all sent, cancelled, or aborted because a send failed.
+    BatchFinished {
+        sent: usize,
+        dropped: usize,
     },
     Error(String),
 }

@@ -11,3 +11,13 @@
 *.db
 *.db-shm
 *.db-wal
+
+# Files the `virus` CLI, the live-session runbook and the app write into the working
+# directory (often the repo). Synth backups must never be committed by accident.
+backup_bank_*.syx
+probe_editbuffer_backup.syx
+q1_*.json
+q3_*.json
+*.v1.bak
+*.pre-adopt.bak
+settings.json.tmp

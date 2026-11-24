@@ -37,11 +37,6 @@ impl MidiInputParser {
         events
     }
 
-    /// Discards any partial message and running status.
-    pub fn reset(&mut self) {
-        *self = Self::default();
-    }
-
     fn push(&mut self, byte: u8) -> Option<MidiEvent> {
         match byte {
             // System real-time: may appear anywhere, never affects parser state.

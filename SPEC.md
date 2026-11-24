@@ -63,11 +63,11 @@ VirusEditor\
     ├── virus-syx\              # Domain: SysEx, raw Patch, parameter table (no I/O)
     │   ├── src\domain\
     │   │   ├── checksum.rs     # 7-bit checksum
-    │   │   ├── types.rs        # Unipolar7, Bipolar7, Category, AssignSource (with Unknown(u8))
+    │   │   ├── types.rs        # Category, AssignSource (with Unknown(u8))
     │   │   ├── params.rs       # SINGLE_PARAMS table (§4.1–4.2), classes, value kinds, format_value
     │   │   ├── patch.rs        # Patch([u8;256]) get/set, name, categories, DumpTarget, SingleBank
     │   │   ├── multi.rs        # Multi([u8;256]), MULTI_PARAMS (§4.4) with live Page C mapping, MultiDumpTarget, PartFlag
-    │   │   ├── sysex.rs        # parse_sysex → SysExMessage (checksum_ok), all encoders (§3)
+    │   │   ├── sysex.rs        # parse_sysex → SysExMessage (checksum_ok), all encoders (§3), C32 Part Bank mapping (§3.5)
     │   │   └── file.rs         # .syx and SMF (.mid) SysEx extraction, tolerant of the damaged files
     │   └── tests\              # factory.rs (damaged originals), clean_factory.rs (strict round trips), multis.rs (all multis.mid multis)
     ├── virus-midi\             # Transport: ports by name, input parser, batches, MidiService thread
@@ -81,11 +81,11 @@ VirusEditor\
     │       ├── library.rs      # File import/export glue, store rules, cached queries
     │       ├── storage.rs      # DB location and in-memory fallback
     │       ├── settings.rs     # Persisted settings (settings.json), migration, port restore, window geometry
-    │       ├── dialogs.rs      # Off-thread file dialogs and file I/O (one task at a time)
+    │       ├── dialogs.rs      # Off-thread file dialogs and file I/O (one task at a time); folders shared by the Librarian and Multi tabs
     │       ├── synth_select.rs # SysEx bank/program change messages for "Select on synth" (F7)
     │       ├── multi_session.rs # Multi edit buffer, incoming multi dumps/Page C, live edits, multi librarian glue
     │       ├── audition.rs     # Note audition state (§5.9)
-    │       ├── theme.rs        # Red & black palette (§5.10)
+    │       ├── theme.rs        # Rack and TI palettes, header logo (§5.10)
     │       ├── comforts.rs · history.rs · compare.rs · sections.rs # Undo/redo, Compare, diff, section copy/paste (E1–E5)
     │       ├── renderer.rs     # Renderer choice: OpenGL first, wgpu/WARP fallback (G1)
     │       ├── views\          # editor.rs (generated from SINGLE_PARAMS), modulation.rs, librarian.rs (+ librarian\files.rs: file import), multi.rs (Multi tab), comforts.rs, midi_bar.rs, controls.rs
@@ -122,7 +122,7 @@ All bytes are hex. Every message is `F0 00 20 33 01 dd <message> F7`:
 * `bb`: `00` = edit buffer, `01–04` = Single Bank **A–D**. Factory Bank A dumps use `01`; Bank B dumps use `02`.
 * `ss`: program 0–127. When `bb = 00`, `ss` is the **part**: `00–0F` (Multi) or `40` (Single).
 * Data: Page A bytes 0–127, then Page B bytes 128–255. **The data offset equals the parameter number** (byte `n` = A`n`; byte `128+n` = B`n`).
-* `cs` = (dd + 10 + bb + ss + Σdata) AND 7F. The manual calls the checksum "optional": the Virus **accepts a wrong checksum** but shows an error. The editor must always send a correct checksum. On import it should report a mismatch rather than silently drop the dump.
+* `cs` = (dd + 10 + bb + ss + Σdata) AND 7F. The manual calls the checksum "optional": the Virus **accepts a wrong checksum** but shows an error. The editor must always send a correct checksum for sounds it builds or edits. On import it should report a mismatch rather than silently drop the dump. A dump that arrived with a wrong checksum is never silently "fixed": when the user explicitly sends it anyway (the app's "Send them anyway" / "⚠ as stored", the CLI's `--allow-bad-checksum`), it goes out **as stored, with its checksum still wrong**, so the Virus can still detect the damage.
 
 ### 3.3 Multi dump `11` (p. 207; addendum p. 25)
 `F0 00 20 33 01 dd 11 bb mm [256 bytes] cs F7`. `bb`: `00` = Multi edit buffer (`mm` ignored), `01` = Multi bank. The checksum is the same formula with `11`. Layout in §4.4.
@@ -146,7 +146,7 @@ Page C parameter changes, independent of MIDI channel and of the program-change 
 * `72 pp 21 vv`: C33 Part Program Change
 * `72 00 69 vv`: C105 Multi Program Change
 
-**Implementation (F7):** the optional "Select on synth" setting sends C32 then C33 to the edited part (Single `40` or the Multi part) when a library patch from bank A–D is loaded (`synth_select.rs`). The C32 value is sent **0-based** (A=0 … D=3), unlike the dump byte `bb` (A=1 … D=4). **Unverified on hardware** (TODO G2). The CLI can test it: `virus set C32 <v>` and `set C33 <p>` send Page C to the part, and `send-hex` sends any raw message (see the CLI README, "Testing C32"). It only makes sense when the library bank mirrors the synth's bank, so the label says so. User banks send nothing.
+**Implementation (F7):** the optional "Select on synth" setting sends C32 then C33 to the edited part (Single `40` or the Multi part) when a library patch from bank A–D is loaded (`synth_select.rs`). The C32 value is sent **0-based** (A=0 … D=3), unlike the dump byte `bb` (A=1 … D=4). **Unverified on hardware** (TODO F7, G2). The mapping lives in one place, `virus-syx` `sysex.rs`: `PART_BANK_C32_BASE` (0) with `part_bank_to_c32` / `part_bank_from_c32`. Both call sites use it: Select on synth, and the Multi tab's Part Bank row (§4.4; edits sent as C32, incoming C32 changes stored back as the 0-based dump byte). If the live test shows C32 is 1-based, only the constant changes. The CLI can test it: `virus set C32 <v>` and `set C33 <p>` send Page C to the part, and `send-hex` sends any raw message (see the CLI README, "Testing C32"). It only makes sense when the library bank mirrors the synth's bank, so the label says so. User banks send nothing.
 
 ### 3.6 Observed but undocumented
 * **Global dump = command `12`.** Confirmed live (24 Nov): Global request `35` is answered with `F0 00 20 33 01 dd 12 01 …` (267 bytes). The same `12` message is the one in `multis.mid`. Its layout isn't documented; keep it raw.
@@ -156,19 +156,22 @@ Page C parameter changes, independent of MIDI channel and of the program-change 
   * During a bank stream it ignores everything; cancelling the client doesn't stop the stream.
   * Shortly after it has sent an answer or applied a change, it also ignores requests. Measured: a bank request right after an edit-buffer answer got no reply; 2 s later it did. An edit-buffer request 60 ms after a param change was lost; after 500 ms it worked.
 * **CLI diagnostics:** with `-v` it reports how many stale messages it dropped; a bank answer that starts mid-stream (not at program 0) is reported as the rest of an interrupted stream.
-* **Rule for clients:** wait for the MIDI input to be silent before every request, about 500 ms for normal requests and 2 s for bank requests. Drain and report anything that arrives meanwhile. The CLI does this (`--quiet-ms`, `--bank-quiet-ms`). The app does the same: `PacedSend` (`session.rs`) holds requests (`30`–`37`) until nothing has been sent or received for 500 ms (2 s before `32/33/34/36`); later live messages queue behind them so the order is kept.
+* **Rule for clients:** wait for the MIDI input to be silent before every request, about 500 ms for normal requests and 2 s for bank requests. Drain and report anything that arrives meanwhile. The CLI does this (`--quiet-ms`, `--bank-quiet-ms`); if the input never goes quiet it gives up after max(10 × the quiet time, 20 s) with "the MIDI input never went quiet" and sends nothing. The app does the same: `PacedSend` (`session.rs`) holds requests (`30`–`37`) until nothing has been sent or received for 500 ms (2 s before `32/33/34/36`); later live messages queue behind them so the order is kept.
 * **Bank transfers are reliable:** two bank A requests 27 minutes apart were byte-identical.
 * **Measured latencies** (selftest log, `-v` timestamps):
   * edit-buffer request → answer **≈123 ms** (267 bytes take ≈85 ms on the wire, so the Virus reacts in ≈40 ms);
   * Global request → answer 113 ms;
   * bank request → first dump 122 ms. The whole bank of 128 dumps takes **43 s, one every ≈339 ms**, so the Virus pauses ≈250 ms between its own dumps.
-* **Sending banks:** pace our dumps at least as slowly as the Virus sends its own, i.e. ≥ 300 ms gaps after each 267-byte dump. 150 ms is untested and probably too fast. Verify with a read-back.
+* **Sending banks:** pace our dumps at least as slowly as the Virus sends its own, i.e. ≥ 300 ms of silence after each 267-byte dump. 150 ms is untested and probably too fast. Verify with a read-back.
+  * **How the pacing works** (`virus-midi` `BatchQueue`, since CR-M1): the batch `gap` is silence *after* each message has left the wire. The next dump is due at the time `send` returned + the message's wire time (len × 320 µs, ≈85 ms for a 267-byte dump) + `gap`, whether or not the OS send blocks until the bytes are out. The default is `virus_midi::DUMP_GAP_MS` = 300 ms for the app's bank and Multi bank sends and the CLI's `put-bank --gap-ms`: ≈385 ms start-to-start, a little slower than the Virus's own ≈339 ms, so a full bank takes ≈49 s.
+  * When a batch ends (all sent, cancelled, or a send failed), the worker reports `MidiEvent::BatchFinished { sent, dropped }`. The app then releases live messages held behind the batch (`PacedSend::finish`) and clears its "sending" state; ⏹ Cancel sending is enabled only while a batch runs. Panic doesn't stop a running bank send.
+* **Port polling:** the app asks the worker to re-list the MIDI ports every 2 s (`MidiCommand::SetPortPolling`; the CLI never polls). A send that fails closes the output, and the app reopens any wanted port that is listed but not connected, even under the same name (USB blips, selective suspend). A batch aborted by a failed send isn't resumed.
 * **Owner's studio (24 Nov plan):**
   * The Virus MIDI IN comes through a Kenton MERGE-4: the editor's output (mioXC OUT) is merged with the Maschine+ (notes and MIDI clock, via THRU-5). Virus OUT goes straight to mioXC IN, so replies arrive unmerged.
   * Our SysEx can therefore have Maschine+ notes and real-time bytes (`F8` clock etc.) between messages, or real-time bytes inside them. That's legal MIDI. Our own parsers ignore `F8`–`FF` anywhere (`virus-midi` parser, `virus-syx` file reader), and these bytes don't count as line activity.
   * The editor can't see clock arriving at the Virus, so **stop the transport before bank sends and dump requests**. That stays the user's job; the bank-send confirmations remind them. The Maschine+ may keep sending `F8` with its transport stopped (unchecked). Interleaved clock is legal, but it needs a live test with `--verify` (TODO G2). If it causes errors, switch the Maschine+ clock output off for transfers.
   * Virus globals: C120 Soft Thru Off; C121 Panel Destination Int+MIDI (knob moves reach the editor); C94 Low Page Contr; **C95 High Page stays SysEx** (the default). With PolyPrs, poly aftertouch from the Maschine+ on the Virus channel would change Page B parameters. The editor never relies on Poly Pressure. With Low Page = Contr, CCs on channel 11 do change Page A parameters (e.g. CC40 = cutoff).
-    * **Port renames:** Windows may rename the mioXC ports when its USB socket changes (e.g. "2- mioXC MIDI OUT"). The app reconnects to an available port with the same base name (leading "<digits>- " removed, case-insensitive) and keeps the remembered name, so it reconnects again when the original name returns.
+    * **Port renames:** Windows may rename the mioXC ports when its USB socket changes (e.g. "2- mioXC MIDI OUT"). The app reconnects to an available port with the same base name (leading "<digits>- " removed, case-insensitive) and keeps the remembered name, so it reconnects again when the original name returns. With port polling (above) this happens without pressing ⟳.
     * **Stale edit buffer:** with Soft Thru off, the editor never sees what the Maschine+ and KeyStep do to the Virus, so the synth's edit buffer may differ from the editor's copy. Use "Fetch from synth first" in the Store dialog (§5 rule 12) to store what the synth really has.
 
 ---
@@ -317,21 +320,25 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 2. **Sound Version (A0)** must never be changed by the editor. The Virus updates old sounds itself, so an imported sound should ideally be passed through the synth (send, then request back) before editing.
 3. **Name and categories live in the patch** (B112–121, B123–124). The librarian should read them from the patch and write them back to the patch, not keep separate copies in the database that can drift.
 4. **Names:** exactly 10 characters, ASCII 32–127, padded with spaces. Never write a byte above 127.
-5. **Live editing:** send SysEx parameter change `70`/`71` to part `40` (Single mode) or the selected part. Don't use CC/PolyPressure for output; PolyPressure is off by default. Undo, redo, Compare and section paste (§5.11) go out the same way, and A0 is never written.
+5. **Live editing:** send SysEx parameter change `70`/`71` to part `40` (Single mode) or the selected part. Don't use CC/PolyPressure for output; PolyPressure is off by default. Section paste (§5.11) goes out the same way. Undo, redo and Compare do too when a step touches at most 16 documented sound bytes; otherwise they send one edit-buffer dump (§5.11). A0 is never written.
    * **Incoming CC/PolyPressure:** accept only on the synth's channel, and only for sound parameters (class `a`/`b`), never performance controllers.
    * **Incoming SysEx parameter changes:** apply them to the part they address.
-6. **Bulk files:** import must honour `bb`. Multi dumps (`11`) in the same file go to the Multi bank (`bb=01`) or the Multi tab's loose list (`bb=00`); occupied Multi slots are confirmed like single slots.
+6. **Bulk files:** import must honour `bb`. Multi dumps (`11`) in the same file go to the Multi bank (`bb=01`) or the Multi tab's loose list (`bb=00`). Occupied library slots are never overwritten without asking: the Librarian's import confirms occupied single and Multi slots, and the Multi tab's imports (received from the synth, or a file) ask too, with **Overwrite / Only empty slots / Cancel** (`multi_session::prepare_multi_import` / `commit_multi_import`). Duplicate slots within one import are reported, for singles and multis.
    * `00` → edit-buffer dump. Never put it into a bank slot by its part number.
    * `01–04` → banks A–D.
    * Multi dumps (`11`) go to the Multi bank or the loose list (above). Unknown messages (e.g. the Global dump `12`) are skipped with a count, never misread as singles.
    * A file can hold several banks (`multis.mid` is a Total dump with edit buffers, A, B, multis and globals).
-7. **Sending banks overwrites RAM irrevocably** (manual p. 177). The same applies to the Multi bank: the app confirms, asks for a backup (all 128 multis received and saved to a file), skips flagged multis by default and paces at 300 ms. Confirm before sending A/B bank dumps, and offer a backup first (request A and B).
+   * Data bytes ≥ 0x80 are never stored or exported, for singles and multis (skipped with a count).
+7. **Sending banks overwrites RAM irrevocably** (manual p. 177). The same applies to the Multi bank: the app confirms, asks for a backup (all 128 multis received and saved to a file), skips flagged multis by default and paces at 300 ms of silence after each dump (§3.7). Confirm before sending A/B bank dumps, and offer a backup first (request A and B). **Flagged ⚠ patches and multis** (wrong checksum, or migrated from an old library) are left out of bank sends and of bank file exports by default, for singles and multis alike; the user can choose "⚠ as stored" (sent or written with the checksum still wrong, §3.2) or, for file exports only, "⚠ fix checksum".
 8. **Bundled third-party material:** the manual, addenda, OS files and factory sounds are © Access Music. They stay in this repository only because it is **private** (Q4). Don't publish them.
 9. **Note audition** (owner request, 24 Nov): the editor can play notes on the connected Virus to test patch changes without a keyboard. Details in §5.9.
 
-10. **Settings persistence** (G3): the app remembers MIDI port names, synth channel, device ID, edited part, audition settings, last tab and bank, import/export folders and window geometry in a versioned `settings.json` in the data directory (next to the library). Loading tolerates unknown or invalid fields (defaults), a corrupt file is renamed to `.bak` with a visible notice, and a saved port that no longer exists is not connected under that name: a port with the same base name (Windows renames, §3.7) is used if present, otherwise auto-detect stands in (a Virus-looking port, else the only real port, via `virus_midi::auto_pick_port`, shared with the CLI), and the saved name is kept so the app reconnects when the port returns. The "fetch before store" choice is saved too. Hold/latch is never persisted. Our own JSON file was chosen over eframe's `persistence` for per-field validation and testability.
-12. **Storing the editor patch** (R12): other controllers can change the synth behind the editor's back (§3.7). The Store dialog has "Fetch from synth first", available only with an output connected: it requests the edit buffer, adopts it through the normal fetch path (replaced unsaved edits stay undoable), then stores it in the chosen slot. A timeout (5 s) or a wrong checksum stores nothing. The overwrite confirmation (RV-H1) applies as before.
-11. **File dialogs and import/export** (U5) run off the UI thread (`dialogs.rs`): one task at a time with a busy indicator. File reads and writes happen on the worker; all database work stays on the UI thread.
+10. **Settings persistence** (G3): the app remembers MIDI port names, synth channel, device ID, edited part, audition settings, last tab (including the Multi tab) and bank, import/export folders (shared by the Librarian and the Multi tab; the one used last is saved) and window geometry in a versioned `settings.json` in the data directory (next to the library). Loading tolerates unknown or invalid fields (defaults), a corrupt file is renamed to `.bak` with a visible notice, and a saved port that no longer exists is not connected under that name: a port with the same base name (Windows renames, §3.7) is used if present, otherwise auto-detect stands in (a Virus-looking port, else the only real port, via `virus_midi::auto_pick_port`; the CLI has its own stricter `select_port`), and the saved name is kept so the app reconnects when the port returns. The "fetch before store" choice and a "Not now" answer to the legacy-library prompt are saved too. Hold/latch is never persisted. Our own JSON file was chosen over eframe's `persistence` for per-field validation and testability.
+11. **File dialogs and import/export** (U5) run off the UI thread (`dialogs.rs`): one task at a time with a busy indicator, on the Librarian and the Multi tab. File reads and writes happen on the worker; all database work stays on the UI thread.
+12. **Storing the editor patch** (R12): other controllers can change the synth behind the editor's back (§3.7). The Store dialog has "Fetch from synth first", available only with an output connected and no bank send running (the disabled checkbox says which): it requests the edit buffer, adopts it through the normal fetch path (replaced unsaved edits stay undoable), then stores it in the chosen slot. The 10 s timeout starts when the request actually goes out (it may first wait for a quiet line, §3.7); a request still queued when the store is given up is dropped. A timeout or a wrong checksum stores nothing. The overwrite confirmation (RV-H1) applies as before.
+13. **The ⚠ flag travels with the sound** (CR-H1). A patch or multi that came from a dump with a wrong checksum, or from a migrated old library, stays flagged when it is stored anywhere: into another slot, from a loose edit-buffer dump, or from the editor after loading it (`library::EditorFlag`, `MultiSession::load(.., flagged)`). Only "✔ Mark as checked…" clears the flag, after an explanation and a confirmation (`MARK_CHECKED_EXPLANATION`): per patch, per bank, and per multi on the Multi tab (`mark_checked`, `mark_bank_checked`, `mark_multi_checked`). The stored bytes are never changed by it.
+14. **One library, several programs:** the GUI and `virus get-bank --to-library` may open the same library. SQLite waits up to 2 s for a lock (busy timeout) before reporting an error.
+15. **Adopting a legacy library** (RV-M3, CR-M5): the "Copy and upgrade" prompt for an old `virus_library.db` only replaces an **empty** library (no patches, no multis and no user banks). The current library is first copied to `<library>.pre-adopt.bak` (`.2`, `.3`… if one exists). "Not now" is remembered for that file.
 
 ### 5.9 Note audition
 
@@ -361,24 +368,26 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 **Implementation:** pure builders (`note_on`, `note_off`, `control_change`, `all_notes_off`, `all_sound_off`), `NoteTracker` and `PhrasePlayer` live in `virus-midi` (`notes` module) and are unit-tested. The egui piano widget and the audition state (computer-key mapping, settings) live in `virus-app` (`widgets/piano.rs`, `audition.rs`). In Multi mode the target is the edited part's channel from the fetched Multi (`audition::auto_channel` with `MultiSession::edited_part_channel`, TODO N9); until a Multi has been fetched, part *n* is assumed to listen on channel *n*. The strip also has a manual channel override.
 
 ### 5.10 Look and feel (owner requirement, 24 Nov)
-The UI should look like the Virus Rack's front panel: **red and black**. Starting palette, taken from a photo of the unit (tune on a real screen):
+The UI should look like the Virus Rack's front panel: **crimson and black**. A second, optional theme follows the **Virus TI** (dark gunmetal, light blue highlights, red LEDs, grey LCD); the header's 🎨 menu switches between them and the choice is saved in `settings.json` (`ui.theme`: `rack` or `ti`). Rack palette, sampled from a photo of the unit:
 
 | Role | Colour | Where |
 |---|---|---|
-| Panel red | `#E8352F` (signal red; the photo's `#D7262B` was too dark for black legends: 3.96:1, below WCAG AA) | Header bar, section frames, selected tab, active knob arc, accents |
-| Accent text | `#FF5A5F` | Red text on black backgrounds |
-| Panel red, dark | `#9E1B1F` | Hover/pressed states, the big "VIRUS" lettering style for watermarks |
+| Panel red | `#C42343` (crimson, the photo's average) | Header bar, section title strips, selected tab, held piano key |
+| Arc red | `#E03A5C` (the same hue, lighter: the panel red is only 2.9:1 on control black) | Knob arcs, filter curve |
+| Accent text | `#FF6A84` | Red text on black backgrounds |
+| Panel red, dark | `#8A152E` | Hover states, header and section outlines |
 | Chassis black | `#141414` | Window and panel backgrounds |
 | Control black | `#1E1E1E` / `#2A2A2A` | Knob bodies, buttons, combo boxes |
-| Legend | `#0A0A0A` on red, `#E8E8E8` on black | Labels; text on red must stay readable (WCAG AA) |
-| LED amber | `#FFB000` | Rx/Tx and section LEDs, knob pointer |
+| Legend | white on red (the hardware's legends; black on this red is only 3.7:1), `#E8E8E8` on black | Labels; text on red must stay readable (WCAG AA) |
+| LED amber | `#FFB000` | Rx/Tx and tab LEDs, envelope curves |
 | LCD | dark slate `#1C2A33` with light text `#CFE3EA` | Patch name / value readouts |
 
-Keep all colours in one theme module so they can be adjusted in one place. **Implemented** in `crates/virus-app/src/theme.rs`; a unit test checks WCAG AA contrast (≥ 4.5:1 for text, ≥ 3:1 for graphics) for every colour pair, so retuning can't silently break readability. Tabs carry amber LEDs in a black bezel (amber directly on red is only 2.3:1), and an outlined "VIRUS" wordmark is drawn in dark red only in empty header space.
+Keep all colours in one theme module so they can be adjusted in one place. **Implemented** in `crates/virus-app/src/theme.rs` as one `Palette` per theme (`RACK`, `TI`) plus the colours they share; a unit test checks WCAG AA contrast (≥ 4.5:1 for text, ≥ 3:1 for graphics) for every colour pair in both themes, so retuning can't silently break readability. Tabs carry LEDs in a black bezel (amber directly on red is only 2.3:1). The header starts with a blocky, slanted "VIRUS" wordmark (white on a black plate, drawn with shapes) followed by the app name in spaced uppercase monospace, like the LCD's start-up screen.
 
 ### 5.11 Editor comforts (24 Nov)
 * **Undo/redo:** a history of byte-level changes (offset, before, after) to the edited patch, at most 200 steps. A continuous knob drag is one step (ended by pointer release or a 1 s pause). Load and Init start a new history.
 * **Compare:** switches the synth and the editor between the edited patch and its **original**, which is where it was loaded from (library slot, file or synth fetch). Only the differing bytes are sent. Editing is disabled while comparing, and leaving Compare restores the exact edited bytes.
+* **What undo, redo and Compare send** (`history::apply_step`, CR-M3): parameter changes (`70`/`71`) only when the step touches at most 16 bytes and all of them are documented sound parameters. Otherwise (e.g. undoing a Fetch or an incoming dump, which can differ in performance-controller bytes such as A64 Hold Pedal, or in undocumented bytes) they send **one edit-buffer dump** with the synth's current A0 kept, never a burst of parameter changes to performance or undocumented numbers.
 * **Diff:** lists the differences between the edited patch and its original or any library patch. Named parameters show formatted values; undocumented bytes show as raw offsets.
 * **Sections:** copy, paste or init all documented sound parameters of one `ParamDef.section`. Never touches A0, the name, the categories, performance controllers or undocumented bytes (§5.1).
 * **Two states are always visible:**
@@ -440,6 +449,13 @@ Detailed tasks are in [TODO.md](TODO.md).
 ---
 
 ## 9. Changelog
+* **2026-11-24 (late evening, code review 2; uncommitted on `main` until the owner commits)**
+  * Second code review of `cc7cd97` (report outside the repo: `Downloads\VirusEditor-review-2026-11-24.md`; TODO "🔍 Code review 2"). All findings fixed except H11 (`cargo fmt`).
+  * Data safety: the ⚠ flag survives Store and is cleared only by "Mark as checked" (now for multis too) (§5 rule 13); Multi-tab imports ask before overwriting (rule 6); Multi bank file export skips flagged multis by default (rule 7); 7-bit guards for multis; legacy adopt only replaces an empty library and keeps `.pre-adopt.bak` (rule 15); 2 s SQLite busy timeout (rule 14); Librarian "Clear slot…" and "Delete bank…"; Multi delete/overwrite confirmations.
+  * Live MIDI: bank-send gap = silence after each dump, one constant `virus_midi::DUMP_GAP_MS` (≈49 s per bank); `BatchFinished`; port polling every 2 s and reopening a dead output; fetch-before-store timeout from when the request goes out (§3.7, rule 12).
+  * Editor: undo/redo/Compare send one dump for large or non-sound steps (§5.11); one C32 helper for Select on synth and the Multi Part Bank row (§3.5).
+  * CLI: `--allow-bad-checksum` keeps the checksum wrong (§3.2); quiet waits give up after max(10 × quiet, 20 s); complete recovery hints; CI builds and uploads `virus.exe`, actions pinned.
+  * 439 workspace tests, clippy clean.
 * **2026-11-24 (late afternoon)**
   * **First live session** (laptop + mioXC, CLI): Virus on channel 11, Device ID 1; fetch, param changes, bank A/B backups and the Global request (`35` → `12`, §3.6) work; selftest 5/5. Found that the Virus ignores requests that come too soon (§3.7): quiet gaps added to the CLI and the app (G4); bank sends paced at 300 ms.
   * Follow-ups: Compare/replace fixes (E6), "mark as checked" (R9), multis in the main file import and the Multi bank send (F9), tab LEDs and watermark (V2), CLI stream diagnostics.

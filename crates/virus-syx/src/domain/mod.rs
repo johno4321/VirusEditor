@@ -9,7 +9,7 @@ pub mod patch;
 pub mod sysex;
 pub mod types;
 
-pub use checksum::{calculate_checksum, verify_checksum};
+pub use checksum::calculate_checksum;
 pub use file::{extract_sysex_frames, read_sysex_file};
 pub use multi::{
     multi_common_params, multi_param_for_live, multi_part_params, LiveParam, Multi, MultiDumpTarget,
@@ -27,8 +27,8 @@ pub use sysex::{
     encode_global_request, encode_multi_bank_request, encode_multi_dump,
     encode_multi_program_change, encode_multi_request, encode_param_change,
     encode_part_bank_change, encode_part_bank_select, encode_part_program_change,
-    encode_program_dump, encode_single_bank_request, encode_total_request, parse_sysex, Command,
-    Page, SysExMessage, SyxError, ACCESS_MANUFACTURER_ID, DEVICE_ID_OMNI, PART_SINGLE_BUFFER,
-    PRODUCT_ID_VIRUS,
+    encode_program_dump, encode_single_bank_request, encode_total_request, parse_sysex, part_bank_from_c32,
+    part_bank_to_c32, Command, Page, SysExMessage, SyxError, ACCESS_MANUFACTURER_ID, DEVICE_ID_OMNI,
+    PART_BANK_C32_BASE, PART_SINGLE_BUFFER, PRODUCT_ID_VIRUS,
 };
 pub use types::*;

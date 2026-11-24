@@ -30,7 +30,7 @@ pub fn describe(event: &MidiEvent, target: &Target) -> Option<String> {
             output.as_deref().unwrap_or("-")
         ),
         MidiEvent::Error(e) => format!("ERROR: {e}"),
-        MidiEvent::Sent { .. } | MidiEvent::PortListUpdated { .. } => return None,
+        MidiEvent::Sent { .. } | MidiEvent::BatchFinished { .. } | MidiEvent::PortListUpdated { .. } => return None,
     })
 }
 

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "MIDI transport for the Access Virus editor: port management, input parsing, paced sending"
 authors.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 midir = "0.9"

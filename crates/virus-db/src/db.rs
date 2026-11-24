@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, ToSql};
 
@@ -21,6 +22,10 @@ use crate::schema::{CREATE_MULTI_TABLES_SQL, CREATE_TABLES_SQL, MIGRATE_V1_TO_V2
 /// Number of program slots in a bank.
 pub const BANK_SLOTS: usize = 128;
 
+/// How long a statement waits for another connection to the same file (e.g. the CLI's
+/// `get-bank --to-library` while the GUI is open) before failing with "database is locked".
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+
 const SUMMARY_COLUMNS: &str =
     "id, bank_id, program_number, name, category1, category2, tags, favorite, checksum_ok";
 const RECORD_COLUMNS: &str =
@@ -29,7 +34,7 @@ const RECORD_COLUMNS: &str =
 const SAVE_PATCH_SQL: &str = r#"
 INSERT INTO patches (bank_id, program_number, name, category1, category2, raw_data,
                      checksum_ok, tags, favorite, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, CURRENT_TIMESTAMP)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?9, ?7, ?8, CURRENT_TIMESTAMP)
 ON CONFLICT(bank_id, program_number) DO UPDATE SET
     name = excluded.name,
     category1 = excluded.category1,
@@ -92,6 +97,7 @@ impl PatchDatabase {
             src,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
         )?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.execute(
             "VACUUM INTO ?1",
             params![dest.as_ref().to_string_lossy()],
@@ -106,7 +112,22 @@ impl PatchDatabase {
             .query_row("SELECT COUNT(*) FROM patches", [], |r| r.get::<_, i64>(0))? as usize)
     }
 
+    /// Whether the library holds nothing worth keeping: no patches, no multis and no banks
+    /// other than the letter banks A–D every new library is seeded with.
+    pub fn is_empty_library(&self) -> Result<bool> {
+        let (patches, multis, other_banks): (i64, i64, i64) = self.conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM patches),
+                    (SELECT COUNT(*) FROM multis),
+                    (SELECT COUNT(*) FROM banks
+                     WHERE bank_letter IS NULL OR bank_letter NOT IN ('A', 'B', 'C', 'D'))",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        Ok(patches == 0 && multis == 0 && other_banks == 0)
+    }
+
     fn with_connection(conn: Connection, file: Option<&Path>) -> Result<Self> {
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         let mut db = Self {
             conn,
@@ -292,12 +313,17 @@ impl PatchDatabase {
 
     /// Stores `data` byte-exact in slot `program` (0..=127) of a bank, replacing any patch
     /// there. Name and categories are derived from `data`. Returns the patch ID.
+    ///
+    /// `checksum_ok = false` stores the patch flagged ⚠ (it came from a flagged slot or from a
+    /// dump with a wrong checksum). Storing never clears a flag by itself; only
+    /// [`Self::mark_checked`] and [`Self::mark_bank_checked`] do.
     pub fn save_patch(
         &self,
         bank_id: i64,
         program: u8,
         data: &[u8; PATCH_LEN],
         meta: &PatchMeta,
+        checksum_ok: bool,
     ) -> Result<i64> {
         check_program(program)?;
         check_seven_bit(data)?;
@@ -314,6 +340,7 @@ impl PatchDatabase {
                 &data[..],
                 meta.tags,
                 meta.favorite,
+                checksum_ok,
             ],
             |r| r.get(0),
         )?;

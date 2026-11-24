@@ -6,7 +6,10 @@
 //! never touched by any accessor.
 
 use crate::params::{format_kind, ValueKind, LFO_SHAPE_NAMES};
-use crate::sysex::{encode_multi_dump, encode_param_change, parse_sysex, Page, SysExMessage, SyxError};
+use crate::sysex::{
+    encode_multi_dump, encode_param_change, parse_sysex, part_bank_from_c32, part_bank_to_c32, Page, SysExMessage,
+    SyxError, PAGE_C_PART_BANK_CHANGE,
+};
 
 /// Length of a multi program (the data block of a multi dump).
 pub const MULTI_LEN: usize = 256;
@@ -137,10 +140,28 @@ impl MultiParamDef {
 
     /// The SysEx parameter change for `value` of `part` (0..15), or `None` if the parameter
     /// can't be edited live. Common parameters are sent with part byte `00` (class `np`).
+    /// `value` is the stored byte; the Part Bank row converts it with [`part_bank_to_c32`].
     pub fn param_change(&self, device_id: u8, part: u8, value: u8) -> Option<Vec<u8>> {
         let live = self.live?;
         let part = if self.is_part_param() { part & 0x0F } else { 0 };
+        let value = if self.is_part_bank() { part_bank_to_c32(value) } else { value };
         Some(encode_param_change(device_id, live.page, part, live.number, value))
+    }
+
+    /// The stored byte for a value received live as this row's parameter change, the inverse of
+    /// [`param_change`](Self::param_change); `None` if the value has no stored counterpart (a C32
+    /// value below bank A).
+    pub fn stored_from_live(&self, value: u8) -> Option<u8> {
+        if self.is_part_bank() {
+            part_bank_from_c32(value)
+        } else {
+            Some(value)
+        }
+    }
+
+    /// The Part Bank row: stored 0-based (A = 0), sent as C32 Part Bank Change.
+    fn is_part_bank(&self) -> bool {
+        self.live == Some(LiveParam { page: Page::PageC, number: PAGE_C_PART_BANK_CHANGE })
     }
 }
 
@@ -556,6 +577,29 @@ mod tests {
         let name1 = &MULTI_PARAMS[0];
         assert_eq!(name1.param_change(0, 7, b'X').unwrap()[6..10], [0x72, 0x00, 5, b'X']);
         assert_eq!(param("Multi Clock Tempo").param_change(0, 0, 1), None);
+    }
+
+    #[test]
+    fn part_bank_edits_send_the_shared_c32_value() {
+        let bank = param("Part Bank");
+        for stored in 0..4 {
+            let message = bank.param_change(0, 2, stored).unwrap();
+            assert_eq!(message[6..10], [0x72, 0x02, 32, part_bank_to_c32(stored)]);
+        }
+    }
+
+    #[test]
+    fn incoming_part_bank_maps_back_to_the_stored_byte() {
+        let bank = param("Part Bank");
+        for stored in 0..4 {
+            assert_eq!(bank.stored_from_live(part_bank_to_c32(stored)), Some(stored));
+        }
+    }
+
+    #[test]
+    fn other_rows_store_live_values_unchanged() {
+        assert_eq!(param("Part Program").stored_from_live(17), Some(17));
+        assert_eq!(param("Part Volume").stored_from_live(127), Some(127));
     }
 
     #[test]

@@ -26,7 +26,7 @@ This file is for any AI agent (Copilot, Gemini, Claude, …) picking up work on 
 
 ```powershell
 cargo clippy --workspace --all-targets --locked -- -D warnings   # must be clean (CI runs this)
-cargo test --workspace --locked                                   # 322 tests on 24 Nov; must all pass
+cargo test --workspace --locked                                   # 439 tests on 24 Nov (evening); must all pass
 cargo build --release -p virus-app -p virus-cli                  # GUI and the `virus` CLI
 cargo run -p virus-app --release
 .\target\release\virus.exe --help
@@ -34,7 +34,7 @@ cargo run -p virus-app --release
 
 * Rust is pinned in `rust-toolchain.toml` (1.100.0; keep it in sync with `.github/workflows/ci.yml`). Windows needs the VS Build Tools C++ workload; Linux needs `libasound2-dev`.
 * Behind a proxy that breaks certificate revocation checks: `[http] check-revoke = false` in `%USERPROFILE%\.cargo\config.toml`, or set `CARGO_HTTP_CHECK_REVOKE=false`.
-* CI (GitHub Actions) runs clippy, tests and a release build on Windows and Ubuntu. `cargo fmt` isn't applied yet (TODO H11), so don't reformat files you aren't changing.
+* CI (GitHub Actions) runs clippy, tests and release builds of the app and the `virus` CLI on Windows and Ubuntu, and uploads `virus-app.exe` and `virus.exe` as artifacts. Its actions are pinned to commit SHAs (update the SHA and the version comment together). `cargo fmt` isn't applied yet (TODO H11), so don't reformat files you aren't changing.
 * **Editing docs from PowerShell 5.1:** `Get-Content`/`Set-Content` mangle UTF-8 (emoji, ✅, →) and add a BOM. Use your editor tools, or .NET `[IO.File]` with `UTF8Encoding($false)`.
 
 ## The synth and the hardware
@@ -42,7 +42,7 @@ cargo run -p virus-app --release
 * The Virus is connected to the **owner's laptop** through an iConnectivity mioXC (ports `mioXC MIDI IN` / `mioXC MIDI OUT`). **The Virus is on MIDI channel 11, Device ID 1.** Always pass `--channel 11` to the CLI.
 * An agent on another machine can't reach the synth. Prepare the exact commands, explain what to look for, and let the owner run them and paste the output. Record the results in TODO G2 ("Live test results").
 * A MIDI port can only be open in one program at a time on Windows: close the GUI before using the CLI, and the other way round.
-* **The Virus ignores requests that arrive too soon after other traffic** (SPEC §3.7). Wait for 500 ms of silence, or 2 s before bank requests. The CLI (`wait_quiet`) and the app (`PacedSend`) already do this; keep it that way. Bank sends are paced at 300 ms per dump.
+* **The Virus ignores requests that arrive too soon after other traffic** (SPEC §3.7). Wait for 500 ms of silence, or 2 s before bank requests. The CLI (`wait_quiet`) and the app (`PacedSend`) already do this; keep it that way. Bank sends are paced with 300 ms of silence after each dump (`virus_midi::DUMP_GAP_MS`, used by the app and as the CLI default; ≈49 s per bank).
 * The studio merges a sequencer into the Virus MIDI IN (SPEC §3.7 "Owner's studio"). The owner stops the transport before bank sends and dump requests.
 
 ## Safety rules (never break these)
@@ -58,6 +58,7 @@ cargo run -p virus-app --release
 
 * The factory `.mid` files in `VirusOSR200_INT/…` are **damaged** (LF→CR). Use `testdata/factory/Bank_A.syx` and `Bank_B.syx` as ground truth (SPEC §6). Don't modify `testdata`.
 * Assign/definable **destination names are unverified** (Q1). The UI shows raw numbers with greyed hints until the live probe results are in.
-* The SysEx bank byte `bb` is A=1 … D=4. The C32 "Select on synth" bank value is assumed 0-based (A=0); this is still unverified (TODO F7).
+* The SysEx bank byte `bb` is A=1 … D=4. The C32 Part Bank Change value is assumed 0-based (A=0); this is still unverified (TODO F7). It's defined once, `PART_BANK_C32_BASE` with `part_bank_to_c32`/`part_bank_from_c32` in `virus-syx` `sysex.rs`, and used by "Select on synth" and the Multi tab's Part Bank row; never hard-code the offset elsewhere.
 * Parameter offsets: data byte `n` = A`n`, byte `128+n` = B`n`. The single table `virus_syx::SINGLE_PARAMS` drives the editor, MIDI and decoding; change it there, not in the UI.
-* Tests for new behaviour go next to the code (`#[cfg(test)]`), or in `crates/virus-syx/tests/` for factory-data tests. UI logic lives in testable modules (`session.rs`, `library.rs`, `comforts.rs`, …), not in `views/`.
+* The ⚠ flag (`checksum_ok = 0`) travels with a sound: storing a flagged patch or multi anywhere keeps it flagged, and only "Mark as checked" clears it (SPEC §5 rule 13). When the user explicitly sends or exports flagged data "as stored", its checksum stays wrong (CLI `--allow-bad-checksum` too).
+* Tests for new behaviour go next to the code (`#[cfg(test)]`), or in `crates/virus-syx/tests/` for factory-data tests. UI logic lives in testable modules (`session.rs`, `library.rs`, `multi_session.rs`, `comforts.rs`, `history.rs`, `dialogs.rs`, …), not in `views/`.

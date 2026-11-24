@@ -424,7 +424,8 @@ impl Audition {
                     .response
                     .on_hover_text(
                         "Channel the notes go to. Auto: the synth channel (Global Channel) in Single \
-                         mode; in Multi mode part n is assumed to listen on channel n",
+                         mode; in Multi mode the edited part's MIDI channel from the fetched Multi \
+                         (part n uses channel n until a Multi has been fetched)",
                     );
                 if ui
                     .button("🛑 Panic")

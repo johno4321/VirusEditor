@@ -287,12 +287,15 @@ pub struct MultiSummary {
 /// Outcome of [`crate::PatchDatabase::import_multi_dumps`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MultiImportReport {
-    /// Multi bank slots written.
+    /// Multi bank slots written (distinct slots).
     pub imported: usize,
     /// Multi edit-buffer dumps (`bb == 0`); never written to a slot.
     pub loose: Vec<IncomingMultiDump>,
     /// Dumps with a wrong checksum (still imported/returned, and flagged).
     pub bad_checksum: usize,
-    /// Dumps that could not be placed (`bb` > 1, or program > 127).
+    /// Dumps that could not be placed (`bb` > 1, program > 127, or data bytes ≥ 0x80).
     pub skipped: usize,
+    /// Multi bank slots that received more than one dump in this import. The later dump wins;
+    /// the earlier ones are not counted in `imported`.
+    pub duplicates: Vec<u8>,
 }

@@ -56,6 +56,9 @@ impl Notice {
 }
 
 pub const DIM: Color32 = crate::theme::DIM;
-pub const ACCENT: Color32 = crate::theme::ACCENT_TEXT;
+/// The theme's accent as text on black.
+pub fn accent() -> Color32 {
+    crate::theme::palette().accent_text
+}
 pub const WARN: Color32 = crate::theme::WARN;
 pub const DANGER: Color32 = crate::theme::DANGER;

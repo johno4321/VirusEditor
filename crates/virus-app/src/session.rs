@@ -73,18 +73,52 @@ impl MidiSettings {
 /// being transmitted they wait, then go out in order. Requests (`30`–`37`) also wait for a
 /// quiet line, because the Virus ignores requests that arrive too soon after it has sent or
 /// applied something (SPEC §3.7, G4).
+///
+/// A batch runs from [`start`](Self::start) until the worker reports it finished
+/// ([`finish`](Self::finish)); an estimate of its length is only a fallback in case that report
+/// never comes. After it, live messages keep the batch's gap of silence.
 #[derive(Debug, Default)]
 pub struct PacedSend {
+    /// While a batch runs: the latest time it can end.
+    batch_until: Option<Instant>,
+    /// Silence kept after the batch's last message (its gap plus a dump's wire time).
+    batch_tail: Duration,
+    /// After a batch: live messages wait until then.
     busy_until: Option<Instant>,
-    queue: VecDeque<Vec<u8>>,
+    queue: VecDeque<(Ticket, Vec<u8>)>,
+    next_ticket: u64,
     /// Last MIDI sent or received.
     last_activity: Option<Instant>,
+}
+
+/// Identifies a message queued by [`PacedSend::submit_tracked`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ticket(u64);
+
+/// What [`PacedSend::submit_tracked`] did with a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Submitted {
+    /// It may go out now.
+    Now(Vec<u8>),
+    /// It waits in the queue.
+    Queued(Ticket),
 }
 
 /// Silence the Virus needs before a request (measured live, SPEC §3.7).
 pub const REQUEST_QUIET: Duration = Duration::from_millis(500);
 /// Silence before a bank, arrangement or total request.
 pub const BANK_REQUEST_QUIET: Duration = Duration::from_millis(2000);
+
+/// Length of a single or multi dump frame; batches are made of these.
+const DUMP_LEN: usize = 267;
+/// Added to a batch's estimated length before the fallback lets live messages out.
+const BATCH_END_SLACK: Duration = Duration::from_secs(2);
+
+/// How long sending `count` dumps takes with `gap` of silence after each one has left the wire
+/// (shown in the bank-send dialogs).
+pub fn dump_batch_duration(count: usize, gap: Duration) -> Duration {
+    (gap + virus_midi::wire_time(DUMP_LEN)) * u32::try_from(count).unwrap_or(u32::MAX)
+}
 
 /// How long the line must be quiet before `message` may go out (zero for non-requests).
 pub fn required_quiet(message: &[u8]) -> Duration {
@@ -97,14 +131,34 @@ pub fn required_quiet(message: &[u8]) -> Duration {
 }
 
 impl PacedSend {
-    /// A batch of `count` messages with `gap` between them starts now.
+    /// A batch of `count` dumps with `gap` of silence after each starts now. Appending to a
+    /// running batch extends it (the worker reports one end for both).
     pub fn start(&mut self, now: Instant, count: usize, gap: Duration) {
-        self.busy_until = Some(now + gap * count as u32);
+        // Per dump: the gap, the wire time, and the same again in case the OS send blocks
+        // until the bytes are out.
+        let per_dump = gap + virus_midi::wire_time(DUMP_LEN) * 2;
+        let from = self.batch_until.filter(|&t| t > now).unwrap_or(now);
+        self.batch_until = Some(from + per_dump * u32::try_from(count).unwrap_or(u32::MAX) + BATCH_END_SLACK);
+        self.batch_tail = gap + virus_midi::wire_time(DUMP_LEN);
     }
 
-    /// The batch was cancelled; waiting messages may go out.
+    /// The worker reported the batch finished (sent, cancelled or aborted) at `now`; waiting
+    /// messages go out after the gap following its last dump.
+    pub fn finish(&mut self, now: Instant) {
+        if self.batch_until.take().is_some() {
+            self.busy_until = Some(now + self.batch_tail);
+        }
+    }
+
+    /// Forgets the batch; waiting messages may go out at once.
     pub fn cancel(&mut self) {
+        self.batch_until = None;
         self.busy_until = None;
+    }
+
+    /// A batch was started and has not been reported finished (nor outlived its estimate).
+    pub fn batch_running(&self, now: Instant) -> bool {
+        self.batch_until.is_some_and(|t| now < t)
     }
 
     /// MIDI was sent or received at `now`; requests wait for the line to go quiet again.
@@ -112,12 +166,11 @@ impl PacedSend {
         self.last_activity = Some(now);
     }
 
-    fn busy(&self, now: Instant) -> bool {
-        self.busy_until.is_some_and(|t| now < t)
-    }
-
     /// When `message` may go out, if not now.
     fn ready_at(&self, message: &[u8], now: Instant) -> Option<Instant> {
+        if let Some(until) = self.batch_until.filter(|&t| now < t) {
+            return Some(until);
+        }
         if let Some(until) = self.busy_until.filter(|&t| now < t) {
             return Some(until);
         }
@@ -128,26 +181,52 @@ impl PacedSend {
 
     /// Returns the message if it can go out immediately, otherwise queues it.
     pub fn submit(&mut self, message: Vec<u8>, now: Instant) -> Option<Vec<u8>> {
+        match self.submit_tracked(message, now) {
+            Submitted::Now(message) => Some(message),
+            Submitted::Queued(_) => None,
+        }
+    }
+
+    /// Like [`submit`](Self::submit), but a queued message gets a ticket, so the caller can
+    /// tell when it went out ([`is_queued`](Self::is_queued)) or withdraw it ([`remove`](Self::remove)).
+    pub fn submit_tracked(&mut self, message: Vec<u8>, now: Instant) -> Submitted {
         if self.ready_at(&message, now).is_some() || !self.queue.is_empty() {
-            self.queue.push_back(message);
-            None
+            let ticket = Ticket(self.next_ticket);
+            self.next_ticket += 1;
+            self.queue.push_back((ticket, message));
+            Submitted::Queued(ticket)
         } else {
             self.last_activity = Some(now);
-            Some(message)
+            Submitted::Now(message)
         }
+    }
+
+    /// The message is still waiting (not yet returned by `drain_ready`, nor removed).
+    pub fn is_queued(&self, ticket: Ticket) -> bool {
+        self.queue.iter().any(|(t, _)| *t == ticket)
+    }
+
+    /// Withdraws a waiting message. Returns whether it was still queued.
+    pub fn remove(&mut self, ticket: Ticket) -> bool {
+        let before = self.queue.len();
+        self.queue.retain(|(t, _)| *t != ticket);
+        self.queue.len() != before
     }
 
     /// Queued messages that may be sent now, in order; stops at the first that must still wait.
     pub fn drain_ready(&mut self, now: Instant) -> Vec<Vec<u8>> {
-        if !self.busy(now) {
+        if !self.batch_running(now) {
+            self.batch_until = None;
+        }
+        if self.busy_until.is_some_and(|t| now >= t) {
             self.busy_until = None;
         }
         let mut ready = Vec::new();
-        while let Some(message) = self.queue.front() {
+        while let Some((_, message)) = self.queue.front() {
             if self.ready_at(message, now).is_some() {
                 break;
             }
-            let message = self.queue.pop_front().expect("front exists");
+            let (_, message) = self.queue.pop_front().expect("front exists");
             self.last_activity = Some(now);
             ready.push(message);
         }
@@ -156,7 +235,7 @@ impl PacedSend {
 
     /// How long until queued messages can be sent, if any are waiting.
     pub fn next_wakeup(&self, now: Instant) -> Option<Duration> {
-        let front = self.queue.front()?;
+        let (_, front) = self.queue.front()?;
         Some(self.ready_at(front, now).map_or(Duration::ZERO, |t| t.saturating_duration_since(now)))
     }
 }
@@ -312,6 +391,9 @@ pub fn sanitize_name(name: &str) -> String {
     name.chars().filter(|c| (' '..='~').contains(c)).take(NAME_LEN).collect()
 }
 
+/// How often the app asks the worker to re-enumerate ports (R10).
+pub const PORT_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
 /// MIDI port lists and the user's selection, by port name (R1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ports {
@@ -326,6 +408,9 @@ pub struct Ports {
     /// As reported by the worker's `ConnectionStatus`.
     pub connected_input: Option<String>,
     pub connected_output: Option<String>,
+    /// A connect command was issued and its `ConnectionStatus` hasn't arrived yet.
+    pub connecting_input: bool,
+    pub connecting_output: bool,
     /// Connect to a Virus-looking port (or the only real port) until the user picks ports by hand.
     pub auto_connect: bool,
 }
@@ -341,6 +426,8 @@ impl Default for Ports {
             wanted_output: None,
             connected_input: None,
             connected_output: None,
+            connecting_input: false,
+            connecting_output: false,
             auto_connect: true,
         }
     }
@@ -349,19 +436,29 @@ impl Default for Ports {
 impl Ports {
     /// Updates the port lists and reconnects. The wanted port is used if present, or a port
     /// with the same base name (Windows renames ports when the USB socket changes); else
-    /// auto-connect picks one, else the input/output is disconnected.
+    /// auto-connect picks one, else the input/output is disconnected. A selected port that is
+    /// listed but not connected (its connection failed or the worker closed a dead handle) is
+    /// connected again.
     pub fn on_port_list(&mut self, inputs: Vec<String>, outputs: Vec<String>) -> Vec<MidiCommand> {
         let mut commands = Vec::new();
         commands.extend(reconcile(
-            &mut self.wanted_input,
-            &mut self.selected_input,
+            PortSide {
+                wanted: &mut self.wanted_input,
+                selected: &mut self.selected_input,
+                connected: self.connected_input.as_deref(),
+                connecting: &mut self.connecting_input,
+            },
             &inputs,
             self.auto_connect,
             Side::Input,
         ));
         commands.extend(reconcile(
-            &mut self.wanted_output,
-            &mut self.selected_output,
+            PortSide {
+                wanted: &mut self.wanted_output,
+                selected: &mut self.selected_output,
+                connected: self.connected_output.as_deref(),
+                connecting: &mut self.connecting_output,
+            },
             &outputs,
             self.auto_connect,
             Side::Output,
@@ -374,6 +471,8 @@ impl Ports {
     pub fn on_status(&mut self, input: Option<String>, output: Option<String>) {
         self.connected_input = input;
         self.connected_output = output;
+        self.connecting_input = false;
+        self.connecting_output = false;
     }
 
     /// The user picked an input port (`None` = disconnect). Turns auto-connect off.
@@ -381,6 +480,7 @@ impl Ports {
         self.auto_connect = false;
         self.selected_input.clone_from(&name);
         self.wanted_input.clone_from(&name);
+        self.connecting_input = name.is_some();
         name.map_or(MidiCommand::DisconnectInput, MidiCommand::ConnectInput)
     }
 
@@ -389,6 +489,7 @@ impl Ports {
         self.auto_connect = false;
         self.selected_output.clone_from(&name);
         self.wanted_output.clone_from(&name);
+        self.connecting_output = name.is_some();
         name.map_or(MidiCommand::DisconnectOutput, MidiCommand::ConnectOutput)
     }
 
@@ -403,15 +504,19 @@ enum Side {
     Output,
 }
 
-/// Decides which port `selected` should be and returns the command if that changes. A wanted
-/// name that cannot be found is kept; auto-connect remembers its pick only when nothing was wanted.
-fn reconcile(
-    wanted: &mut Option<String>,
-    selected: &mut Option<String>,
-    available: &[String],
-    auto: bool,
-    side: Side,
-) -> Option<MidiCommand> {
+/// One side's state, as `reconcile` needs it.
+struct PortSide<'a> {
+    wanted: &'a mut Option<String>,
+    selected: &'a mut Option<String>,
+    connected: Option<&'a str>,
+    connecting: &'a mut bool,
+}
+
+/// Decides which port `selected` should be and returns the command if that changes, or if the
+/// selected port is listed but not connected (and no connect is under way). A wanted name that
+/// cannot be found is kept; auto-connect remembers its pick only when nothing was wanted.
+fn reconcile(port: PortSide<'_>, available: &[String], auto: bool, side: Side) -> Option<MidiCommand> {
+    let PortSide { wanted, selected, connected, connecting } = port;
     let target = match wanted.as_deref().and_then(|w| find_port_or_renamed(w, available)) {
         Some(found) => Some(found),
         None if auto => {
@@ -423,10 +528,12 @@ fn reconcile(
         }
         None => None,
     };
-    if target == *selected {
+    let reconnect = target.is_some() && target.as_deref() != connected && !*connecting;
+    if target == *selected && !reconnect {
         return None;
     }
     selected.clone_from(&target);
+    *connecting = target.is_some();
     Some(match (target, side) {
         (Some(name), Side::Input) => MidiCommand::ConnectInput(name),
         (Some(name), Side::Output) => MidiCommand::ConnectOutput(name),
@@ -633,27 +740,148 @@ mod tests {
         );
     }
 
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// Silence kept after a batch's last 267-byte dump with a 150 ms gap.
+    fn tail_150() -> Duration {
+        ms(150) + virus_midi::wire_time(267)
+    }
+
     #[test]
-    fn paced_send_holds_live_messages_until_the_batch_is_over() {
+    fn a_full_bank_at_the_default_gap_takes_about_49_seconds() {
+        let full_bank = dump_batch_duration(128, ms(virus_midi::DUMP_GAP_MS));
+        assert_eq!(full_bank, Duration::from_micros(128 * (300_000 + 85_440)));
+        assert_eq!(full_bank.as_secs(), 49);
+    }
+
+    #[test]
+    fn paced_send_lets_messages_out_while_no_batch_runs() {
         let t0 = Instant::now();
         let mut p = PacedSend::default();
         assert_eq!(p.submit(vec![1], t0), Some(vec![1]));
-        p.start(t0, 4, Duration::from_millis(150));
-        assert_eq!(p.submit(vec![2], t0 + Duration::from_millis(100)), None);
-        assert_eq!(p.submit(vec![3], t0 + Duration::from_millis(200)), None);
-        assert!(p.drain_ready(t0 + Duration::from_millis(599)).is_empty());
-        assert_eq!(p.next_wakeup(t0 + Duration::from_millis(500)), Some(Duration::from_millis(100)));
-        assert_eq!(p.drain_ready(t0 + Duration::from_millis(600)), vec![vec![2], vec![3]]);
-        assert_eq!(p.submit(vec![4], t0 + Duration::from_millis(601)), Some(vec![4]));
+        assert!(!p.batch_running(t0));
+    }
 
-        p.start(t0, 4, Duration::from_millis(150));
+    #[test]
+    fn paced_send_holds_live_messages_until_the_batch_is_reported_finished() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        p.start(t0, 4, ms(150));
+        assert!(p.batch_running(t0));
+        assert_eq!(p.submit(vec![2], t0 + ms(100)), None);
+        assert_eq!(p.submit(vec![3], t0 + ms(200)), None);
+        // Longer than 4 × 150 ms: a batch now ends when the worker says so.
+        assert!(p.drain_ready(t0 + ms(1000)).is_empty());
+        assert!(p.batch_running(t0 + ms(1000)));
+    }
+
+    #[test]
+    fn paced_send_keeps_the_gap_after_the_last_dump_once_finished() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        p.start(t0, 4, ms(150));
+        assert_eq!(p.submit(vec![2], t0), None);
+        let end = t0 + ms(1000);
+        p.finish(end);
+        assert!(!p.batch_running(end));
+        assert_eq!(p.next_wakeup(end), Some(tail_150()));
+        assert!(p.drain_ready(end + tail_150() - Duration::from_micros(1)).is_empty());
+        assert_eq!(p.drain_ready(end + tail_150()), vec![vec![2]]);
+    }
+
+    #[test]
+    fn paced_send_falls_back_to_an_estimate_when_no_end_is_reported() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        p.start(t0, 4, ms(150));
+        assert_eq!(p.submit(vec![2], t0), None);
+        // 4 × (gap + twice a dump's wire time) + 2 s slack.
+        let estimate = (ms(150) + virus_midi::wire_time(267) * 2) * 4 + ms(2000);
+        assert!(p.drain_ready(t0 + estimate - Duration::from_micros(1)).is_empty());
+        assert_eq!(p.drain_ready(t0 + estimate), vec![vec![2]]);
+        assert!(!p.batch_running(t0 + estimate));
+    }
+
+    #[test]
+    fn paced_send_extends_a_running_batch_that_gets_appended() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        p.start(t0, 1, ms(150));
+        let one = ms(150) + virus_midi::wire_time(267) * 2;
+        p.start(t0, 1, ms(150));
+        assert!(p.batch_running(t0 + one * 2 + ms(2000) + ms(1)));
+    }
+
+    #[test]
+    fn paced_send_cancel_releases_waiting_messages_at_once() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        p.start(t0, 4, ms(150));
         assert_eq!(p.submit(vec![5], t0), None);
         p.cancel();
+        assert!(!p.batch_running(t0));
         assert_eq!(p.drain_ready(t0), vec![vec![5]]);
     }
 
-    fn ms(n: u64) -> Duration {
-        Duration::from_millis(n)
+    #[test]
+    fn paced_send_finish_without_a_batch_does_not_hold_messages() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        p.finish(t0);
+        assert_eq!(p.submit(vec![1], t0), Some(vec![1]));
+    }
+
+    #[test]
+    fn paced_send_tracked_message_on_a_quiet_line_goes_out_now() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        let request = encode_dump_request(0x00, 0, 0x40);
+        assert_eq!(p.submit_tracked(request.clone(), t0), Submitted::Now(request));
+    }
+
+    #[test]
+    fn paced_send_tells_when_a_tracked_message_went_out() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        let request = encode_dump_request(0x00, 0, 0x40);
+        p.note_activity(t0);
+        let Submitted::Queued(ticket) = p.submit_tracked(request.clone(), t0) else { panic!("queued") };
+        assert!(p.is_queued(ticket));
+        assert!(p.drain_ready(t0 + ms(499)).is_empty());
+        assert!(p.is_queued(ticket));
+        assert_eq!(p.drain_ready(t0 + ms(500)), vec![request]);
+        assert!(!p.is_queued(ticket));
+    }
+
+    #[test]
+    fn paced_send_removes_a_queued_message_and_keeps_the_others() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        let request = encode_dump_request(0x00, 0, 0x40);
+        let change = encode_param_change(0x00, Page::PageA, 0x40, 40, 11);
+        p.note_activity(t0);
+        let Submitted::Queued(ticket) = p.submit_tracked(request, t0) else { panic!("queued") };
+        assert_eq!(p.submit(change.clone(), t0), None);
+        assert!(p.remove(ticket));
+        assert!(!p.remove(ticket));
+        assert!(!p.is_queued(ticket));
+        // The request no longer holds the change back for the quiet line.
+        assert_eq!(p.drain_ready(t0), vec![change]);
+    }
+
+    #[test]
+    fn paced_send_tickets_are_distinct() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        p.note_activity(t0);
+        let request = encode_dump_request(0x00, 0, 0x40);
+        let Submitted::Queued(first) = p.submit_tracked(request.clone(), t0) else { panic!("queued") };
+        let Submitted::Queued(second) = p.submit_tracked(request, t0) else { panic!("queued") };
+        assert_ne!(first, second);
+        p.remove(first);
+        assert!(p.is_queued(second));
     }
 
     #[test]
@@ -872,6 +1100,56 @@ mod tests {
         assert_eq!(ports.wanted_output.as_deref(), Some("mioXC MIDI OUT"));
         let back = ports.on_port_list(vec![], names(&["3- mioXC MIDI OUT"]));
         assert_eq!(back, vec![MidiCommand::ConnectOutput("3- mioXC MIDI OUT".into())]);
+    }
+
+    #[test]
+    fn port_that_returns_under_the_same_name_after_a_dead_handle_is_reconnected() {
+        let mut ports = Ports::default();
+        ports.select_output(Some("mioXC MIDI OUT".into()));
+        ports.on_status(None, Some("mioXC MIDI OUT".into()));
+        // A send failed: the worker closed the output and re-reports the unchanged list.
+        ports.on_status(None, None);
+        let commands = ports.on_port_list(vec![], names(&["mioXC MIDI OUT"]));
+        assert_eq!(commands, vec![MidiCommand::ConnectOutput("mioXC MIDI OUT".into())]);
+        assert_eq!(ports.selected_output.as_deref(), Some("mioXC MIDI OUT"));
+    }
+
+    #[test]
+    fn dead_port_that_returns_renamed_is_reconnected_under_the_new_name() {
+        let mut ports = Ports::default();
+        ports.select_output(Some("mioXC MIDI OUT".into()));
+        ports.on_status(None, Some("mioXC MIDI OUT".into()));
+        ports.on_status(None, None);
+        let commands = ports.on_port_list(vec![], names(&["2- mioXC MIDI OUT"]));
+        assert_eq!(commands, vec![MidiCommand::ConnectOutput("2- mioXC MIDI OUT".into())]);
+        assert_eq!(ports.wanted_output.as_deref(), Some("mioXC MIDI OUT"));
+    }
+
+    #[test]
+    fn unchanged_list_sends_nothing_while_connected() {
+        let mut ports = Ports::default();
+        ports.select_output(Some("mioXC MIDI OUT".into()));
+        ports.on_status(None, Some("mioXC MIDI OUT".into()));
+        assert!(ports.on_port_list(vec![], names(&["mioXC MIDI OUT"])).is_empty());
+        assert!(ports.on_port_list(vec![], names(&["mioXC MIDI OUT"])).is_empty());
+    }
+
+    #[test]
+    fn no_second_connect_while_the_first_is_under_way() {
+        let mut ports = Ports::default();
+        let first = ports.on_port_list(vec![], names(&["Virus Out"]));
+        assert_eq!(first, vec![MidiCommand::ConnectOutput("Virus Out".into())]);
+        assert!(ports.on_port_list(vec![], names(&["Virus Out"])).is_empty());
+    }
+
+    #[test]
+    fn failed_connect_is_retried_once_per_port_list() {
+        let mut ports = Ports::default();
+        ports.select_output(Some("mioXC MIDI OUT".into()));
+        ports.on_status(None, None); // e.g. the port is open in another program
+        let retry = ports.on_port_list(vec![], names(&["mioXC MIDI OUT"]));
+        assert_eq!(retry, vec![MidiCommand::ConnectOutput("mioXC MIDI OUT".into())]);
+        assert!(ports.on_port_list(vec![], names(&["mioXC MIDI OUT"])).is_empty());
     }
 
     #[test]

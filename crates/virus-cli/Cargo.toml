@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Headless command-line tool for live sessions with the Access Virus Rack: fetch, send, banks, monitor, Q1/Q3 probes, self-test"
 authors.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [[bin]]
 name = "virus"

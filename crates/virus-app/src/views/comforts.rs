@@ -5,7 +5,7 @@ use egui::{ComboBox, Context, RichText, ScrollArea, Ui, Window};
 use virus_db::PatchDatabase;
 use virus_syx::Patch;
 
-use super::{ACCENT, DIM, WARN};
+use super::{accent, DIM, WARN};
 use crate::compare::diff;
 use crate::comforts::Comforts;
 use crate::sections::{self, SectionClip};
@@ -116,7 +116,7 @@ impl ComfortsView {
             if comparing {
                 ui.label(RichText::new("COMPARE — playing the ORIGINAL; editing is disabled").strong().color(WARN));
             } else if comforts.is_edited(session) {
-                ui.label(RichText::new("● edited").strong().color(ACCENT))
+                ui.label(RichText::new("● edited").strong().color(accent()))
                     .on_hover_text("Differs from the patch as loaded; not stored");
             } else {
                 ui.label(RichText::new("unchanged").color(DIM));

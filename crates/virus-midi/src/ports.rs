@@ -1,5 +1,7 @@
 //! MIDI port enumeration and Access Virus port discovery.
 
+use std::time::{Duration, Instant};
+
 use midir::{MidiInput, MidiOutput};
 
 /// Names of all currently available MIDI input ports.
@@ -91,12 +93,103 @@ pub fn find_port_or_renamed(wanted: &str, available: &[String]) -> Option<String
     available.iter().find(|n| base_port_name(n) == base).cloned()
 }
 
+/// When the worker re-enumerates ports, and whether the lists changed since last time (R10).
+/// Polling is off until an interval is set.
+#[derive(Debug, Default)]
+pub struct PortWatch {
+    interval: Option<Duration>,
+    next_poll: Option<Instant>,
+    last: Option<(Vec<String>, Vec<String>)>,
+}
+
+impl PortWatch {
+    /// Polls every `interval` from `now` on (`None` or zero = never).
+    pub fn set_interval(&mut self, interval: Option<Duration>, now: Instant) {
+        self.interval = interval.filter(|i| !i.is_zero());
+        self.next_poll = self.interval.map(|i| now + i);
+    }
+
+    /// Time until the next poll is due, if polling is on.
+    pub fn time_until_poll(&self, now: Instant) -> Option<Duration> {
+        self.next_poll.map(|t| t.saturating_duration_since(now))
+    }
+
+    pub fn is_due(&self, now: Instant) -> bool {
+        self.next_poll.is_some_and(|t| now >= t)
+    }
+
+    /// A poll happened at `now` (successful or not): the next one is due an interval later.
+    pub fn polled(&mut self, now: Instant) {
+        self.next_poll = self.interval.map(|i| now + i);
+    }
+
+    /// Records the current lists and returns whether they differ from the last ones recorded.
+    pub fn changed(&mut self, inputs: &[String], outputs: &[String]) -> bool {
+        let same = self.last.as_ref().is_some_and(|(i, o)| i == inputs && o == outputs);
+        if !same {
+            self.last = Some((inputs.to_vec(), outputs.to_vec()));
+        }
+        !same
+    }
+
+    /// Forgets the last lists, so the next poll reports them even if they are unchanged
+    /// (e.g. after a send failure closed the output, so the app reconnects it).
+    pub fn forget(&mut self) {
+        self.last = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn port_watch_is_off_until_an_interval_is_set() {
+        let t0 = Instant::now();
+        let mut watch = PortWatch::default();
+        assert_eq!(watch.time_until_poll(t0), None);
+        assert!(!watch.is_due(t0 + Duration::from_secs(60)));
+        watch.set_interval(Some(Duration::ZERO), t0);
+        assert_eq!(watch.time_until_poll(t0), None);
+    }
+
+    #[test]
+    fn port_watch_polls_every_interval() {
+        let t0 = Instant::now();
+        let every = Duration::from_secs(2);
+        let mut watch = PortWatch::default();
+        watch.set_interval(Some(every), t0);
+        assert_eq!(watch.time_until_poll(t0), Some(every));
+        assert!(!watch.is_due(t0 + every - Duration::from_millis(1)));
+        assert!(watch.is_due(t0 + every));
+        watch.polled(t0 + every);
+        assert_eq!(watch.time_until_poll(t0 + every), Some(every));
+        watch.set_interval(None, t0);
+        assert_eq!(watch.time_until_poll(t0), None);
+    }
+
+    #[test]
+    fn port_watch_reports_only_changed_lists() {
+        let mut watch = PortWatch::default();
+        let outs = names(&["mioXC MIDI OUT"]);
+        assert!(watch.changed(&[], &outs));
+        assert!(!watch.changed(&[], &outs));
+        assert!(watch.changed(&[], &names(&["2- mioXC MIDI OUT"])));
+        assert!(watch.changed(&names(&["mioXC MIDI IN"]), &names(&["2- mioXC MIDI OUT"])));
+    }
+
+    #[test]
+    fn port_watch_reports_unchanged_lists_again_after_forget() {
+        let mut watch = PortWatch::default();
+        let outs = names(&["mioXC MIDI OUT"]);
+        watch.changed(&[], &outs);
+        watch.forget();
+        assert!(watch.changed(&[], &outs));
+        assert!(!watch.changed(&[], &outs));
     }
 
     #[test]

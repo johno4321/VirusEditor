@@ -1,4 +1,4 @@
-//! 7-bit checksum calculation and verification for Access Virus System Exclusive messages.
+//! 7-bit checksum calculation for Access Virus System Exclusive messages.
 
 /// Calculates the Access Virus 7-bit checksum over the given slice of bytes.
 ///
@@ -11,12 +11,6 @@ pub fn calculate_checksum(bytes: &[u8]) -> u8 {
     (bytes.iter().map(|&b| b as u32).sum::<u32>() & 0x7F) as u8
 }
 
-/// Verifies whether the computed checksum for the given byte slice matches the expected checksum.
-#[inline]
-pub fn verify_checksum(bytes: &[u8], expected: u8) -> bool {
-    calculate_checksum(bytes) == (expected & 0x7F)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -25,7 +19,6 @@ mod tests {
     fn test_zero_checksum() {
         let data = [0u8; 10];
         assert_eq!(calculate_checksum(&data), 0);
-        assert!(verify_checksum(&data, 0));
     }
 
     #[test]
@@ -42,7 +35,5 @@ mod tests {
         let mut payload = vec![0x00, 0x01]; // Bank 0, Prog 1
         payload.extend_from_slice(&[0x40; 256]); // 256 bytes of center value 64
         assert_eq!(calculate_checksum(&payload), 1);
-        assert!(verify_checksum(&payload, 1));
-        assert!(!verify_checksum(&payload, 2));
     }
 }

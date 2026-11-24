@@ -158,6 +158,41 @@ impl FileJobs {
     }
 }
 
+/// The import and export folders shared by the Librarian and the Multi tab: the folder either
+/// tab used last is offered by both, and is the one saved in settings.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SharedFolders {
+    pub import: Option<PathBuf>,
+    pub export: Option<PathBuf>,
+}
+
+impl SharedFolders {
+    /// Offers the folders to both tabs (at start-up).
+    pub fn offer(&self, a: &mut FileJobs, b: &mut FileJobs) {
+        a.import_dir.clone_from(&self.import);
+        b.import_dir.clone_from(&self.import);
+        a.export_dir.clone_from(&self.export);
+        b.export_dir.clone_from(&self.export);
+    }
+
+    /// Takes a folder that one tab changed since the last call and offers it to the other tab.
+    /// Call every frame.
+    pub fn sync(&mut self, a: &mut FileJobs, b: &mut FileJobs) {
+        sync_folder(&mut self.import, &mut a.import_dir, &mut b.import_dir);
+        sync_folder(&mut self.export, &mut a.export_dir, &mut b.export_dir);
+    }
+}
+
+fn sync_folder(shared: &mut Option<PathBuf>, a: &mut Option<PathBuf>, b: &mut Option<PathBuf>) {
+    if *a != *shared {
+        shared.clone_from(a);
+        b.clone_from(a);
+    } else if *b != *shared {
+        shared.clone_from(b);
+        a.clone_from(b);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +276,38 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let Outcome::Read { result, .. } = SystemBackend.run(Task::ReadFile(path)) else { panic!() };
         assert!(result.unwrap_err().starts_with("Cannot read"));
+    }
+
+    #[test]
+    fn saved_folders_are_offered_to_both_tabs() {
+        let saved = SharedFolders { import: Some(PathBuf::from("in")), export: Some(PathBuf::from("out")) };
+        let (mut librarian, mut multi) = (FileJobs::default(), FileJobs::default());
+        saved.offer(&mut librarian, &mut multi);
+        assert_eq!((librarian.import_dir.as_deref(), librarian.export_dir.as_deref()), (Some("in".as_ref()), Some("out".as_ref())));
+        assert_eq!((multi.import_dir.as_deref(), multi.export_dir.as_deref()), (Some("in".as_ref()), Some("out".as_ref())));
+    }
+
+    #[test]
+    fn a_folder_used_on_the_multi_tab_is_offered_by_the_librarian_and_saved() {
+        let mut shared = SharedFolders::default();
+        let (mut librarian, mut multi) = (FileJobs::default(), FileJobs::default());
+        multi.import_dir = Some(PathBuf::from("multis"));
+        shared.sync(&mut librarian, &mut multi);
+        assert_eq!(librarian.import_dir, Some(PathBuf::from("multis")));
+        assert_eq!(shared.import, Some(PathBuf::from("multis")));
+        assert_eq!(shared.export, None, "the export folder is separate");
+    }
+
+    #[test]
+    fn the_most_recently_used_folder_wins() {
+        let mut shared = SharedFolders::default();
+        let (mut librarian, mut multi) = (FileJobs::default(), FileJobs::default());
+        librarian.export_dir = Some(PathBuf::from("first"));
+        shared.sync(&mut librarian, &mut multi);
+        multi.export_dir = Some(PathBuf::from("second"));
+        shared.sync(&mut librarian, &mut multi);
+        assert_eq!(shared.export, Some(PathBuf::from("second")));
+        assert_eq!(librarian.export_dir, Some(PathBuf::from("second")));
     }
 
     #[test]

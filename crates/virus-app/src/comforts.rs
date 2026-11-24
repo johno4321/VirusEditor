@@ -131,7 +131,8 @@ impl Comforts {
     }
 
     /// An edit-buffer dump from the synth replaced a dirty patch (`previous`, the edited bytes).
-    /// The replacement becomes the original and the edits stay recoverable as one undo step.
+    /// The replacement becomes the original and the edits stay recoverable as one undo step;
+    /// undoing it sends one edit-buffer dump, not a parameter change per byte (`apply_step`).
     pub fn adopt_dump(&mut self, previous: &Patch, session: &Session, now: f64) {
         self.compare.discard();
         self.history.seal();
@@ -342,6 +343,53 @@ mod tests {
         assert!(!messages.is_empty());
         assert_eq!(s.patch(), &dirty, "undo restores the discarded edits exactly");
         assert!(c.is_edited(&s));
+    }
+
+    const HOLD_PEDAL: u8 = 64;
+
+    /// A factory patch with A64 Hold Pedal = 127 is the edited patch; a synth dump (A64 off, and
+    /// a different A0) replaces it and is adopted as one undo step.
+    fn adopted_over_hold_pedal_patch() -> (Comforts, Session, Patch, Patch) {
+        let banks = bank_a();
+        let pedal_down = banks.iter().find(|p| p.get(Page::PageA, HOLD_PEDAL) == 127).expect("factory patch with A64 = 127");
+        let pedal_up = banks.iter().find(|p| p.get(Page::PageA, HOLD_PEDAL) != 127).expect("factory patch with A64 < 127");
+        let mut dump = pedal_up.to_bytes();
+        dump[0] ^= 0x01;
+        let dump = Patch::from_bytes(&dump);
+
+        let mut session = Session::default();
+        session.load_patch(dump.clone());
+        let mut comforts = Comforts::new(pedal_down.clone());
+        comforts.adopt_dump(pedal_down, &session, 1.0);
+        (comforts, session, pedal_down.clone(), dump)
+    }
+
+    fn is_hold_pedal_change(message: &[u8]) -> bool {
+        message.len() > 9 && message[6..9] == [0x70, 0x40, HOLD_PEDAL]
+    }
+
+    #[test]
+    fn undoing_an_adopted_dump_sends_one_edit_buffer_dump_without_hold_pedal_change() {
+        let (mut c, mut s, previous, dump) = adopted_over_hold_pedal_patch();
+
+        let messages = c.undo(&mut s);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].len(), 267);
+        assert_eq!(messages[0][6..9], [0x10, 0x00, 0x40], "single dump to the Single edit buffer");
+        assert!(!messages.iter().any(|m| is_hold_pedal_change(m)));
+        assert_eq!(s.patch().as_bytes()[1..], previous.as_bytes()[1..], "every other byte is restored");
+        assert_eq!(s.patch().as_bytes()[0], dump.as_bytes()[0], "A0 is never changed");
+        assert_eq!(messages[0][9], dump.as_bytes()[0], "the dump carries the synth's A0");
+    }
+
+    #[test]
+    fn redoing_an_adopted_dump_sends_one_edit_buffer_dump() {
+        let (mut c, mut s, _, dump) = adopted_over_hold_pedal_patch();
+        c.undo(&mut s);
+
+        let messages = c.redo(&mut s);
+        assert_eq!(s.patch(), &dump);
+        assert_eq!(messages, vec![s.edit_buffer_dump(&dump)]);
     }
 
     #[test]

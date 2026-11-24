@@ -9,8 +9,8 @@ use crate::address::ParamAddress;
 use crate::messages;
 use crate::settings::{bank_label, Target};
 use crate::transport::{
-    exchange, wait_quiet, BankCollector, CollectError, EditBufferCollector, FirstVirusMessage, ReceivedDump,
-    Transport,
+    default_quiet_limit, exchange, wait_quiet, BankCollector, CollectError, EditBufferCollector, FirstVirusMessage,
+    ReceivedDump, Transport,
 };
 
 /// A transport plus how to address the synth and how long to wait.
@@ -25,6 +25,8 @@ pub struct Synth<T> {
     pub quiet: Duration,
     /// Quiet line required before a bank request; the Virus needs longer here.
     pub bank_quiet: Duration,
+    /// Give up waiting for a quiet line after this long (`None`: [`default_quiet_limit`]).
+    pub quiet_limit: Option<Duration>,
     /// Called with the number of stale messages dropped while waiting for a quiet line (only
     /// when some were dropped); `--verbose` prints it.
     pub on_stale: Option<Box<dyn FnMut(usize)>>,
@@ -32,7 +34,16 @@ pub struct Synth<T> {
 
 impl<T: Transport> Synth<T> {
     pub fn new(transport: T, target: Target, timeout: Duration, settle: Duration) -> Self {
-        Self { transport, target, timeout, settle, quiet: Duration::ZERO, bank_quiet: Duration::ZERO, on_stale: None }
+        Self {
+            transport,
+            target,
+            timeout,
+            settle,
+            quiet: Duration::ZERO,
+            bank_quiet: Duration::ZERO,
+            quiet_limit: None,
+            on_stale: None,
+        }
     }
 
     /// Sets the quiet gaps before requests (real hardware; the fake needs none).
@@ -49,18 +60,21 @@ impl<T: Transport> Synth<T> {
     }
 
     /// Waits for a quiet line and reports what was dropped. [`exchange`] then finds nothing left.
-    fn quiet_line(&mut self, quiet: Duration) {
-        let dropped = wait_quiet(&mut self.transport, quiet);
+    /// Fails when the input never goes quiet (see [`wait_quiet`]); nothing has been sent then.
+    fn quiet_line(&mut self, quiet: Duration) -> Result<(), CollectError> {
+        let limit = self.quiet_limit.unwrap_or_else(|| default_quiet_limit(quiet));
+        let dropped = wait_quiet(&mut self.transport, quiet, limit)?;
         if let Some(report) = self.on_stale.as_mut().filter(|_| dropped > 0) {
             report(dropped);
         }
+        Ok(())
     }
 
     /// Requests the target part's edit buffer (`30 00 pp`) and waits for its dump.
     pub fn fetch(&mut self) -> Result<ReceivedDump, CollectError> {
         let request = messages::fetch_request(&self.target);
         let mut collector = EditBufferCollector::new(self.target.device, self.target.part.raw());
-        self.quiet_line(self.quiet);
+        self.quiet_line(self.quiet)?;
         exchange(&mut self.transport, Some(&request), &mut collector, Duration::ZERO, self.timeout, |_| {})?;
         Ok(collector.into_result().expect("collector is done"))
     }
@@ -68,6 +82,15 @@ impl<T: Transport> Synth<T> {
     /// Sends `data` to the target part's edit buffer (`10 00 pp`).
     pub fn send_edit_buffer(&mut self, data: &[u8; 256]) -> Result<(), String> {
         self.transport.send(&messages::edit_buffer_dump(&self.target, data))?;
+        self.pause();
+        Ok(())
+    }
+
+    /// Sends a dump from a file to the target part's edit buffer. A dump whose checksum was
+    /// wrong in the file (`checksum_ok == false`, sent because of `--allow-bad-checksum`) keeps
+    /// a wrong checksum, so the Virus can still detect the damage.
+    pub fn send_edit_buffer_as_stored(&mut self, data: &[u8; 256], checksum_ok: bool) -> Result<(), String> {
+        self.transport.send(&messages::edit_buffer_dump_as_stored(&self.target, data, checksum_ok))?;
         self.pause();
         Ok(())
     }
@@ -81,7 +104,7 @@ impl<T: Transport> Synth<T> {
 
     /// Sends a raw message (`send-hex`) once the line is quiet, like a request.
     pub fn send_raw(&mut self, message: &[u8]) -> Result<(), String> {
-        self.quiet_line(self.quiet);
+        self.quiet_line(self.quiet).map_err(|e| e.to_string())?;
         self.transport.send(message)
     }
 
@@ -108,18 +131,22 @@ impl<T: Transport> Synth<T> {
     ) -> (BankCollector, Option<CollectError>) {
         let request = messages::bank_request(&self.target, bank);
         let mut collector = BankCollector::new(self.target.device, bank);
-        self.quiet_line(self.bank_quiet);
+        if let Err(error) = self.quiet_line(self.bank_quiet) {
+            return (collector, Some(error));
+        }
         let result = exchange(&mut self.transport, Some(&request), &mut collector, Duration::ZERO, self.timeout, |c| {
             progress(c.count())
         });
         (collector, result.err())
     }
 
-    /// Sends single dumps for `programs` into RAM bank A or B, paced by `gap`.
+    /// Sends single dumps for `programs` into RAM bank A or B, paced by `gap`. Programs listed
+    /// in `bad_checksums` had a wrong checksum in the file and keep a wrong one (as stored).
     pub fn put_bank(
         &mut self,
         bank: u8,
         programs: &[(u8, [u8; 256])],
+        bad_checksums: &[u8],
         gap: Duration,
         progress: &mut dyn FnMut(usize, usize),
     ) -> Result<(), String> {
@@ -129,7 +156,7 @@ impl<T: Transport> Synth<T> {
                 bank_label(bank)
             ));
         }
-        let frames = messages::bank_dumps(&self.target, bank, programs);
+        let frames = messages::bank_dumps(&self.target, bank, programs, bad_checksums);
         self.transport.send_paced(&frames, gap, progress)
     }
 
@@ -137,7 +164,7 @@ impl<T: Transport> Synth<T> {
     pub fn global(&mut self) -> Result<Vec<u8>, CollectError> {
         let request = messages::global_request(&self.target);
         let mut collector = FirstVirusMessage::new(self.target.device);
-        self.quiet_line(self.quiet);
+        self.quiet_line(self.quiet)?;
         exchange(&mut self.transport, Some(&request), &mut collector, Duration::ZERO, self.timeout, |_| {})?;
         Ok(collector.into_result().expect("collector is done"))
     }
@@ -214,12 +241,12 @@ mod tests {
         assert_eq!(bank.dumps()[5].data, pattern(3 * 31 + 5));
 
         let programs: Vec<(u8, [u8; 256])> = (0..128u8).map(|p| (p, pattern(p))).collect();
-        let err = s.put_bank(3, &programs, Duration::ZERO, &mut |_, _| {}).unwrap_err();
+        let err = s.put_bank(3, &programs, &[], Duration::ZERO, &mut |_, _| {}).unwrap_err();
         assert!(err.contains("ROM"));
         assert!(s.transport.received.iter().all(|m| m[6] != 0x10));
 
         let mut sent = 0;
-        s.put_bank(2, &programs, Duration::ZERO, &mut |n, _| sent = n).unwrap();
+        s.put_bank(2, &programs, &[], Duration::ZERO, &mut |n, _| sent = n).unwrap();
         assert_eq!(sent, 128);
         let (bank_b, error) = s.get_bank(2, |_| {});
         assert!(error.is_none());
@@ -293,5 +320,81 @@ mod tests {
     fn address_lists_are_limited() {
         let all: Vec<ParamAddress> = (0..5).map(ParamAddress::a).collect();
         assert_eq!(list_addresses(&all, 2), "A0, A1, … (5 total)");
+    }
+
+    /// The checksum verdict of a single dump the fake received.
+    fn sent_checksum_ok(frame: &[u8]) -> bool {
+        match virus_syx::parse_sysex(frame).unwrap() {
+            virus_syx::SysExMessage::SingleDump { checksum_ok, .. } => checksum_ok,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dump_with_a_bad_checksum_in_the_file_is_sent_with_a_bad_checksum() {
+        let mut s = synth(FakeVirus::new(0));
+        s.send_edit_buffer_as_stored(&pattern(9), false).unwrap();
+        let frame = s.transport.received.last().unwrap();
+        assert_eq!(frame[6..9], [0x10, 0x00, 0x40], "addressed to the single edit buffer");
+        assert!(!sent_checksum_ok(frame), "the Virus must still be able to see the damage");
+        assert_eq!(s.transport.edit_buffers[&0x40], pattern(9), "the data is sent unchanged");
+    }
+
+    #[test]
+    fn a_dump_with_a_good_checksum_in_the_file_is_sent_with_a_good_checksum() {
+        let mut s = synth(FakeVirus::new(0));
+        s.send_edit_buffer_as_stored(&pattern(9), true).unwrap();
+        assert!(sent_checksum_ok(s.transport.received.last().unwrap()));
+    }
+
+    #[test]
+    fn put_bank_keeps_wrong_checksums_only_for_the_programs_flagged_in_the_file() {
+        let mut s = synth(FakeVirus::new(0));
+        let programs: Vec<(u8, [u8; 256])> = (0..128u8).map(|p| (p, pattern(p))).collect();
+        s.put_bank(1, &programs, &[3, 70], Duration::ZERO, &mut |_, _| {}).unwrap();
+        let bad: Vec<u8> = s.transport.received.iter().filter(|f| !sent_checksum_ok(f)).map(|f| f[8]).collect();
+        assert_eq!(bad, [3, 70]);
+        assert_eq!(s.transport.received.len(), 128);
+    }
+
+    /// A synth whose input never goes quiet, with a short quiet-wait limit.
+    fn chattering_synth() -> Synth<FakeVirus> {
+        let mut fake = FakeVirus::new(0);
+        fake.chatter = true;
+        let mut s = synth(fake).with_quiet(Duration::from_millis(5), Duration::from_millis(5));
+        s.quiet_limit = Some(Duration::from_millis(30));
+        s
+    }
+
+    #[test]
+    fn fetch_gives_up_when_the_input_never_goes_quiet_and_sends_nothing() {
+        let mut s = chattering_synth();
+        let err = s.fetch().unwrap_err();
+        match &err {
+            CollectError::NeverQuiet { dropped, waited } => {
+                assert!(*dropped > 0);
+                assert!(*waited >= Duration::from_millis(30));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(err.to_string().contains("never went quiet"), "{err}");
+        assert!(s.transport.received.is_empty(), "no request on a busy line");
+    }
+
+    #[test]
+    fn get_bank_gives_up_when_the_input_never_goes_quiet_and_sends_nothing() {
+        let mut s = chattering_synth();
+        let (bank, error) = s.get_bank(1, |_| {});
+        assert_eq!(bank.count(), 0);
+        assert!(matches!(error, Some(CollectError::NeverQuiet { .. })), "{error:?}");
+        assert!(s.transport.received.is_empty(), "no request on a busy line");
+    }
+
+    #[test]
+    fn send_raw_and_global_give_up_when_the_input_never_goes_quiet() {
+        let mut s = chattering_synth();
+        assert!(s.send_raw(&[0xF0, 0x00, 0x20, 0x33, 0x01, 0x00, 0x35, 0xF7]).unwrap_err().contains("never went quiet"));
+        assert!(matches!(s.global(), Err(CollectError::NeverQuiet { .. })));
+        assert!(s.transport.received.is_empty(), "nothing is sent on a busy line");
     }
 }
