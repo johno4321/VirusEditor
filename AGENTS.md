@@ -26,7 +26,7 @@ This file is for any AI agent (Copilot, Gemini, Claude, …) picking up work on 
 
 ```powershell
 cargo clippy --workspace --all-targets --locked -- -D warnings   # must be clean (CI runs this)
-cargo test --workspace --locked                                   # 308 tests on 24 Nov; must all pass
+cargo test --workspace --locked                                   # 322 tests on 24 Nov; must all pass
 cargo build --release -p virus-app -p virus-cli                  # GUI and the `virus` CLI
 cargo run -p virus-app --release
 .\target\release\virus.exe --help

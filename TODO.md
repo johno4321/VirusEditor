@@ -8,13 +8,13 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 **The goal is an editor and librarian that never corrupts a sound (SPEC §1.1).** Read [AGENTS.md](AGENTS.md) first if you're an AI agent picking this up.
 
 **State on 24 Nov, evening:**
-* Everything is on `main` and pushed to GitHub. CI is green on Windows and Ubuntu, 308 tests pass, and clippy is clean with `-D warnings`. There are no other branches, except possibly `rework/studio-robustness` (see "In flight").
+* Everything is on `main` and pushed to GitHub. CI is green on Windows and Ubuntu, 322 tests pass, and clippy is clean with `-D warnings`. There are no other branches.
 * All 256 factory patches round-trip byte-identically. The editor, Assign panel, librarian, Multi tab, note audition, editor comforts and the `virus` CLI are built.
 * **The CLI has been used with the real synth** (24 Nov; results under G2 below): ports, fetch, param changes, bank backups, Global request and selftest 5/5 all pass. The timing problem it found is fixed in the CLI and the app (SPEC §3.7).
 * **The GUI hasn't been used with the synth yet.** Its live checks are G2, E7 and N8.
 * Owner's setup: the Virus Rack is on **MIDI channel 11**, Device ID 1, through an iConnectivity mioXC on a laptop. Studio routing: SPEC §3.7 "Owner's studio".
 
-**In flight (may land after this handoff):** branch `rework/studio-robustness`. It adds: the app reconnects to renamed ports (Windows' `2- mioXC…` prefix) and auto-picks the only real port; a Panic button in the header plus `virus panic`; and "Fetch from synth first" in the Store dialog. Run `git branch -a` first. If the branch exists, don't redo the work; ask the owner whether to merge it.
+**In flight:** nothing. The studio-robustness work (R10–R12: renamed ports reconnect, Panic in the header and `virus panic`, "Fetch from synth first" in the Store dialog) was merged on 24 Nov; its live check is R13.
 
 **What to do next.** Items marked 🎹 need the owner at the synth: an agent prepares and explains, the owner runs the commands and reports back.
 1. 🎹 **Rest of the CLI runbook** ([crates/virus-cli/README.md](crates/virus-cli/README.md), "First cable session runbook"; always pass `--channel 11`). Steps 1–6 are done. Still to do:
@@ -23,7 +23,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
    * step 12 (Q2 banks E–H), step 12a (F7 C32), step 13 (Multi);
    * step 14 (bank send) last, only with the owner's explicit go-ahead and the transport stopped.
    Record results in the G2 results table.
-2. 🎹 **GUI live checks:** the G2 list, E7 (comforts with the synth), N8 (note audition), and a V1 on-screen check on a real screen.
+2. 🎹 **GUI live checks:** the G2 list, E7 (comforts with the synth), N8 (note audition), R13 (port rename, Panic, fetch-before-store), and a V1 on-screen check on a real screen.
 3. **Without hardware:**
    * H11 `cargo fmt` plus a CI check. Do it when no other branch is open; it touches ~4,000 lines.
    * F2 send a patch to a RAM bank slot.
@@ -36,12 +36,12 @@ Earlier milestones, all ✅ on 24 Nov: baseline toolchain, sources re-read, SPEC
 
 | Area | State |
 |---|---|
-| **Build** | Builds (debug + release); **308 tests pass**; `clippy --workspace --all-targets -D warnings` clean (24 Nov, after G4, the follow-ups and the CLI Page C merge); CI green on Windows and Ubuntu |
+| **Build** | Builds (debug + release); **322 tests pass**; `clippy --workspace --all-targets -D warnings` clean (24 Nov, after the studio-robustness merge); CI green on Windows and Ubuntu |
 | **`virus-syx`** | Raw 256-byte `Patch`; parameter table from the addendum; lossless enums; SysEx parse/encode with checksum reporting; `.syx`/SMF reader tolerant of the damaged factory files. **Multi:** raw 256-byte `Multi`, `MULTI_PARAMS` with live Page C mapping, golden test on all 129 multi dumps of `multis.mid`. 44 tests incl. strict factory round trips |
-| **`virus-midi`** | Plain transport: ports by name, channel-tagged input events, robust parser (R3; ignores real-time bytes), paced batches, note audition builders, all errors reported. 30 tests |
+| **`virus-midi`** | Plain transport: ports by name, channel-tagged input events, robust parser (R3; ignores real-time bytes), paced batches, note audition builders, shared port matching (renamed ports, auto-pick), all errors reported. 33 tests |
 | **`virus-db`** | Byte-exact storage, schema v3 with migrations from v1/v2, bank-aware import (one transaction) and export (A–D = 1–4), favourites/tags separate from data. **Schema v3** (v2→v3 in one transaction): `multis` table, multi import (`bb=1` → slot, `bb=0` → loose), Multi bank export, `mark_checked`. 37 tests |
-| **`virus-app`** | Rebuilt on the raw-byte crates (24 Nov): generated editor, Assign/LFO-assign panel, librarian with import report and bank transfer, name-based MIDI ports. Note audition strip; **Multi tab** (16 parts, live Page C edits, fetch/send, Multi bank librarian and bank send, part → editor); editor comforts (undo/redo, Compare, diff, sections); requests wait for a quiet line (`PacedSend`). Logic in `session.rs`/`library.rs`/`storage.rs`/`audition.rs`/`multi_session.rs`/`comforts.rs` with unit tests. 147 tests. **Not yet used with the synth** (G2) |
-| **`virus-cli`** | Headless `virus` tool for the live session (24 Nov, `rework/cli`). Commands: `ports`, `monitor`, `fetch`, `send`, `set` (Pages A/B, and Page C with guarded globals), `send-hex` (raw SysEx, needs `--yes`), `get-bank`, `put-bank`, Q1/Q3 probes, `selftest`. Collectors and probes are pure and tested against an in-memory fake Virus. Runbook in its README. 50 tests. Used live on 24 Nov (see G2) |
+| **`virus-app`** | Rebuilt on the raw-byte crates (24 Nov): generated editor, Assign/LFO-assign panel, librarian with import report and bank transfer, name-based MIDI ports. Note audition strip; **Multi tab** (16 parts, live Page C edits, fetch/send, Multi bank librarian and bank send, part → editor); editor comforts (undo/redo, Compare, diff, sections); requests wait for a quiet line (`PacedSend`). Logic in `session.rs`/`library.rs`/`storage.rs`/`audition.rs`/`multi_session.rs`/`comforts.rs` with unit tests. 156 tests. **Not yet used with the synth** (G2) |
+| **`virus-cli`** | Headless `virus` tool for the live session (24 Nov, `rework/cli`). Commands: `ports`, `monitor`, `fetch`, `send`, `set` (Pages A/B, and Page C with guarded globals), `send-hex` (raw SysEx, needs `--yes`), `panic`, `get-bank`, `put-bank`, Q1/Q3 probes, `selftest`. Collectors and probes are pure and tested against an in-memory fake Virus. Runbook in its README. 52 tests. Used live on 24 Nov (see G2) |
 | **Studio** | Plan of 24 Nov (outside the repo: `Downloads\studio-midi-routing-plan.md`). The editor still uses mioXC IN/OUT, with the Virus on ch 11 and Device ID 1. A MERGE-4 merges the Maschine+ (the clock master) into Virus IN. Stop the transport before bank sends and dump requests; keep C95 = SysEx. Details in SPEC §3.7. Proposed channels: MC-707 1–8, Hydrasynth 9, TD-3 10, Virus 11, BS II 12 |
 
 ### Evidence from the documents and factory data
@@ -206,7 +206,7 @@ Earlier milestones, all ✅ on 24 Nov: baseline toolchain, sources re-read, SPEC
 | R10 | ✅ | **Port renames:** Windows may rename a port when the USB socket changes ("mioXC MIDI OUT" → "2- mioXC MIDI OUT"). Reconnect to the port with the same base name (leading "<digits>- " stripped, case-insensitive), keep the remembered name, and reconnect when the port returns. Auto-pick with nothing saved: a Virus-looking port, else the only real port (not Microsoft GS Wavetable) | `virus_midi::ports` (`find_port_or_renamed`, `auto_pick_port`, shared with the CLI); `session::Ports` `wanted_*`; tests for rename, return, user choice kept, only-real-port |
 | R11 | ✅ | **Panic everywhere:** header "🛑 Panic" button (note-offs, CC123, CC120 on the synth channel; in Multi mode also on every enabled part's channel); CLI `virus panic [--all-channels]` | `VirusApp::panic`, `MultiSession::panic_channels`, `Audition::panic_on`; `virus-cli` `panic_messages`; parse test |
 | R12 | ✅ | **Stale edit buffer:** other controllers can change the Virus behind the editor's back. The Store dialog has "Fetch from synth first" (only with an output connected; remembered in `settings.json`): it requests the edit buffer, adopts it, then stores. Overwrite confirmation stays (RV-H1) | `library::plan_store` / `PendingStore` (5 s timeout, nothing stored on timeout or bad checksum); `LibAction::FetchThenStore` |
-| R13 | 🔲 | **Live check** of R10–R12 on the real studio: mioXC reconnect after a socket change, Panic on channel 11 and on the Multi part channels, Fetch-before-store with knobs moved on the Virus | Needs the hardware |
+| R13 | ⬜ | **Live check** of R10–R12 on the real studio: mioXC reconnect after a socket change, Panic on channel 11 and on the Multi part channels, Fetch-before-store with knobs moved on the Virus | Needs the hardware |
 
 **Studio notes (not code):**
 * Multi parts must be on the planned MIDI channels and routed to **Out 1** (the outputs the Kenton merge and the mioXC listen to).
@@ -242,4 +242,4 @@ Earlier milestones, all ✅ on 24 Nov: baseline toolchain, sources re-read, SPEC
 | H8 | ✅ | **16 `float_literal_f32_fallback` warnings will become hard errors** in a future Rust release: write `1.0_f32` (e.g. in `Stroke::new(1.0, …)`) | Done: app rewritten with typed literals; no warnings or future-incompat notes |
 | H9 | ✅ | Q4 decided: the repo stays private, so the Access material stays | |
 | H10 | ✅ | README: say "Virus Rack (classic), OS 2.00" as the verified target, and mention open questions Q1/Q5 | Done: the README names the target and links Q1 |
-| H11 | ⬜ | Run `cargo fmt --all`, then add `cargo fmt --all -- --check` to CI (there's a placeholder comment in `ci.yml`) | Unblocked: the earlier app branches are all merged. ~4,000 lines change, so do it when **no other branch is open** (check `git branch -a`; `rework/studio-robustness` may still be open), as its own commit with no other changes |
+| H11 | ⬜ | Run `cargo fmt --all`, then add `cargo fmt --all -- --check` to CI (there's a placeholder comment in `ci.yml`) | Unblocked: all branches are merged. ~4,000 lines change (about 800 hunks), so do it when **no other branch is open** (check `git branch -a`), as its own commit with no other changes |

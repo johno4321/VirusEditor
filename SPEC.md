@@ -446,6 +446,7 @@ Detailed tasks are in [TODO.md](TODO.md).
   * CLI: `set` for Page C (with guarded globals) and raw `send-hex`, to test the C32 question (§3.5).
   * Studio notes (§3.7); bank-send confirmations remind you to stop the sequencer transport.
   * 308 workspace tests, clippy clean, CI green on Windows and Ubuntu. Added `AGENTS.md` for AI agents picking up the work.
+  * Studio robustness (R10–R12): the app reconnects to a renamed port (Windows' `2- …` prefix) and returns to the saved name when it's back, with the same auto-pick as the CLI (shared in `virus-midi`); Panic in the header and `virus panic`; "Fetch from synth first" in the Store dialog. 322 workspace tests.
 * **2026-11-24 (evening)**
   * Settings persistence (G3), off-thread file dialogs and import/export (U5) and the optional SysEx "Select on synth" (F7, C32 bank value to be verified on hardware).
 * **2026-11-24 (late morning)**
