@@ -1,11 +1,10 @@
-//! Database models, query filters, and category definitions.
-//!
-//! Categories match the 17 official Access Virus categories defined in Chapter 13 (p. 84)
-//! of the Access Virus Rack manual.
+//! Database models, query filters, import/export types and category definitions.
 
-use virus_syx::domain::Patch;
+use std::fmt;
 
-/// The official 17 sound categories recognized by the Access Virus Rack / B.
+use crate::patch_data::PATCH_LEN;
+
+/// Sound category (Page B 123/124), SPEC §4.5. Values outside 0..=16 are kept as `Unknown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SoundCategory {
     #[default]
@@ -26,10 +25,46 @@ pub enum SoundCategory {
     Favourite1,
     Favourite2,
     Favourite3,
+    Unknown(u8),
 }
 
 impl SoundCategory {
-    pub fn as_str(&self) -> &'static str {
+    /// The 17 documented categories, in raw value order (index == raw value).
+    pub const ALL: [SoundCategory; 17] = [
+        Self::Off,
+        Self::Lead,
+        Self::Bass,
+        Self::Pad,
+        Self::Decay,
+        Self::Pluck,
+        Self::Acid,
+        Self::Classic,
+        Self::Arpeggiator,
+        Self::Effects,
+        Self::Drums,
+        Self::Percussion,
+        Self::Input,
+        Self::Vocoder,
+        Self::Favourite1,
+        Self::Favourite2,
+        Self::Favourite3,
+    ];
+
+    pub fn from_raw(value: u8) -> Self {
+        Self::ALL
+            .get(value as usize)
+            .copied()
+            .unwrap_or(Self::Unknown(value))
+    }
+
+    pub fn to_raw(self) -> u8 {
+        match self {
+            Self::Unknown(v) => v,
+            known => Self::ALL.iter().position(|&c| c == known).unwrap_or(0) as u8,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
         match self {
             Self::Off => "Off",
             Self::Lead => "Lead",
@@ -48,57 +83,55 @@ impl SoundCategory {
             Self::Favourite1 => "Favourite 1",
             Self::Favourite2 => "Favourite 2",
             Self::Favourite3 => "Favourite 3",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s.trim().to_lowercase().as_str() {
-            "lead" => Self::Lead,
-            "bass" => Self::Bass,
-            "pad" => Self::Pad,
-            "decay" => Self::Decay,
-            "pluck" | "plug" => Self::Pluck,
-            "acid" => Self::Acid,
-            "classic" => Self::Classic,
-            "arpeggiator" | "arp" => Self::Arpeggiator,
-            "effects" | "fx" => Self::Effects,
-            "drums" | "drum" => Self::Drums,
-            "percussion" | "perc" => Self::Percussion,
-            "input" | "inp" => Self::Input,
-            "vocoder" | "voc" => Self::Vocoder,
-            "favourite 1" | "fav 1" | "favorite 1" => Self::Favourite1,
-            "favourite 2" | "fav 2" | "favorite 2" => Self::Favourite2,
-            "favourite 3" | "fav 3" | "favorite 3" => Self::Favourite3,
-            _ => Self::Off,
+            Self::Unknown(_) => "Unknown",
         }
     }
 }
 
-/// Bank descriptor record.
+impl fmt::Display for SoundCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown(v) => write!(f, "Unknown ({v})"),
+            other => f.write_str(other.name()),
+        }
+    }
+}
+
+/// Bank descriptor. `bank_letter` is `Some("A".."D")` for the synth banks, `None` for user banks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BankRecord {
     pub id: i64,
     pub name: String,
     pub bank_letter: Option<String>,
-    pub is_factory: bool,
+    /// Banks C and D are Flash ROM on the synth and must not be sent as bank dumps.
+    pub is_rom: bool,
 }
 
-/// Detailed patch record including the deserialized 256-byte `Patch` and user metadata.
+/// User metadata stored alongside a patch (not part of the patch bytes).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PatchMeta {
+    pub tags: String,
+    pub favorite: bool,
+}
+
+/// Full patch record. `data` is the byte-exact source of truth; `name` and the categories
+/// are derived from it when saved and are only cached in the DB for searching.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchRecord {
     pub id: i64,
     pub bank_id: i64,
     pub program_number: u8,
+    pub data: [u8; PATCH_LEN],
     pub name: String,
     pub category1: SoundCategory,
     pub category2: SoundCategory,
-    pub patch: Patch,
-    pub checksum: u8,
     pub tags: String,
     pub favorite: bool,
+    /// `false` if the dump this patch was imported from had a wrong checksum.
+    pub checksum_ok: bool,
 }
 
-/// Lightweight summary for virtualized tables and fast UI search grids.
+/// Lightweight row for tables and search results.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchSummary {
     pub id: i64,
@@ -109,17 +142,51 @@ pub struct PatchSummary {
     pub category2: SoundCategory,
     pub tags: String,
     pub favorite: bool,
+    pub checksum_ok: bool,
 }
 
-/// Filter criteria for querying the patch library.
+/// Filter criteria for [`crate::PatchDatabase::query_patches`].
 #[derive(Debug, Clone, Default)]
 pub struct PatchFilter {
-    /// Substring search across patch name and tags (case-insensitive).
+    /// Case-insensitive literal substring search across name and tags.
     pub search_text: Option<String>,
-    /// Filter by specific Bank ID.
     pub bank_id: Option<i64>,
-    /// Filter by sound category (matches category1 OR category2).
+    /// Matches category1 OR category2 (any value, including `Off` and `Unknown(n)`).
     pub category: Option<SoundCategory>,
-    /// Show favorites only.
     pub favorite_only: bool,
+}
+
+/// One received/parsed Single Dump (`F0 00 20 33 01 dd 10 bb ss ... F7`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingDump {
+    /// Raw `bb`: 0 = edit buffer, 1..=4 = Single Bank A..D.
+    pub bank: u8,
+    /// Raw `ss`: program 0..=127, or the part number for edit-buffer dumps.
+    pub program: u8,
+    pub data: [u8; PATCH_LEN],
+    pub checksum_ok: bool,
+}
+
+/// Where [`crate::PatchDatabase::import_single_dumps`] writes bank dumps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportTarget {
+    /// `bb` 1..=4 go to the library banks with letters A..D (created if missing).
+    OriginalBanks,
+    /// Everything goes into this bank, by program number. All bank dumps must share one `bb`.
+    Bank(i64),
+}
+
+/// Outcome of an import.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportReport {
+    /// Number of slots written.
+    pub imported: usize,
+    /// Slots written per bank name, in order of first appearance.
+    pub per_bank: Vec<(String, usize)>,
+    /// Edit-buffer dumps (`bb == 0`); never written to a slot. The UI may offer to store them.
+    pub loose: Vec<IncomingDump>,
+    /// Dumps with a wrong checksum (they are still imported/returned, and flagged).
+    pub bad_checksum: usize,
+    /// Dumps that could not be placed (unknown `bb`, or program > 127).
+    pub skipped: usize,
 }

@@ -1,12 +1,17 @@
-//! SQLite Patch Librarian and Bank Manager for Access Virus synthesizers.
+//! SQLite patch librarian and bank manager for the Access Virus Rack.
 //!
-//! Provides persistence, full-text and category indexing, and SysEx bank (.syx)
-//! import/export functions using an embedded SQLite database engine.
+//! Patches are stored as byte-exact 256-byte single dumps; name and categories are
+//! derived from the bytes and cached only as a search index. Parsing SysEx files is the
+//! job of `virus-syx`; this crate takes already-parsed [`IncomingDump`]s.
 
 pub mod db;
+pub mod error;
 pub mod models;
+pub mod patch_data;
 pub mod schema;
 
-pub use db::PatchDatabase;
+pub use db::{PatchDatabase, BANK_SLOTS};
+pub use error::{DbError, Result};
 pub use models::*;
-pub use schema::CREATE_TABLES_SQL;
+pub use patch_data::{patch_categories, patch_name, PATCH_LEN};
+pub use schema::SCHEMA_VERSION;

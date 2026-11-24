@@ -1,538 +1,618 @@
-//! SQLite database operations for the Access Virus patch librarian.
+//! SQLite operations for the Access Virus patch librarian.
 
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::path::Path;
-use rusqlite::{params, Connection, OptionalExtension, ToSql};
-use virus_syx::domain::checksum::calculate_checksum;
-use virus_syx::domain::patch::Patch;
 
-use crate::models::{BankRecord, PatchFilter, PatchRecord, PatchSummary, SoundCategory};
-use crate::schema::CREATE_TABLES_SQL;
+use rusqlite::{params, Connection, OptionalExtension, Row, ToSql};
 
-/// Thread-safe or local SQLite database manager for banks and patches.
+use crate::error::{DbError, Result};
+use crate::models::{
+    BankRecord, ImportReport, ImportTarget, IncomingDump, PatchFilter, PatchMeta, PatchRecord,
+    PatchSummary, SoundCategory,
+};
+use crate::patch_data::{
+    bank_byte_for_letter, encode_single_dump, letter_for_bank_byte, patch_categories, patch_name,
+    EDIT_BUFFER_BANK, PATCH_LEN,
+};
+use crate::schema::{CREATE_TABLES_SQL, MIGRATE_V1_TO_V2_SQL, SCHEMA_VERSION};
+
+/// Number of program slots in a bank.
+pub const BANK_SLOTS: usize = 128;
+
+const SUMMARY_COLUMNS: &str =
+    "id, bank_id, program_number, name, category1, category2, tags, favorite, checksum_ok";
+const RECORD_COLUMNS: &str =
+    "id, bank_id, program_number, name, category1, category2, tags, favorite, checksum_ok, raw_data";
+
+const SAVE_PATCH_SQL: &str = r#"
+INSERT INTO patches (bank_id, program_number, name, category1, category2, raw_data,
+                     checksum_ok, tags, favorite, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, CURRENT_TIMESTAMP)
+ON CONFLICT(bank_id, program_number) DO UPDATE SET
+    name = excluded.name,
+    category1 = excluded.category1,
+    category2 = excluded.category2,
+    raw_data = excluded.raw_data,
+    checksum_ok = excluded.checksum_ok,
+    tags = excluded.tags,
+    favorite = excluded.favorite,
+    updated_at = CURRENT_TIMESTAMP
+RETURNING id
+"#;
+
+/// Import keeps the slot's tags/favourite only if the incoming patch has the same name.
+const IMPORT_PATCH_SQL: &str = r#"
+INSERT INTO patches (bank_id, program_number, name, category1, category2, raw_data,
+                     checksum_ok, tags, favorite, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '', 0, CURRENT_TIMESTAMP)
+ON CONFLICT(bank_id, program_number) DO UPDATE SET
+    tags = CASE WHEN patches.name = excluded.name THEN patches.tags ELSE '' END,
+    favorite = CASE WHEN patches.name = excluded.name THEN patches.favorite ELSE 0 END,
+    name = excluded.name,
+    category1 = excluded.category1,
+    category2 = excluded.category2,
+    raw_data = excluded.raw_data,
+    checksum_ok = excluded.checksum_ok,
+    updated_at = CURRENT_TIMESTAMP
+"#;
+
+/// SQLite-backed library of banks and 256-byte single patches.
 pub struct PatchDatabase {
     conn: Connection,
+    /// Incremented on every successful write through this handle (see [`Self::data_version`]).
+    writes: Cell<u64>,
 }
 
 impl PatchDatabase {
-    /// Opens or creates a SQLite database at the specified path.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, rusqlite::Error> {
-        let conn = Connection::open(path)?;
-        let db = Self { conn };
-        db.init()?;
+    /// Opens or creates a database file, migrating older schemas.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::with_connection(Connection::open(path)?)
+    }
+
+    /// Creates an in-memory database (tests, ephemeral sessions).
+    pub fn open_in_memory() -> Result<Self> {
+        Self::with_connection(Connection::open_in_memory()?)
+    }
+
+    fn with_connection(conn: Connection) -> Result<Self> {
+        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+        let db = Self {
+            conn,
+            writes: Cell::new(0),
+        };
+        db.migrate()?;
+        db.seed_default_banks()?;
         Ok(db)
     }
 
-    /// Creates an in-memory SQLite database, ideal for testing and ephemeral sessions.
-    pub fn open_in_memory() -> Result<Self, rusqlite::Error> {
-        let conn = Connection::open_in_memory()?;
-        let db = Self { conn };
-        db.init()?;
-        Ok(db)
-    }
-
-    /// Initializes PRAGMAs, creates schema tables and seeds default banks.
-    fn init(&self) -> Result<(), rusqlite::Error> {
-        self.conn.execute_batch("
-            PRAGMA foreign_keys = ON;
-            PRAGMA journal_mode = WAL;
-        ")?;
-        self.conn.execute_batch(CREATE_TABLES_SQL)?;
-        self.seed_default_banks()?;
-        Ok(())
-    }
-
-    /// Seeds standard Access Virus banks (A, B, C, D) if no banks exist.
-    pub fn seed_default_banks(&self) -> Result<(), rusqlite::Error> {
-        let count: i64 = self
+    /// Current `PRAGMA user_version` of the database.
+    pub fn schema_version(&self) -> Result<i64> {
+        Ok(self
             .conn
-            .query_row("SELECT COUNT(*) FROM banks", [], |row| row.get(0))?;
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?)
+    }
 
-        if count == 0 {
-            self.create_bank("Bank A", Some("A"), true)?;
-            self.create_bank("Bank B", Some("B"), true)?;
-            self.create_bank("Bank C (User)", Some("C"), false)?;
-            self.create_bank("Bank D (User)", Some("D"), false)?;
+    fn migrate(&self) -> Result<()> {
+        match self.schema_version()? {
+            0 if !self.table_exists("patches")? => {
+                let tx = self.conn.unchecked_transaction()?;
+                tx.execute_batch(CREATE_TABLES_SQL)?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                tx.commit()?;
+            }
+            // Pre-versioning databases (user_version 0 with tables) are v1.
+            0 | 1 => self.migrate_v1_to_v2()?,
+            SCHEMA_VERSION => {}
+            v => return Err(DbError::UnsupportedSchemaVersion(v)),
         }
         Ok(())
     }
 
+    fn table_exists(&self, name: &str) -> Result<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![name],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// v1 → v2 in one transaction: integer categories re-derived from the patch bytes,
+    /// `is_rom` replaces `is_factory`. Blobs that aren't 256 bytes are copied untouched.
+    fn migrate_v1_to_v2(&self) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch(MIGRATE_V1_TO_V2_SQL)?;
+        tx.execute_batch(CREATE_TABLES_SQL)?;
+        tx.execute(
+            "INSERT INTO patches (id, bank_id, program_number, name, category1, category2, raw_data,
+                                  checksum_ok, tags, favorite, created_at, updated_at)
+             SELECT id, bank_id, program_number, name, 0, 0, raw_data, 1, tags, favorite,
+                    created_at, updated_at
+             FROM patches_v1",
+            [],
+        )?;
+        {
+            let mut select = tx.prepare("SELECT id, raw_data FROM patches")?;
+            let mut update = tx.prepare(
+                "UPDATE patches SET name = ?2, category1 = ?3, category2 = ?4 WHERE id = ?1",
+            )?;
+            let rows =
+                select.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+            for row in rows {
+                let (id, raw) = row?;
+                if let Ok(data) = <[u8; PATCH_LEN]>::try_from(raw.as_slice()) {
+                    let (c1, c2) = patch_categories(&data);
+                    update.execute(params![id, patch_name(&data), c1.to_raw(), c2.to_raw()])?;
+                }
+            }
+        }
+        tx.execute_batch("DROP TABLE patches_v1;")?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Seeds banks A, B (RAM) and C, D (ROM) when the library has no banks at all.
+    fn seed_default_banks(&self) -> Result<()> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM banks", [], |r| r.get(0))?;
+        if count == 0 {
+            let tx = self.conn.unchecked_transaction()?;
+            for letter in ["A", "B", "C", "D"] {
+                insert_letter_bank(&tx, letter)?;
+            }
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
+    /// Cheap change counter for UI caching: changes whenever this handle writes or another
+    /// connection commits to the same database file.
+    pub fn data_version(&self) -> u64 {
+        let external: i64 = self
+            .conn
+            .query_row("PRAGMA data_version", [], |r| r.get(0))
+            .unwrap_or(0);
+        self.writes.get().wrapping_add(external as u64)
+    }
+
+    fn bump(&self) {
+        self.writes.set(self.writes.get().wrapping_add(1));
+    }
+
     // ------------------------------------------------------------------------
-    // Bank Operations
+    // Banks
     // ------------------------------------------------------------------------
 
-    /// Creates a new bank record and returns its ID.
-    pub fn create_bank(
-        &self,
-        name: &str,
-        bank_letter: Option<&str>,
-        is_factory: bool,
-    ) -> Result<i64, rusqlite::Error> {
+    /// Creates a user bank (no synth bank letter, not ROM) and returns its ID.
+    pub fn create_bank(&self, name: &str) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO banks (name, bank_letter, is_factory) VALUES (?1, ?2, ?3)",
-            params![name, bank_letter, is_factory as i32],
+            "INSERT INTO banks (name, bank_letter, is_rom) VALUES (?1, NULL, 0)",
+            params![name],
         )?;
+        self.bump();
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Retrieves all banks ordered by ID.
-    pub fn get_banks(&self) -> Result<Vec<BankRecord>, rusqlite::Error> {
+    pub fn get_banks(&self) -> Result<Vec<BankRecord>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, bank_letter, is_factory FROM banks ORDER BY id ASC")?;
-
-        let rows = stmt.query_map([], |row| {
-            let is_factory_int: i32 = row.get(3)?;
-            Ok(BankRecord {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                bank_letter: row.get(2)?,
-                is_factory: is_factory_int != 0,
-            })
-        })?;
-
-        let mut banks = Vec::new();
-        for row in rows {
-            banks.push(row?);
-        }
+            .prepare("SELECT id, name, bank_letter, is_rom FROM banks ORDER BY id ASC")?;
+        let banks = stmt
+            .query_map([], row_to_bank)?
+            .collect::<rusqlite::Result<_>>()?;
         Ok(banks)
     }
 
-    /// Retrieves a bank by its ID.
-    pub fn get_bank_by_id(&self, id: i64) -> Result<Option<BankRecord>, rusqlite::Error> {
-        self.conn
-            .query_row(
-                "SELECT id, name, bank_letter, is_factory FROM banks WHERE id = ?1",
-                params![id],
-                |row| {
-                    let is_factory_int: i32 = row.get(3)?;
-                    Ok(BankRecord {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        bank_letter: row.get(2)?,
-                        is_factory: is_factory_int != 0,
-                    })
-                },
-            )
-            .optional()
+    pub fn get_bank_by_id(&self, id: i64) -> Result<Option<BankRecord>> {
+        Ok(bank_by_id(&self.conn, id)?)
     }
 
-    /// Deletes a bank and all its associated patches (via CASCADE).
-    pub fn delete_bank(&self, id: i64) -> Result<bool, rusqlite::Error> {
-        let count = self
+    /// Deletes a bank and all its patches.
+    pub fn delete_bank(&self, id: i64) -> Result<bool> {
+        let n = self
             .conn
             .execute("DELETE FROM banks WHERE id = ?1", params![id])?;
-        Ok(count > 0)
+        if n > 0 {
+            self.bump();
+        }
+        Ok(n > 0)
     }
 
     // ------------------------------------------------------------------------
-    // Patch Operations
+    // Patches
     // ------------------------------------------------------------------------
 
-    /// Inserts or updates a patch in the given bank slot (0..=127).
+    /// Stores `data` byte-exact in slot `program` (0..=127) of a bank, replacing any patch
+    /// there. Name and categories are derived from `data`. Returns the patch ID.
     pub fn save_patch(
         &self,
         bank_id: i64,
-        program_number: u8,
-        patch: &mut Patch,
-        category1: SoundCategory,
-        category2: SoundCategory,
-        tags: &str,
-        favorite: bool,
-    ) -> Result<i64, rusqlite::Error> {
-        let name = patch.name();
-        let raw_data = patch.to_bytes();
-        let checksum = calculate_checksum(&raw_data);
-
-        self.conn.execute(
-            r#"
-            INSERT INTO patches (
-                bank_id, program_number, name, category1, category2,
-                raw_data, checksum, tags, favorite, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP)
-            ON CONFLICT(bank_id, program_number) DO UPDATE SET
-                name = excluded.name,
-                category1 = excluded.category1,
-                category2 = excluded.category2,
-                raw_data = excluded.raw_data,
-                checksum = excluded.checksum,
-                tags = excluded.tags,
-                favorite = excluded.favorite,
-                updated_at = CURRENT_TIMESTAMP
-            "#,
+        program: u8,
+        data: &[u8; PATCH_LEN],
+        meta: &PatchMeta,
+    ) -> Result<i64> {
+        check_program(program)?;
+        self.require_bank(bank_id)?;
+        let (c1, c2) = patch_categories(data);
+        let id = self.conn.query_row(
+            SAVE_PATCH_SQL,
             params![
                 bank_id,
-                program_number as i32,
-                name,
-                category1.as_str(),
-                category2.as_str(),
-                &raw_data[..],
-                checksum as i32,
-                tags,
-                favorite as i32,
+                program,
+                patch_name(data),
+                c1.to_raw(),
+                c2.to_raw(),
+                &data[..],
+                meta.tags,
+                meta.favorite,
             ],
+            |r| r.get(0),
         )?;
-
-        // Return the rowid of the inserted/updated record
-        let id: i64 = self.conn.query_row(
-            "SELECT id FROM patches WHERE bank_id = ?1 AND program_number = ?2",
-            params![bank_id, program_number as i32],
-            |row| row.get(0),
-        )?;
+        self.bump();
         Ok(id)
     }
 
-    /// Retrieves a patch by its database ID.
-    pub fn get_patch_by_id(&self, id: i64) -> Result<Option<PatchRecord>, rusqlite::Error> {
-        self.conn
-            .query_row(
-                r#"
-                SELECT id, bank_id, program_number, name, category1, category2,
-                       raw_data, checksum, tags, favorite
-                FROM patches WHERE id = ?1
-                "#,
-                params![id],
-                |row| Self::row_to_patch_record(row),
-            )
-            .optional()
+    /// Updates only the favourite flag. Returns `false` if the patch doesn't exist.
+    pub fn set_favorite(&self, patch_id: i64, favorite: bool) -> Result<bool> {
+        self.update_meta("favorite", &favorite, patch_id)
     }
 
-    /// Retrieves a patch by its bank ID and program number (0..=127).
-    pub fn get_patch_by_slot(
-        &self,
-        bank_id: i64,
-        program_number: u8,
-    ) -> Result<Option<PatchRecord>, rusqlite::Error> {
-        self.conn
-            .query_row(
-                r#"
-                SELECT id, bank_id, program_number, name, category1, category2,
-                       raw_data, checksum, tags, favorite
-                FROM patches WHERE bank_id = ?1 AND program_number = ?2
-                "#,
-                params![bank_id, program_number as i32],
-                |row| Self::row_to_patch_record(row),
-            )
-            .optional()
+    /// Updates only the tags. Returns `false` if the patch doesn't exist.
+    pub fn set_tags(&self, patch_id: i64, tags: &str) -> Result<bool> {
+        self.update_meta("tags", &tags, patch_id)
     }
 
-    /// Deletes a patch by database ID.
-    pub fn delete_patch(&self, id: i64) -> Result<bool, rusqlite::Error> {
-        let count = self
+    fn update_meta(&self, column: &str, value: &dyn ToSql, patch_id: i64) -> Result<bool> {
+        let sql = format!(
+            "UPDATE patches SET {column} = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2"
+        );
+        let n = self.conn.execute(&sql, params![value, patch_id])?;
+        if n > 0 {
+            self.bump();
+        }
+        Ok(n > 0)
+    }
+
+    pub fn get_patch_by_id(&self, id: i64) -> Result<Option<PatchRecord>> {
+        let sql = format!("SELECT {RECORD_COLUMNS} FROM patches WHERE id = ?1");
+        self.conn
+            .query_row(&sql, params![id], row_to_record_parts)
+            .optional()?
+            .map(into_record)
+            .transpose()
+    }
+
+    pub fn get_patch_by_slot(&self, bank_id: i64, program: u8) -> Result<Option<PatchRecord>> {
+        let sql = format!(
+            "SELECT {RECORD_COLUMNS} FROM patches WHERE bank_id = ?1 AND program_number = ?2"
+        );
+        self.conn
+            .query_row(&sql, params![bank_id, program], row_to_record_parts)
+            .optional()?
+            .map(into_record)
+            .transpose()
+    }
+
+    pub fn delete_patch(&self, id: i64) -> Result<bool> {
+        let n = self
             .conn
             .execute("DELETE FROM patches WHERE id = ?1", params![id])?;
-        Ok(count > 0)
+        if n > 0 {
+            self.bump();
+        }
+        Ok(n > 0)
     }
 
-    /// Queries patch summaries matching the specified filter criteria.
-    pub fn query_patches(&self, filter: &PatchFilter) -> Result<Vec<PatchSummary>, rusqlite::Error> {
-        let mut query = String::from(
-            "SELECT id, bank_id, program_number, name, category1, category2, tags, favorite FROM patches WHERE 1=1"
+    /// Exactly 128 entries, index = program number; `None` marks an empty slot.
+    pub fn get_bank_slots(&self, bank_id: i64) -> Result<Vec<Option<PatchSummary>>> {
+        self.require_bank(bank_id)?;
+        let sql = format!(
+            "SELECT {SUMMARY_COLUMNS} FROM patches WHERE bank_id = ?1 AND program_number < {BANK_SLOTS}"
         );
-        let mut params_vec: Vec<Box<dyn ToSql>> = Vec::new();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut slots = vec![None; BANK_SLOTS];
+        for summary in stmt.query_map(params![bank_id], row_to_summary)? {
+            let summary = summary?;
+            let index = summary.program_number as usize;
+            slots[index] = Some(summary);
+        }
+        Ok(slots)
+    }
+
+    /// Searches patches. `search_text` is matched literally (`%`, `_` and `\` are escaped).
+    pub fn query_patches(&self, filter: &PatchFilter) -> Result<Vec<PatchSummary>> {
+        let mut sql = format!("SELECT {SUMMARY_COLUMNS} FROM patches WHERE 1=1");
+        let mut args: Vec<Box<dyn ToSql>> = Vec::new();
 
         if let Some(bank_id) = filter.bank_id {
-            query.push_str(" AND bank_id = ?");
-            params_vec.push(Box::new(bank_id));
+            sql.push_str(" AND bank_id = ?");
+            args.push(Box::new(bank_id));
         }
-
         if filter.favorite_only {
-            query.push_str(" AND favorite = 1");
+            sql.push_str(" AND favorite = 1");
         }
-
         if let Some(category) = filter.category {
-            if category != SoundCategory::Off {
-                query.push_str(" AND (category1 = ? OR category2 = ?)");
-                let cat_str = category.as_str().to_string();
-                params_vec.push(Box::new(cat_str.clone()));
-                params_vec.push(Box::new(cat_str));
+            sql.push_str(" AND (category1 = ? OR category2 = ?)");
+            args.push(Box::new(category.to_raw()));
+            args.push(Box::new(category.to_raw()));
+        }
+        if let Some(search) = filter.search_text.as_deref().map(str::trim) {
+            if !search.is_empty() {
+                sql.push_str(r" AND (name LIKE ? ESCAPE '\' OR tags LIKE ? ESCAPE '\')");
+                let pattern = format!("%{}%", escape_like(search));
+                args.push(Box::new(pattern.clone()));
+                args.push(Box::new(pattern));
             }
         }
+        sql.push_str(" ORDER BY bank_id ASC, program_number ASC");
 
-        if let Some(search) = &filter.search_text {
-            let trimmed = search.trim();
-            if !trimmed.is_empty() {
-                query.push_str(" AND (name LIKE ? OR tags LIKE ?)");
-                let pattern = format!("%{}%", trimmed);
-                params_vec.push(Box::new(pattern.clone()));
-                params_vec.push(Box::new(pattern));
-            }
-        }
-
-        query.push_str(" ORDER BY bank_id ASC, program_number ASC");
-
-        let mut stmt = self.conn.prepare(&query)?;
-        let param_refs: Vec<&dyn ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
-
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            let cat1_str: String = row.get(4)?;
-            let cat2_str: String = row.get(5)?;
-            let fav_int: i32 = row.get(7)?;
-
-            Ok(PatchSummary {
-                id: row.get(0)?,
-                bank_id: row.get(1)?,
-                program_number: row.get::<_, i32>(2)? as u8,
-                name: row.get(3)?,
-                category1: SoundCategory::from_str(&cat1_str),
-                category2: SoundCategory::from_str(&cat2_str),
-                tags: row.get(6)?,
-                favorite: fav_int != 0,
-            })
-        })?;
-
-        let mut summaries = Vec::new();
-        for r in rows {
-            summaries.push(r?);
-        }
-        Ok(summaries)
-    }
-
-    /// Imports a `.syx` or `.mid` bank file containing one or more Single Program Dump messages.
-    /// Stores the patches in the designated `bank_id`. Returns the count of imported patches.
-    pub fn import_syx_bank(&self, bank_id: i64, file_bytes: &[u8]) -> Result<usize, String> {
-        let mut imported_count = 0;
-        let mut idx = 0;
-        let sig = [0x00, 0x20, 0x33, 0x01]; // Access Virus signature
-
-        while idx + 4 <= file_bytes.len() {
-            if file_bytes[idx..].starts_with(&sig) {
-                if let Some(end_rel) = file_bytes[idx..].iter().position(|&b| b == 0xF7) {
-                    let end = idx + end_rel + 1;
-                    let payload = &file_bytes[idx..end];
-                    let mut frame = Vec::with_capacity(payload.len() + 1);
-                    frame.push(0xF0);
-                    frame.extend_from_slice(payload);
-
-                    if let Ok((mut patch, _bank, prog)) = Patch::from_sysex(&frame) {
-                        self.save_patch(
-                            bank_id,
-                            prog,
-                            &mut patch,
-                            SoundCategory::Off,
-                            SoundCategory::Off,
-                            "",
-                            false,
-                        )
-                        .map_err(|e| format!("Database save error: {}", e))?;
-                        imported_count += 1;
-                    }
-                    idx = end;
-                    continue;
-                }
-            }
-            idx += 1;
-        }
-
-        Ok(imported_count)
-    }
-
-    /// Exports all patches in the specified bank as a concatenated `.syx` byte stream.
-    pub fn export_syx_bank(&self, bank_id: i64, device_id: u8) -> Result<Vec<u8>, String> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT raw_data, program_number FROM patches WHERE bank_id = ?1 ORDER BY program_number ASC",
-            )
-            .map_err(|e| format!("DB prepare error: {}", e))?;
-
+        let mut stmt = self.conn.prepare(&sql)?;
+        let arg_refs: Vec<&dyn ToSql> = args.iter().map(AsRef::as_ref).collect();
         let rows = stmt
-            .query_map(params![bank_id], |row| {
-                let raw: Vec<u8> = row.get(0)?;
-                let prog: i32 = row.get(1)?;
-                Ok((raw, prog as u8))
-            })
-            .map_err(|e| format!("DB query error: {}", e))?;
+            .query_map(arg_refs.as_slice(), row_to_summary)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
 
-        let mut syx_out = Vec::new();
+    // ------------------------------------------------------------------------
+    // Import / export
+    // ------------------------------------------------------------------------
 
-        // Bank letter mapping or index
-        let bank_record = self
-            .get_bank_by_id(bank_id)
-            .map_err(|e| format!("DB error: {}", e))?
-            .ok_or_else(|| "Bank not found".to_string())?;
+    /// Writes parsed single dumps into bank slots in one transaction (all or nothing).
+    ///
+    /// * `bb == 0` (edit buffer) dumps are never written; they are returned in `loose`.
+    /// * `OriginalBanks`: `bb` 1..=4 → library bank with letter A..D (created if missing);
+    ///   other `bb` values are counted as `skipped`.
+    /// * `Bank(id)`: all non-edit-buffer dumps go into that bank by program number. If they
+    ///   come from more than one `bb`, nothing is written and `MixedSourceBanks` is returned.
+    /// * Dumps with bad checksums are still imported (the Virus accepts them), flagged with
+    ///   `checksum_ok = false` and counted in `bad_checksum`.
+    /// * An overwritten slot keeps its tags/favourite only if the patch name is unchanged.
+    pub fn import_single_dumps(
+        &self,
+        dumps: &[IncomingDump],
+        target: ImportTarget,
+    ) -> Result<ImportReport> {
+        if let ImportTarget::Bank(_) = target {
+            let mut sources: Vec<u8> = dumps
+                .iter()
+                .map(|d| d.bank)
+                .filter(|&b| b != EDIT_BUFFER_BANK)
+                .collect();
+            sources.sort_unstable();
+            sources.dedup();
+            if sources.len() > 1 {
+                return Err(DbError::MixedSourceBanks(sources));
+            }
+        }
 
-        let bank_num: u8 = match bank_record.bank_letter.as_deref() {
-            Some("A") => 0,
-            Some("B") => 1,
-            Some("C") => 2,
-            Some("D") => 3,
-            _ => 0,
+        let tx = self.conn.unchecked_transaction()?;
+        let forced = match target {
+            ImportTarget::Bank(id) => Some(bank_by_id(&tx, id)?.ok_or(DbError::BankNotFound(id))?),
+            ImportTarget::OriginalBanks => None,
+        };
+        let mut bank_cache: HashMap<u8, (i64, String)> = HashMap::new();
+        let mut report = ImportReport::default();
+        let mut insert = tx.prepare(IMPORT_PATCH_SQL)?;
+
+        for dump in dumps {
+            if !dump.checksum_ok {
+                report.bad_checksum += 1;
+            }
+            if dump.bank == EDIT_BUFFER_BANK {
+                report.loose.push(dump.clone());
+                continue;
+            }
+            if dump.program as usize >= BANK_SLOTS {
+                report.skipped += 1;
+                continue;
+            }
+            let (bank_id, bank_name) = match &forced {
+                Some(bank) => (bank.id, bank.name.clone()),
+                None => match bank_cache.get(&dump.bank) {
+                    Some(entry) => entry.clone(),
+                    None => {
+                        let Some(letter) = letter_for_bank_byte(dump.bank) else {
+                            report.skipped += 1;
+                            continue;
+                        };
+                        let bank = match bank_by_letter(&tx, letter)? {
+                            Some(bank) => bank,
+                            None => {
+                                let id = insert_letter_bank(&tx, letter)?;
+                                bank_by_id(&tx, id)?.ok_or(DbError::BankNotFound(id))?
+                            }
+                        };
+                        bank_cache.insert(dump.bank, (bank.id, bank.name.clone()));
+                        (bank.id, bank.name)
+                    }
+                },
+            };
+
+            let (c1, c2) = patch_categories(&dump.data);
+            insert.execute(params![
+                bank_id,
+                dump.program,
+                patch_name(&dump.data),
+                c1.to_raw(),
+                c2.to_raw(),
+                &dump.data[..],
+                dump.checksum_ok,
+            ])?;
+            report.imported += 1;
+            match report
+                .per_bank
+                .iter_mut()
+                .find(|(name, _)| *name == bank_name)
+            {
+                Some((_, count)) => *count += 1,
+                None => report.per_bank.push((bank_name, 1)),
+            }
+        }
+
+        drop(insert);
+        tx.commit()?;
+        if report.imported > 0 {
+            self.bump();
+        }
+        Ok(report)
+    }
+
+    /// One 267-byte Single Dump frame per stored program, in program order. Data bytes are
+    /// sent exactly as stored. `target_bank` is the SysEx `bb` (1..=4 = A..D); `None` uses the
+    /// bank's letter and fails with `NoBankLetter` for user banks.
+    pub fn export_bank_dumps(
+        &self,
+        bank_id: i64,
+        device_id: u8,
+        target_bank: Option<u8>,
+    ) -> Result<Vec<Vec<u8>>> {
+        let bank = self.require_bank(bank_id)?;
+        let bb = match target_bank {
+            Some(bb @ 1..=4) => bb,
+            Some(bb) => return Err(DbError::InvalidTargetBank(bb)),
+            None => bank
+                .bank_letter
+                .as_deref()
+                .and_then(bank_byte_for_letter)
+                .ok_or(DbError::NoBankLetter(bank_id))?,
         };
 
-        for item in rows {
-            let (raw, prog) = item.map_err(|e| format!("Row error: {}", e))?;
-            if raw.len() == 256 {
-                let mut bytes_256 = [0u8; 256];
-                bytes_256.copy_from_slice(&raw);
-                let mut patch = Patch::from_bytes(&bytes_256);
-                let dump = patch.to_sysex(device_id, bank_num, prog);
-                syx_out.extend_from_slice(&dump);
-            }
+        let mut stmt = self.conn.prepare(
+            "SELECT id, program_number, raw_data FROM patches
+             WHERE bank_id = ?1 AND program_number < 128 ORDER BY program_number ASC",
+        )?;
+        let rows = stmt.query_map(params![bank_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, u8>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+            ))
+        })?;
+        let mut frames = Vec::new();
+        for row in rows {
+            let (id, program, raw) = row?;
+            let data = to_patch_bytes(id, &raw)?;
+            frames.push(encode_single_dump(device_id, bb, program, &data));
         }
-
-        Ok(syx_out)
+        Ok(frames)
     }
 
-    // Helper to map a row to PatchRecord
-    fn row_to_patch_record(row: &rusqlite::Row) -> Result<PatchRecord, rusqlite::Error> {
-        let raw_data: Vec<u8> = row.get(6)?;
-        let mut patch_bytes = [0u8; 256];
-        if raw_data.len() == 256 {
-            patch_bytes.copy_from_slice(&raw_data);
-        }
-        let patch = Patch::from_bytes(&patch_bytes);
-
-        let cat1_str: String = row.get(4)?;
-        let cat2_str: String = row.get(5)?;
-        let fav_int: i32 = row.get(9)?;
-
-        Ok(PatchRecord {
-            id: row.get(0)?,
-            bank_id: row.get(1)?,
-            program_number: row.get::<_, i32>(2)? as u8,
-            name: row.get(3)?,
-            category1: SoundCategory::from_str(&cat1_str),
-            category2: SoundCategory::from_str(&cat2_str),
-            patch,
-            checksum: row.get::<_, i32>(7)? as u8,
-            tags: row.get(8)?,
-            favorite: fav_int != 0,
-        })
+    /// Concatenation of [`Self::export_bank_dumps`], suitable for a `.syx` file.
+    pub fn export_bank_syx(
+        &self,
+        bank_id: i64,
+        device_id: u8,
+        target_bank: Option<u8>,
+    ) -> Result<Vec<u8>> {
+        Ok(self
+            .export_bank_dumps(bank_id, device_id, target_bank)?
+            .concat())
     }
+
+    fn require_bank(&self, bank_id: i64) -> Result<BankRecord> {
+        bank_by_id(&self.conn, bank_id)?.ok_or(DbError::BankNotFound(bank_id))
+    }
+}
+
+fn check_program(program: u8) -> Result<()> {
+    if (program as usize) < BANK_SLOTS {
+        Ok(())
+    } else {
+        Err(DbError::InvalidProgram(program))
+    }
+}
+
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn insert_letter_bank(conn: &Connection, letter: &str) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO banks (name, bank_letter, is_rom) VALUES (?1, ?2, ?3)",
+        params![
+            format!("Bank {letter}"),
+            letter,
+            matches!(letter, "C" | "D")
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+fn bank_by_id(conn: &Connection, id: i64) -> rusqlite::Result<Option<BankRecord>> {
+    conn.query_row(
+        "SELECT id, name, bank_letter, is_rom FROM banks WHERE id = ?1",
+        params![id],
+        row_to_bank,
+    )
+    .optional()
+}
+
+fn bank_by_letter(conn: &Connection, letter: &str) -> rusqlite::Result<Option<BankRecord>> {
+    conn.query_row(
+        "SELECT id, name, bank_letter, is_rom FROM banks WHERE bank_letter = ?1 ORDER BY id LIMIT 1",
+        params![letter],
+        row_to_bank,
+    )
+    .optional()
+}
+
+fn row_to_bank(row: &Row) -> rusqlite::Result<BankRecord> {
+    Ok(BankRecord {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        bank_letter: row.get(2)?,
+        is_rom: row.get(3)?,
+    })
+}
+
+fn row_to_summary(row: &Row) -> rusqlite::Result<PatchSummary> {
+    Ok(PatchSummary {
+        id: row.get(0)?,
+        bank_id: row.get(1)?,
+        program_number: row.get(2)?,
+        name: row.get(3)?,
+        category1: SoundCategory::from_raw(row.get(4)?),
+        category2: SoundCategory::from_raw(row.get(5)?),
+        tags: row.get(6)?,
+        favorite: row.get(7)?,
+        checksum_ok: row.get(8)?,
+    })
+}
+
+fn row_to_record_parts(row: &Row) -> rusqlite::Result<(PatchSummary, Vec<u8>)> {
+    Ok((row_to_summary(row)?, row.get(9)?))
+}
+
+fn to_patch_bytes(id: i64, raw: &[u8]) -> Result<[u8; PATCH_LEN]> {
+    raw.try_into()
+        .map_err(|_| DbError::CorruptPatch { id, len: raw.len() })
+}
+
+fn into_record((s, raw): (PatchSummary, Vec<u8>)) -> Result<PatchRecord> {
+    Ok(PatchRecord {
+        data: to_patch_bytes(s.id, &raw)?,
+        id: s.id,
+        bank_id: s.bank_id,
+        program_number: s.program_number,
+        name: s.name,
+        category1: s.category1,
+        category2: s.category2,
+        tags: s.tags,
+        favorite: s.favorite,
+        checksum_ok: s.checksum_ok,
+    })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_db_init_and_seed() {
-        let db = PatchDatabase::open_in_memory().unwrap();
-        let banks = db.get_banks().unwrap();
-        assert_eq!(banks.len(), 4);
-        assert_eq!(banks[0].name, "Bank A");
-        assert_eq!(banks[0].bank_letter.as_deref(), Some("A"));
-        assert!(banks[0].is_factory);
-        assert_eq!(banks[2].name, "Bank C (User)");
-        assert!(!banks[2].is_factory);
-    }
-
-    #[test]
-    fn test_patch_save_and_retrieve() {
-        let db = PatchDatabase::open_in_memory().unwrap();
-        let bank_a_id = db.get_banks().unwrap()[0].id;
-
-        let mut patch = Patch::new("AnalogLead");
-        let patch_id = db
-            .save_patch(
-                bank_a_id,
-                5,
-                &mut patch,
-                SoundCategory::Lead,
-                SoundCategory::Classic,
-                "warm, analog, solo",
-                true,
-            )
-            .unwrap();
-
-        let retrieved = db.get_patch_by_id(patch_id).unwrap().unwrap();
-        assert_eq!(retrieved.name, "AnalogLead");
-        assert_eq!(retrieved.program_number, 5);
-        assert_eq!(retrieved.category1, SoundCategory::Lead);
-        assert_eq!(retrieved.category2, SoundCategory::Classic);
-        assert_eq!(retrieved.tags, "warm, analog, solo");
-        assert!(retrieved.favorite);
-
-        // Retrieve by slot
-        let slot_retrieved = db.get_patch_by_slot(bank_a_id, 5).unwrap().unwrap();
-        assert_eq!(slot_retrieved.id, patch_id);
-    }
-
-    #[test]
-    fn test_patch_query_filters() {
-        let db = PatchDatabase::open_in_memory().unwrap();
-        let bank_id = db.get_banks().unwrap()[0].id;
-
-        let mut p1 = Patch::new("Acid 303");
-        db.save_patch(bank_id, 0, &mut p1, SoundCategory::Acid, SoundCategory::Bass, "tb303, squelch", false).unwrap();
-
-        let mut p2 = Patch::new("Moog Bass");
-        db.save_patch(bank_id, 1, &mut p2, SoundCategory::Bass, SoundCategory::Classic, "fat, 24db", true).unwrap();
-
-        let mut p3 = Patch::new("HyperPad");
-        db.save_patch(bank_id, 2, &mut p3, SoundCategory::Pad, SoundCategory::Off, "ambient, lush", false).unwrap();
-
-        // Filter by category Bass
-        let bass_filter = PatchFilter {
-            category: Some(SoundCategory::Bass),
-            ..Default::default()
-        };
-        let bass_results = db.query_patches(&bass_filter).unwrap();
-        assert_eq!(bass_results.len(), 2);
-
-        // Filter by favorites only
-        let fav_filter = PatchFilter {
-            favorite_only: true,
-            ..Default::default()
-        };
-        let fav_results = db.query_patches(&fav_filter).unwrap();
-        assert_eq!(fav_results.len(), 1);
-        assert_eq!(fav_results[0].name, "Moog Bass");
-
-        // Search text "303"
-        let search_filter = PatchFilter {
-            search_text: Some("303".to_string()),
-            ..Default::default()
-        };
-        let search_results = db.query_patches(&search_filter).unwrap();
-        assert_eq!(search_results.len(), 1);
-        assert_eq!(search_results[0].name, "Acid 303");
-    }
-
-    #[test]
-    fn test_sysex_import_and_export() {
-        let db = PatchDatabase::open_in_memory().unwrap();
-        let banks = db.get_banks().unwrap();
-        let bank_a_id = banks[0].id;
-        let bank_b_id = banks[1].id;
-
-        let mut p0 = Patch::new("PatchZero");
-        let mut p1 = Patch::new("PatchOne");
-
-        db.save_patch(bank_a_id, 0, &mut p0, SoundCategory::Lead, SoundCategory::Off, "", false).unwrap();
-        db.save_patch(bank_a_id, 1, &mut p1, SoundCategory::Pad, SoundCategory::Off, "", false).unwrap();
-
-        // Export Bank A to SysEx bytes
-        let syx_bytes = db.export_syx_bank(bank_a_id, 0x01).unwrap();
-        assert_eq!(syx_bytes.len(), 267 * 2);
-
-        // Import SysEx into Bank B
-        let count = db.import_syx_bank(bank_b_id, &syx_bytes).unwrap();
-        assert_eq!(count, 2);
-
-        let imported_p0 = db.get_patch_by_slot(bank_b_id, 0).unwrap().unwrap();
-        assert_eq!(imported_p0.name, "PatchZero");
-
-        let imported_p1 = db.get_patch_by_slot(bank_b_id, 1).unwrap().unwrap();
-        assert_eq!(imported_p1.name, "PatchOne");
-    }
-
-    #[test]
-    fn test_import_midi_file_wrapped_sysex() {
-        let db = PatchDatabase::open_in_memory().unwrap();
-        let bank_id = db.get_banks().unwrap()[0].id;
-
-        let mut p = Patch::new("SmfPatch");
-        let raw_syx = p.to_sysex(0x01, 0, 10);
-
-        // Wrap in MIDI File chunk style: [Delta, 0xF0, VarLen, data..., 0xF7]
-        let mut smf_bytes = vec![0x00, 0xF0, 0x82, 0x0B];
-        smf_bytes.extend_from_slice(&raw_syx[1..]); // Skip the leading 0xF0 since SMF has it before varlen
-
-        let count = db.import_syx_bank(bank_id, &smf_bytes).unwrap();
-        assert_eq!(count, 1);
-
-        let retrieved = db.get_patch_by_slot(bank_id, 10).unwrap().unwrap();
-        assert_eq!(retrieved.name, "SmfPatch");
-    }
-}
+mod tests;
