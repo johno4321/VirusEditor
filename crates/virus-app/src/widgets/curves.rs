@@ -1,7 +1,8 @@
 //! Filter-response and envelope visualisations, fed from the raw patch bytes
 //! (A40–A43, A51–A53, B32; envelopes A54–A58 and A59–A63).
 
-use egui::{pos2, vec2, Color32, Response, Sense, Stroke, Ui, Vec2, Widget};
+use crate::theme;
+use egui::{pos2, vec2, Response, Sense, Stroke, Ui, Vec2, Widget};
 use virus_syx::{Page, Patch};
 
 /// Inputs of the dual-filter response, as raw parameter values.
@@ -87,15 +88,15 @@ impl Widget for FilterCurve {
             return response;
         }
         let painter = ui.painter();
-        painter.rect_filled(rect, egui::Rounding::same(4.0), Color32::from_rgb(18, 20, 24));
-        painter.rect_stroke(rect, egui::Rounding::same(4.0), Stroke::new(1.0_f32, Color32::from_rgb(45, 50, 60)));
+        painter.rect_filled(rect, egui::Rounding::same(4.0), theme::SCOPE_BG);
+        painter.rect_stroke(rect, egui::Rounding::same(4.0), Stroke::new(1.0_f32, theme::SCOPE_BORDER));
 
         let log_span = 20_000.0_f32.log10() - 20.0_f32.log10();
         for f in [100.0_f32, 1_000.0, 10_000.0] {
             let x = rect.min.x + (f.log10() - 20.0_f32.log10()) / log_span * rect.width();
             painter.line_segment(
                 [pos2(x, rect.min.y), pos2(x, rect.max.y)],
-                Stroke::new(1.0_f32, Color32::from_rgb(32, 36, 44)),
+                Stroke::new(1.0_f32, theme::SCOPE_GRID),
             );
         }
 
@@ -119,7 +120,7 @@ impl Widget for FilterCurve {
                 pos2(rect.min.x + t * rect.width(), rect.min.y + y * rect.height())
             })
             .collect();
-        painter.add(egui::Shape::line(points, Stroke::new(2.0_f32, Color32::from_rgb(230, 80, 50))));
+        painter.add(egui::Shape::line(points, Stroke::new(2.0_f32, theme::TRACE_PRIMARY)));
 
         let routing = ROUTING_NAMES.get(p.routing as usize).map_or_else(|| format!("#{}", p.routing), |s| (*s).to_owned());
         painter.text(
@@ -127,7 +128,7 @@ impl Widget for FilterCurve {
             egui::Align2::LEFT_TOP,
             format!("Filters: {routing}"),
             egui::FontId::proportional(10.0),
-            Color32::from_rgb(140, 145, 160),
+            theme::DIM,
         );
         response
     }
@@ -164,8 +165,8 @@ impl Widget for EnvelopeCurve<'_> {
             return response;
         }
         let painter = ui.painter();
-        painter.rect_filled(rect, egui::Rounding::same(4.0), Color32::from_rgb(20, 22, 26));
-        painter.rect_stroke(rect, egui::Rounding::same(4.0), Stroke::new(1.0_f32, Color32::from_rgb(45, 50, 60)));
+        painter.rect_filled(rect, egui::Rounding::same(4.0), theme::SCOPE_BG);
+        painter.rect_stroke(rect, egui::Rounding::same(4.0), Stroke::new(1.0_f32, theme::SCOPE_BORDER));
 
         let pad = 8.0;
         let (width, height) = (rect.width() - 2.0 * pad, rect.height() - 2.0 * pad - 10.0);
@@ -192,19 +193,19 @@ impl Widget for EnvelopeCurve<'_> {
         let p2 = pos2(p1.x + d * width, level(sustain_start));
         let p3 = pos2(p2.x + s * width, level(sustain_end));
         let p4 = pos2(p3.x + r * width, bottom);
-        let line = Color32::from_rgb(240, 150, 60);
+        let line = theme::TRACE_SECONDARY;
         for segment in [[p0, p1], [p1, p2], [p2, p3], [p3, p4]] {
             painter.line_segment(segment, Stroke::new(2.0_f32, line));
         }
         for point in [p1, p2, p3] {
-            painter.circle_filled(point, 2.5, Color32::from_rgb(255, 230, 200));
+            painter.circle_filled(point, 2.5, theme::LEGEND);
         }
         painter.text(
             rect.min + vec2(8.0, 4.0),
             egui::Align2::LEFT_TOP,
             self.label,
             egui::FontId::proportional(10.0),
-            Color32::from_rgb(150, 155, 170),
+            theme::DIM,
         );
         response
     }
