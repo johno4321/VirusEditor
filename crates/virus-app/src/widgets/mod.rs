@@ -1,7 +1,7 @@
-//! Custom UI widgets for the Access Virus Editor.
+//! Custom egui widgets.
 
 pub mod curves;
 pub mod knob;
 
-pub use curves::{EnvelopeCurveWidget, FilterCurveWidget};
-pub use knob::{bipolar_knob, unipolar_knob};
+pub use curves::{EnvelopeCurve, EnvelopeParams, FilterCurve, FilterParams};
+pub use knob::Knob;

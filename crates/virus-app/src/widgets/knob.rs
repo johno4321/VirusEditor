@@ -1,394 +1,181 @@
-//! Custom rotary knob widget with support for Unipolar7 (0..127) and Bipolar7 (-64..+63)
-//! values with center-detent visual feedback.
+//! Rotary knob operating directly on a raw 7-bit parameter byte.
+//!
+//! Unipolar knobs fill the arc from the minimum; bipolar knobs (stored 0..127, shown
+//! −64..+63) fill from the 12 o'clock detent at raw 64.
 
-use egui::{
-    pos2, vec2, Color32, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2, Widget,
-};
+use egui::{pos2, vec2, Color32, Id, Pos2, Response, Sense, Stroke, Ui, Widget};
 use std::f32::consts::PI;
-use virus_syx::domain::types::{Bipolar7, Unipolar7};
 
-const ARC_START_ANGLE: f32 = 0.75 * PI; // -135 degrees (bottom left)
-const ARC_END_ANGLE: f32 = 2.25 * PI;   // +135 degrees (bottom right)
-const ARC_TOTAL_ANGLE: f32 = 1.5 * PI;  // 270 degrees sweep
+const ARC_START_ANGLE: f32 = 0.75 * PI;
+const ARC_TOTAL_ANGLE: f32 = 1.5 * PI;
+const BIPOLAR_CENTRE: u8 = 64;
+const WIDTH: f32 = 68.0;
 
-/// Visual theme colors for rotary knobs
-#[derive(Clone, Copy)]
-pub struct KnobColors {
-    pub body: Color32,
-    pub border: Color32,
-    pub track: Color32,
-    pub active_arc: Color32,
-    pub needle: Color32,
-    pub center_dot: Color32,
-}
+const BODY: Color32 = Color32::from_rgb(32, 34, 40);
+const BORDER: Color32 = Color32::from_rgb(60, 64, 75);
+const TRACK: Color32 = Color32::from_rgb(45, 48, 58);
+const ACTIVE: Color32 = Color32::from_rgb(220, 60, 40);
+const NEEDLE: Color32 = Color32::from_rgb(255, 230, 200);
 
-impl Default for KnobColors {
-    fn default() -> Self {
-        Self {
-            body: Color32::from_rgb(32, 34, 40),
-            border: Color32::from_rgb(60, 64, 75),
-            track: Color32::from_rgb(45, 48, 58),
-            active_arc: Color32::from_rgb(220, 60, 40), // Classic Virus red accent
-            needle: Color32::from_rgb(255, 230, 200),
-            center_dot: Color32::from_rgb(80, 85, 100),
-        }
-    }
-}
-
-/// Rotary knob for Unipolar 7-bit parameters (0..=127).
-pub struct UnipolarKnob<'a> {
-    value: &'a mut Unipolar7,
+pub struct Knob<'a> {
+    value: &'a mut u8,
     label: &'a str,
+    bipolar: bool,
+    min: u8,
+    max: u8,
+    /// Value restored by double-click: 0, or the centre for bipolar knobs.
+    default: u8,
     radius: f32,
-    colors: KnobColors,
-    default_val: u8,
 }
 
-impl<'a> UnipolarKnob<'a> {
-    pub fn new(value: &'a mut Unipolar7, label: &'a str) -> Self {
-        Self {
-            value,
-            label,
-            radius: 18.0,
-            colors: KnobColors::default(),
-            default_val: 0,
+impl<'a> Knob<'a> {
+    pub fn unipolar(value: &'a mut u8, label: &'a str) -> Self {
+        Self { value, label, bipolar: false, min: 0, max: 127, default: 0, radius: 16.0 }
+    }
+
+    pub fn bipolar(value: &'a mut u8, label: &'a str) -> Self {
+        Self { value, label, bipolar: true, min: 0, max: 127, default: BIPOLAR_CENTRE, radius: 16.0 }
+    }
+
+    /// Range reachable by dragging. A stored value outside it is shown as-is and kept until
+    /// the knob is moved.
+    pub fn range(mut self, min: u8, max: u8) -> Self {
+        self.min = min;
+        self.max = max.max(min);
+        self
+    }
+
+    fn normalized(&self, value: f32) -> f32 {
+        let span = f32::from(self.max - self.min).max(1.0);
+        ((value - f32::from(self.min)) / span).clamp(0.0, 1.0)
+    }
+
+    fn angle(&self, value: f32) -> f32 {
+        ARC_START_ANGLE + self.normalized(value) * ARC_TOTAL_ANGLE
+    }
+
+    fn value_text(&self) -> String {
+        if self.bipolar {
+            match i16::from(*self.value) - 64 {
+                v if v > 0 => format!("+{v}"),
+                v => v.to_string(),
+            }
+        } else {
+            self.value.to_string()
         }
     }
-
-    pub fn radius(mut self, radius: f32) -> Self {
-        self.radius = radius;
-        self
-    }
-
-    pub fn default_val(mut self, val: u8) -> Self {
-        self.default_val = val;
-        self
-    }
-
-    pub fn colors(mut self, colors: KnobColors) -> Self {
-        self.colors = colors;
-        self
-    }
 }
 
-impl<'a> Widget for UnipolarKnob<'a> {
+impl Widget for Knob<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let diameter = self.radius * 2.0;
-        let font_height = ui.spacing().interact_size.y * 0.7;
-        let total_size = vec2(diameter + 14.0, diameter + (font_height * 2.0) + 6.0);
-        let (rect, mut response) = ui.allocate_exact_size(total_size, Sense::click_and_drag());
+        let font_height = 12.0_f32;
+        let size = vec2(WIDTH, self.radius * 2.0 + font_height * 2.0 + 8.0);
+        let (rect, mut response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+        let span = f32::from(self.max - self.min).max(1.0);
+        let accumulator = Id::new(("knob-drag", response.id));
 
-        let norm_val = self.value.0 as f32 / 127.0;
-
-        // Interaction handling
+        if response.drag_started() {
+            ui.data_mut(|d| d.insert_temp(accumulator, f32::from(*self.value)));
+        }
         if response.dragged() {
-            let delta = response.drag_delta();
-            let sensitivity = if ui.input(|i| i.modifiers.shift) { 0.002 } else { 0.008 };
-            let new_norm = (norm_val - delta.y * sensitivity).clamp(0.0, 1.0);
-            let new_u8 = (new_norm * 127.0).round() as u8;
-            if new_u8 != self.value.0 {
-                self.value.0 = new_u8;
+            let fine = ui.input(|i| i.modifiers.shift);
+            // A full-range sweep takes ~150 px (600 px with Shift).
+            let per_pixel = span / if fine { 600.0 } else { 150.0 };
+            let delta = -response.drag_delta().y * per_pixel;
+            let target = ui.data_mut(|d| {
+                let acc = d.get_temp_mut_or(accumulator, f32::from(*self.value));
+                *acc = (*acc + delta).clamp(f32::from(self.min), f32::from(self.max));
+                *acc
+            });
+            let new_value = target.round() as u8;
+            if new_value != *self.value {
+                *self.value = new_value;
                 response.mark_changed();
             }
         }
-
-        // Scroll wheel adjustment
         if response.hovered() {
-            let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-            if scroll_delta.abs() > 0.0 {
-                let step = if scroll_delta > 0.0 { 1i16 } else { -1i16 };
-                let new_val = (self.value.0 as i16 + step).clamp(0, 127) as u8;
-                if new_val != self.value.0 {
-                    self.value.0 = new_val;
-                    response.mark_changed();
-                }
-            }
-        }
-
-        // Double click to reset to default
-        if response.double_clicked() {
-            if self.value.0 != self.default_val {
-                self.value.0 = self.default_val;
-                response.mark_changed();
-            }
-        }
-
-        if ui.is_rect_visible(rect) {
-            let painter = ui.painter();
-            let center = pos2(rect.center().x, rect.min.y + self.radius + font_height + 2.0);
-
-            // 1. Draw top label
-            let label_pos = pos2(rect.center().x, rect.min.y + font_height * 0.5);
-            painter.text(
-                label_pos,
-                egui::Align2::CENTER_CENTER,
-                self.label,
-                egui::FontId::proportional(11.0),
-                ui.visuals().text_color(),
-            );
-
-            // 2. Outer track background arc
-            let track_radius = self.radius + 3.0;
-            draw_arc(
-                painter,
-                center,
-                track_radius,
-                ARC_START_ANGLE,
-                ARC_END_ANGLE,
-                self.colors.track,
-                2.5,
-            );
-
-            // 3. Active arc from min (0) to current value
-            let current_angle = ARC_START_ANGLE + (norm_val * ARC_TOTAL_ANGLE);
-            if norm_val > 0.001 {
-                draw_arc(
-                    painter,
-                    center,
-                    track_radius,
-                    ARC_START_ANGLE,
-                    current_angle,
-                    self.colors.active_arc,
-                    2.5,
-                );
-            }
-
-            // 4. Knob body
-            painter.circle(
-                center,
-                self.radius,
-                self.colors.body,
-                Stroke::new(1.0, self.colors.border),
-            );
-
-            // 5. Needle indicator
-            let needle_inner = center + vec2(current_angle.cos(), current_angle.sin()) * (self.radius * 0.35);
-            let needle_outer = center + vec2(current_angle.cos(), current_angle.sin()) * (self.radius * 0.85);
-            painter.line_segment(
-                [needle_inner, needle_outer],
-                Stroke::new(2.0, self.colors.needle),
-            );
-
-            // 6. Value label under the knob
-            let val_pos = pos2(rect.center().x, rect.max.y - font_height * 0.5);
-            painter.text(
-                val_pos,
-                egui::Align2::CENTER_CENTER,
-                format!("{}", self.value.0),
-                egui::FontId::monospace(10.0),
-                Color32::from_rgb(170, 175, 190),
-            );
-        }
-
-        response
-    }
-}
-
-/// Rotary knob for Bipolar 7-bit parameters (-64..=+63) with center detent at 0.
-pub struct BipolarKnob<'a> {
-    value: &'a mut Bipolar7,
-    label: &'a str,
-    radius: f32,
-    colors: KnobColors,
-}
-
-impl<'a> BipolarKnob<'a> {
-    pub fn new(value: &'a mut Bipolar7, label: &'a str) -> Self {
-        Self {
-            value,
-            label,
-            radius: 18.0,
-            colors: KnobColors::default(),
-        }
-    }
-
-    pub fn radius(mut self, radius: f32) -> Self {
-        self.radius = radius;
-        self
-    }
-
-    pub fn colors(mut self, colors: KnobColors) -> Self {
-        self.colors = colors;
-        self
-    }
-}
-
-impl<'a> Widget for BipolarKnob<'a> {
-    fn ui(self, ui: &mut Ui) -> Response {
-        let diameter = self.radius * 2.0;
-        let font_height = ui.spacing().interact_size.y * 0.7;
-        let total_size = vec2(diameter + 14.0, diameter + (font_height * 2.0) + 6.0);
-        let (rect, mut response) = ui.allocate_exact_size(total_size, Sense::click_and_drag());
-
-        // Normalized from 0.0 (-64) to 1.0 (+63), center (0) is at 64/127 ~= 0.5039
-        let current_i8 = self.value.0;
-        let norm_val = (current_i8 as f32 + 64.0) / 127.0;
-
-        // Center angle (12 o'clock) is 1.5 * PI (270 degrees)
-        let center_angle = 1.5 * PI;
-
-        // Interaction handling
-        if response.dragged() {
-            let delta = response.drag_delta();
-            let sensitivity = if ui.input(|i| i.modifiers.shift) { 0.002 } else { 0.008 };
-            let new_norm = (norm_val - delta.y * sensitivity).clamp(0.0, 1.0);
-            let new_raw = (new_norm * 127.0).round() as u8;
-            let new_bipolar = Bipolar7::from_raw(new_raw);
-            if new_bipolar != *self.value {
-                *self.value = new_bipolar;
-                response.mark_changed();
-            }
-        }
-
-        // Mouse wheel
-        if response.hovered() {
-            let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-            if scroll_delta.abs() > 0.0 {
-                let step = if scroll_delta > 0.0 { 1i16 } else { -1i16 };
-                let new_raw = (self.value.to_raw() as i16 + step).clamp(0, 127) as u8;
-                let new_bipolar = Bipolar7::from_raw(new_raw);
-                if new_bipolar != *self.value {
-                    *self.value = new_bipolar;
-                    response.mark_changed();
-                }
-            }
-        }
-
-        // Double click to reset to center (0)
-        if response.double_clicked() {
-            if self.value.0 != 0 {
-                *self.value = Bipolar7::new(0);
-                response.mark_changed();
-            }
-        }
-
-        if ui.is_rect_visible(rect) {
-            let painter = ui.painter();
-            let center = pos2(rect.center().x, rect.min.y + self.radius + font_height + 2.0);
-
-            // 1. Draw top label
-            let label_pos = pos2(rect.center().x, rect.min.y + font_height * 0.5);
-            painter.text(
-                label_pos,
-                egui::Align2::CENTER_CENTER,
-                self.label,
-                egui::FontId::proportional(11.0),
-                ui.visuals().text_color(),
-            );
-
-            // 2. Outer track background arc
-            let track_radius = self.radius + 3.0;
-            draw_arc(
-                painter,
-                center,
-                track_radius,
-                ARC_START_ANGLE,
-                ARC_END_ANGLE,
-                self.colors.track,
-                2.5,
-            );
-
-            // 3. Center detent notch at 12 o'clock
-            let detent_outer = center + vec2(0.0, -track_radius - 2.0);
-            let detent_inner = center + vec2(0.0, -track_radius + 2.0);
-            painter.line_segment(
-                [detent_inner, detent_outer],
-                Stroke::new(1.5, Color32::from_rgb(140, 145, 160)),
-            );
-
-            // 4. Bipolar active arc: from 12 o'clock towards current angle
-            let current_angle = ARC_START_ANGLE + (norm_val * ARC_TOTAL_ANGLE);
-            if current_i8 > 0 {
-                draw_arc(
-                    painter,
-                    center,
-                    track_radius,
-                    center_angle,
-                    current_angle,
-                    self.colors.active_arc,
-                    2.5,
-                );
-            } else if current_i8 < 0 {
-                draw_arc(
-                    painter,
-                    center,
-                    track_radius,
-                    current_angle,
-                    center_angle,
-                    self.colors.active_arc,
-                    2.5,
-                );
-            }
-
-            // 5. Knob body
-            painter.circle(
-                center,
-                self.radius,
-                self.colors.body,
-                Stroke::new(1.0, self.colors.border),
-            );
-
-            // 6. Needle indicator
-            let needle_inner = center + vec2(current_angle.cos(), current_angle.sin()) * (self.radius * 0.35);
-            let needle_outer = center + vec2(current_angle.cos(), current_angle.sin()) * (self.radius * 0.85);
-            painter.line_segment(
-                [needle_inner, needle_outer],
-                Stroke::new(2.0, self.colors.needle),
-            );
-
-            // 7. Value display below knob
-            let val_str = if current_i8 > 0 {
-                format!("+{}", current_i8)
-            } else {
-                format!("{}", current_i8)
-            };
-            let val_pos = pos2(rect.center().x, rect.max.y - font_height * 0.5);
-            painter.text(
-                val_pos,
-                egui::Align2::CENTER_CENTER,
-                val_str,
-                egui::FontId::monospace(10.0),
-                if current_i8 == 0 {
-                    Color32::from_rgb(120, 125, 140)
+            let scroll = ui.input(|i| i.raw_scroll_delta.y);
+            if scroll != 0.0 {
+                let current = (*self.value).clamp(self.min, self.max);
+                let new_value = if scroll > 0.0 {
+                    current.saturating_add(1).min(self.max)
                 } else {
-                    Color32::from_rgb(220, 180, 140)
-                },
-            );
+                    current.saturating_sub(1).max(self.min)
+                };
+                if new_value != *self.value {
+                    *self.value = new_value;
+                    response.mark_changed();
+                }
+            }
+        }
+        if response.double_clicked() && *self.value != self.default {
+            *self.value = self.default;
+            response.mark_changed();
         }
 
+        if ui.is_rect_visible(rect) {
+            let painter = ui.painter();
+            let centre = pos2(rect.center().x, rect.min.y + font_height + 4.0 + self.radius);
+            painter.text(
+                pos2(rect.center().x, rect.min.y + font_height * 0.5),
+                egui::Align2::CENTER_CENTER,
+                self.label,
+                egui::FontId::proportional(10.5),
+                ui.visuals().text_color(),
+            );
+
+            let track_radius = self.radius + 3.0;
+            draw_arc(painter, centre, track_radius, ARC_START_ANGLE, ARC_START_ANGLE + ARC_TOTAL_ANGLE, TRACK);
+            let current = self.angle(f32::from(*self.value));
+            if self.bipolar {
+                let centre_angle = self.angle(f32::from(BIPOLAR_CENTRE));
+                painter.line_segment(
+                    [centre + vec2(0.0, -track_radius - 2.0), centre + vec2(0.0, -track_radius + 2.0)],
+                    Stroke::new(1.5_f32, Color32::from_rgb(140, 145, 160)),
+                );
+                draw_arc(painter, centre, track_radius, centre_angle.min(current), centre_angle.max(current), ACTIVE);
+            } else {
+                draw_arc(painter, centre, track_radius, ARC_START_ANGLE, current, ACTIVE);
+            }
+
+            painter.circle(centre, self.radius, BODY, Stroke::new(1.0_f32, BORDER));
+            let direction = vec2(current.cos(), current.sin());
+            painter.line_segment(
+                [centre + direction * self.radius * 0.35, centre + direction * self.radius * 0.85],
+                Stroke::new(2.0_f32, NEEDLE),
+            );
+
+            let out_of_range = *self.value < self.min || *self.value > self.max;
+            let neutral = if self.bipolar { *self.value == BIPOLAR_CENTRE } else { false };
+            let colour = if out_of_range {
+                Color32::from_rgb(230, 190, 60)
+            } else if neutral {
+                Color32::from_rgb(120, 125, 140)
+            } else {
+                Color32::from_rgb(200, 190, 175)
+            };
+            painter.text(
+                pos2(rect.center().x, rect.max.y - font_height * 0.5),
+                egui::Align2::CENTER_CENTER,
+                self.value_text(),
+                egui::FontId::monospace(10.0),
+                colour,
+            );
+        }
         response
     }
 }
 
-/// Helper function to instantiate a UnipolarKnob
-pub fn unipolar_knob<'a>(ui: &mut Ui, value: &'a mut Unipolar7, label: &'a str) -> Response {
-    ui.add(UnipolarKnob::new(value, label))
-}
-
-/// Helper function to instantiate a BipolarKnob
-pub fn bipolar_knob<'a>(ui: &mut Ui, value: &'a mut Bipolar7, label: &'a str) -> Response {
-    ui.add(BipolarKnob::new(value, label))
-}
-
-/// Draws an arc using polyline segments on the painter.
-fn draw_arc(
-    painter: &egui::Painter,
-    center: Pos2,
-    radius: f32,
-    start_angle: f32,
-    end_angle: f32,
-    color: Color32,
-    width: f32,
-) {
-    if (end_angle - start_angle).abs() < 0.01 {
+fn draw_arc(painter: &egui::Painter, centre: Pos2, radius: f32, start: f32, end: f32, colour: Color32) {
+    if (end - start).abs() < 0.01 {
         return;
     }
-    let steps = 24;
-    let mut points = Vec::with_capacity(steps + 1);
-    for i in 0..=steps {
-        let t = i as f32 / steps as f32;
-        let angle = start_angle + (end_angle - start_angle) * t;
-        points.push(center + vec2(angle.cos(), angle.sin()) * radius);
-    }
-    painter.add(egui::Shape::line(points, Stroke::new(width, color)));
+    const STEPS: usize = 24;
+    let points = (0..=STEPS)
+        .map(|i| {
+            let angle = start + (end - start) * i as f32 / STEPS as f32;
+            centre + vec2(angle.cos(), angle.sin()) * radius
+        })
+        .collect();
+    painter.add(egui::Shape::line(points, Stroke::new(2.5_f32, colour)));
 }

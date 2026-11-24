@@ -1,301 +1,310 @@
-//! Root eframe::App implementation for the Access Virus Editor & Librarian.
+//! The eframe application: wires the MIDI worker, the session, the database and the panels.
+
+use std::time::Instant;
 
 use eframe::{egui, App, Frame};
-use egui::{Color32, RichText, TopBottomPanel, CentralPanel, Visuals};
-use std::time::Duration;
-use virus_db::{PatchDatabase, SoundCategory};
-use virus_midi::engine::MidiService;
-use virus_midi::events::{MidiCommand, MidiEvent};
-use virus_syx::domain::{Page, PageA, PageB, Patch};
+use egui::{CentralPanel, Color32, RichText, TopBottomPanel, Visuals};
+use virus_db::PatchDatabase;
+use virus_midi::{MidiCommand, MidiEvent, MidiService};
+use virus_syx::Patch;
 
-use crate::views::librarian_panel::LibrarianAction;
-use crate::views::{LibrarianPanel, MatrixPanel, MidiBar, SynthPanel};
+use crate::session::{Activity, Incoming, Ports, Session};
+use crate::storage::{open_library, LibraryLocation};
+use crate::views::librarian::{LibAction, LibrarianView, BANK_SEND_GAP_MS};
+use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, ACCENT, DANGER, DIM};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AppTab {
+enum Tab {
     #[default]
-    SynthEditor,
-    ModulationMatrix,
+    Editor,
+    Modulation,
     Librarian,
 }
 
 pub struct VirusApp {
-    pub patch: Patch,
-    pub midi_service: Option<MidiService>,
-    pub db: PatchDatabase,
-    pub midi_bar: MidiBar,
-    pub librarian_panel: LibrarianPanel,
-    pub active_tab: AppTab,
+    session: Session,
+    ports: Ports,
+    leds: Activity,
+    midi: Option<MidiService>,
+    db: PatchDatabase,
+    location: LibraryLocation,
+    tab: Tab,
+    editor: EditorView,
+    librarian: LibrarianView,
+    notice: Notice,
+    /// Where the edited patch came from, for the header.
+    origin: String,
 }
 
 impl VirusApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Configure classic Access Virus dark theme
         let mut visuals = Visuals::dark();
         visuals.panel_fill = Color32::from_rgb(22, 24, 28);
         visuals.window_fill = Color32::from_rgb(26, 28, 34);
         visuals.extreme_bg_color = Color32::from_rgb(14, 15, 18);
-        visuals.selection.bg_fill = Color32::from_rgb(200, 60, 40); // Classic Virus red
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(240, 160, 60));
+        visuals.selection.bg_fill = Color32::from_rgb(200, 60, 40);
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(240, 160, 60));
         cc.egui_ctx.set_visuals(visuals);
 
-        // Spawn background MIDI engine
-        let midi_service = match MidiService::spawn() {
-            Ok(service) => Some(service),
+        let mut notice = Notice::info("Ready. Select the MIDI ports, or let auto-detect find the Virus.");
+        let midi = match MidiService::spawn() {
+            Ok(service) => {
+                // Repaint as soon as MIDI arrives instead of polling every frame (U2).
+                let ctx = cc.egui_ctx.clone();
+                service.set_event_notifier(Box::new(move || ctx.request_repaint()));
+                Some(service)
+            }
             Err(e) => {
-                eprintln!("Warning: Failed to start MIDI service: {}", e);
+                notice = Notice::error(format!("MIDI unavailable: {e}"));
                 None
             }
         };
 
-        // Initialize SQLite patch database (or in-memory fallback)
-        let db = PatchDatabase::open("virus_library.db")
-            .unwrap_or_else(|_| PatchDatabase::open_in_memory().expect("In-memory SQLite failed"));
+        let (db, location) = open_library();
+        if let LibraryLocation::InMemory { reason } = &location {
+            notice = Notice::error(format!("Library is in memory only and will NOT be saved: {reason}"));
+        }
 
         Self {
-            patch: Patch::new("Init Patch"),
-            midi_service,
+            session: Session::default(),
+            ports: Ports::default(),
+            leds: Activity::default(),
+            midi,
             db,
-            midi_bar: MidiBar::default(),
-            librarian_panel: LibrarianPanel::default(),
-            active_tab: AppTab::SynthEditor,
+            location,
+            tab: Tab::default(),
+            editor: EditorView::default(),
+            librarian: LibrarianView::default(),
+            notice,
+            origin: "init".to_owned(),
         }
     }
 
-    /// Processes incoming events from the MIDI subsystem.
-    fn poll_midi_events(&mut self) {
-        if let Some(ref service) = self.midi_service {
-            while let Some(event) = service.try_recv_event() {
-                match event {
-                    MidiEvent::PortListUpdated { inputs, outputs } => {
-                        self.midi_bar.input_ports = inputs.clone();
-                        self.midi_bar.output_ports = outputs.clone();
-
-                        // Auto-detect and connect to "Virus" / "Access" ports if not yet connected
-                        if self.midi_bar.selected_input_idx.is_none() {
-                            if let Some((idx, _)) = inputs.iter().enumerate().find(|(_, name)| {
-                                let l = name.to_lowercase();
-                                l.contains("virus") || l.contains("access") || l.contains("osr1")
-                            }) {
-                                self.midi_bar.selected_input_idx = Some(idx);
-                                let _ = service.send_command(MidiCommand::ConnectInput(idx));
-                            }
-                        }
-
-                        if self.midi_bar.selected_output_idx.is_none() {
-                            if let Some((idx, _)) = outputs.iter().enumerate().find(|(_, name)| {
-                                let l = name.to_lowercase();
-                                l.contains("virus") || l.contains("access") || l.contains("osr1")
-                            }) {
-                                self.midi_bar.selected_output_idx = Some(idx);
-                                let _ = service.send_command(MidiCommand::ConnectOutput(idx));
-                            }
-                        }
-                    }
-                    MidiEvent::ConnectionStatus {
-                        input_connected,
-                        input_name,
-                        output_connected,
-                        output_name,
-                    } => {
-                        self.midi_bar.input_connected = input_connected;
-                        self.midi_bar.output_connected = output_connected;
-
-                        let in_str = input_name.as_deref().unwrap_or("None");
-                        let out_str = output_name.as_deref().unwrap_or("None");
-                        self.midi_bar.status_message = format!("In: {} | Out: {}", in_str, out_str);
-                    }
-                    MidiEvent::ParamReceived { page, param, value, .. } => {
-                        self.midi_bar.trigger_rx();
-                        match page {
-                            Page::PageA => {
-                                if (param as usize) < self.patch.page_a.raw.len() {
-                                    self.patch.page_a.raw[param as usize] = value;
-                                    self.patch.page_a = PageA::from_bytes(&self.patch.page_a.raw);
-                                }
-                            }
-                            Page::PageB => {
-                                if (param as usize) < self.patch.page_b.raw.len() {
-                                    self.patch.page_b.raw[param as usize] = value;
-                                    self.patch.page_b = PageB::from_bytes(&self.patch.page_b.raw);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    MidiEvent::PatchReceived { patch, .. } => {
-                        self.midi_bar.trigger_rx();
-                        self.patch = *patch;
-                        self.midi_bar.status_message = format!("Loaded Patch: {}", self.patch.name());
-                    }
-                    MidiEvent::Error(err) => {
-                        self.midi_bar.status_message = format!("MIDI Error: {}", err);
-                    }
-                    _ => {}
+    fn command(&mut self, command: MidiCommand) {
+        match &self.midi {
+            Some(midi) => {
+                if let Err(e) = midi.send_command(command) {
+                    self.notice = Notice::error(format!("MIDI worker stopped: {e}"));
                 }
             }
+            None => self.notice = Notice::error("MIDI is unavailable."),
+        }
+    }
+
+    /// Sends one message. The Tx LED lights only when the worker reports `Sent` (R2).
+    fn send(&mut self, message: Vec<u8>) {
+        if self.midi.is_some() && !self.ports.output_connected() {
+            self.notice = Notice::warning("No MIDI output connected: nothing was sent.");
+            return;
+        }
+        self.command(MidiCommand::Send(message));
+    }
+
+    fn poll_midi(&mut self) {
+        let Some(midi) = &self.midi else { return };
+        let events: Vec<MidiEvent> = std::iter::from_fn(|| midi.try_recv_event()).collect();
+        let now = Instant::now();
+        for event in events {
+            match event {
+                MidiEvent::PortListUpdated { inputs, outputs } => {
+                    for command in self.ports.on_port_list(inputs, outputs) {
+                        self.command(command);
+                    }
+                }
+                MidiEvent::ConnectionStatus { input, output } => {
+                    self.notice = Notice::info(format!(
+                        "MIDI In: {} | Out: {}",
+                        input.as_deref().unwrap_or("none"),
+                        output.as_deref().unwrap_or("none")
+                    ));
+                    self.ports.on_status(input, output);
+                }
+                MidiEvent::Sent { .. } => self.leds.tx(now),
+                MidiEvent::Error(e) => self.notice = Notice::error(format!("MIDI: {e}")),
+                incoming => {
+                    self.leds.rx(now);
+                    self.handle_incoming(&incoming);
+                }
+            }
+        }
+    }
+
+    fn handle_incoming(&mut self, event: &MidiEvent) {
+        match self.session.handle_midi(event) {
+            Incoming::PatchLoaded { name, checksum_ok } => {
+                self.origin = "synth".to_owned();
+                self.notice = if checksum_ok {
+                    Notice::info(format!("Received '{name}' from the synth."))
+                } else {
+                    Notice::warning(format!("Received '{name}' from the synth with a wrong checksum."))
+                };
+            }
+            Incoming::DumpQueued { bank, program, checksum_ok } => {
+                let count = self.session.received.len();
+                let flag = if checksum_ok { "" } else { " (wrong checksum)" };
+                self.notice = Notice::info(format!(
+                    "Received dump bb={bank:02X} ss={program}{flag}; {count} waiting under Librarian → Received from synth."
+                ));
+            }
+            Incoming::ParamChanged { .. } | Incoming::Ignored => {}
+        }
+    }
+
+    fn apply_edits(&mut self, edits: Vec<Edit>) {
+        for edit in edits {
+            match edit {
+                Edit::Param { page, number, value } => {
+                    if let Some(message) = self.session.edit(page, number, value) {
+                        self.send(message);
+                    }
+                }
+                Edit::Name(name) => {
+                    for message in self.session.set_name(&name) {
+                        self.send(message);
+                    }
+                }
+            }
+        }
+    }
+
+    fn load(&mut self, patch: Patch, origin: String) {
+        self.notice = Notice::info(format!("Loaded '{}' from {origin} into the editor (not sent).", patch.name()));
+        self.session.load_patch(patch);
+        self.origin = origin;
+    }
+
+    fn handle_library_action(&mut self, action: LibAction) {
+        match action {
+            LibAction::Load { patch, origin } => self.load(patch, origin),
+            LibAction::SendToEditBuffer { patch, origin } => {
+                let message = self.session.edit_buffer_dump(&patch);
+                self.load(patch, origin);
+                self.send(message);
+                if self.ports.output_connected() {
+                    self.notice = Notice::info(format!(
+                        "Sent '{}' to the synth's edit buffer ({}).",
+                        self.session.patch().name(),
+                        self.session.settings.part.label()
+                    ));
+                }
+            }
+            LibAction::RequestBank(bank) => {
+                self.send(self.session.bank_request(bank));
+                if self.ports.output_connected() {
+                    self.notice = Notice::info(format!(
+                        "Requested bank {}; the dumps will appear under Received from synth.",
+                        bank.letter()
+                    ));
+                }
+            }
+            LibAction::SendBank { bank_id } => self.send_bank(bank_id),
+            LibAction::CancelBatch => {
+                self.command(MidiCommand::CancelBatch);
+                self.notice = Notice::info("Pending bank transfer cancelled.");
+            }
+            LibAction::Notice(notice) => self.notice = notice,
+        }
+    }
+
+    fn send_bank(&mut self, bank_id: i64) {
+        if !self.ports.output_connected() {
+            self.notice = Notice::warning("No MIDI output connected: the bank was not sent.");
+            return;
+        }
+        match self.db.export_bank_dumps(bank_id, self.session.settings.device_id, None) {
+            Ok(messages) => {
+                let count = messages.len();
+                self.command(MidiCommand::SendBatch { messages, gap_ms: BANK_SEND_GAP_MS });
+                self.notice = Notice::info(format!("Sending {count} patch(es) to the synth…"));
+            }
+            Err(e) => self.notice = Notice::error(format!("Cannot send the bank: {e}")),
+        }
+    }
+
+    fn header(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("ACCESS VIRUS").strong().size(16.0).color(ACCENT));
+            ui.label(RichText::new("Rack Editor & Librarian").size(12.0).color(DIM));
+            ui.separator();
+            ui.selectable_value(&mut self.tab, Tab::Editor, "🎹 Sound Editor");
+            ui.selectable_value(&mut self.tab, Tab::Modulation, "🔀 Modulation");
+            ui.selectable_value(&mut self.tab, Tab::Librarian, "📚 Librarian");
+            ui.separator();
+            ui.label(RichText::new(self.session.patch().name()).monospace().strong())
+                .on_hover_text(format!("Edited patch, from {}", self.origin));
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("💾 Store…").on_hover_text("Store the edited patch in a library slot").clicked() {
+                    self.librarian.open_store_dialog(&self.db, None);
+                }
+                if ui.button("📤 Send").on_hover_text("Send the edited patch to the synth's edit buffer").clicked() {
+                    self.send(self.session.edit_buffer_dump(self.session.patch()));
+                }
+                if ui.button("📥 Fetch").on_hover_text("Request the synth's edit buffer").clicked() {
+                    self.send(self.session.fetch_request());
+                }
+                if ui.button("Init").on_hover_text("Load a neutral init sound (not sent)").clicked() {
+                    self.load(Patch::init(), "init".to_owned());
+                }
+            });
+        });
+        match &self.location {
+            LibraryLocation::InMemory { reason } => {
+                ui.colored_label(DANGER, format!("⚠ The library is in memory only — nothing will be saved ({reason})."));
+            }
+            LibraryLocation::File(_) => {}
         }
     }
 }
 
 impl App for VirusApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        // Poll incoming MIDI queue
-        self.poll_midi_events();
+        self.poll_midi();
 
-        let dt = ctx.input(|i| i.stable_dt.min(0.1));
-
-        // --- Top Navigation Header Bar ---
-        TopBottomPanel::top("top_header_panel").show(ctx, |ui| {
+        TopBottomPanel::top("header").show(ctx, |ui| {
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("ACCESS VIRUS")
-                        .strong()
-                        .size(16.0)
-                        .color(Color32::from_rgb(220, 70, 40)),
-                );
-                ui.label(
-                    RichText::new("Rack / B / Classic Editor & Librarian")
-                        .size(12.0)
-                        .color(Color32::from_rgb(160, 165, 180)),
-                );
-
-                ui.separator();
-
-                // Navigation Tabs
-                if ui.selectable_label(self.active_tab == AppTab::SynthEditor, "🎹 Sound Engine").clicked() {
-                    self.active_tab = AppTab::SynthEditor;
-                }
-                if ui.selectable_label(self.active_tab == AppTab::ModulationMatrix, "🔀 Mod Matrix & Arp").clicked() {
-                    self.active_tab = AppTab::ModulationMatrix;
-                }
-                if ui.selectable_label(self.active_tab == AppTab::Librarian, "📚 Patch Librarian").clicked() {
-                    self.active_tab = AppTab::Librarian;
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Transmit Active Patch to Hardware Single Edit Buffer
-                    if ui.button("📤 Send to Synth Buffer").on_hover_text("Transmit complete 256-byte patch dump to synth edit buffer").clicked() {
-                        if let Some(ref service) = self.midi_service {
-                            let _ = service.send_command(MidiCommand::SendPatchDump {
-                                device_id: self.midi_bar.device_id,
-                                bank: 0x00,
-                                prog: 0x40, // Single Edit Buffer
-                                patch: Box::new(self.patch.clone()),
-                            });
-                            self.midi_bar.trigger_tx();
-                        }
-                    }
-
-                    // Save to active bank
-                    if ui.button("💾 Store Active to DB").on_hover_text("Save active patch to current bank in librarian").clicked() {
-                        let bank_id = self.librarian_panel.selected_bank_id;
-                        let _ = self.db.save_patch(
-                            bank_id,
-                            0,
-                            &mut self.patch,
-                            SoundCategory::Off,
-                            SoundCategory::Off,
-                            "",
-                            false,
-                        );
-                        self.midi_bar.status_message = format!("Saved '{}' to Bank ID {}", self.patch.name(), bank_id);
-                    }
-                });
-            });
+            self.header(ui);
             ui.add_space(4.0);
         });
 
-        // --- Bottom MIDI Status Bar ---
-        TopBottomPanel::bottom("bottom_midi_panel").show(ctx, |ui| {
-            if let Some(cmd) = self.midi_bar.show(ui, dt) {
-                if let Some(ref service) = self.midi_service {
-                    let _ = service.send_command(cmd);
+        let midi_available = self.midi.is_some();
+        let commands = TopBottomPanel::bottom("midi-bar")
+            .show(ctx, |ui| {
+                ui.add_space(2.0);
+                let commands = midi_bar::show(
+                    ui,
+                    &mut self.ports,
+                    &mut self.session.settings,
+                    &self.leds,
+                    &self.notice,
+                    midi_available,
+                );
+                if let LibraryLocation::File(path) = &self.location {
+                    ui.label(RichText::new(format!("Library: {}", path.display())).size(10.0).color(DIM));
                 }
-            }
-        });
+                commands
+            })
+            .inner;
+        for command in commands {
+            self.command(command);
+        }
 
-        // --- Central Workspace View ---
-        CentralPanel::default().show(ctx, |ui| {
-            match self.active_tab {
-                AppTab::SynthEditor => {
-                    let changes = SynthPanel::show(ui, &mut self.patch);
-                    if !changes.is_empty() {
-                        if let Some(ref service) = self.midi_service {
-                            for (page_code, param, val) in changes {
-                                let page = if page_code == 0x71 { Page::PageB } else { Page::PageA };
-                                let _ = service.send_command(MidiCommand::SendParam {
-                                    device_id: self.midi_bar.device_id,
-                                    page,
-                                    part: 0x40, // Single Edit Buffer
-                                    param,
-                                    value: val,
-                                });
-                                self.midi_bar.trigger_tx();
-                            }
-                        }
-                    }
-                }
-                AppTab::ModulationMatrix => {
-                    let changes = MatrixPanel::show(ui, &mut self.patch);
-                    if !changes.is_empty() {
-                        if let Some(ref service) = self.midi_service {
-                            for (_page_code, param, val) in changes {
-                                let _ = service.send_command(MidiCommand::SendParam {
-                                    device_id: self.midi_bar.device_id,
-                                    page: Page::PageB,
-                                    part: 0x40, // Single Edit Buffer
-                                    param,
-                                    value: val,
-                                });
-                                self.midi_bar.trigger_tx();
-                            }
-                        }
-                    }
-                }
-                AppTab::Librarian => {
-                    if let Some(action) = self.librarian_panel.show(ui, &self.db, &mut self.patch) {
-                        match action {
-                            LibrarianAction::LoadPatch(loaded) => {
-                                self.patch = loaded;
-                                self.midi_bar.status_message = format!("Loaded '{}' into editor", self.patch.name());
-                            }
-                            LibrarianAction::SendPatchToEditBuffer(patch_to_send) => {
-                                if let Some(ref service) = self.midi_service {
-                                    let _ = service.send_command(MidiCommand::SendPatchDump {
-                                        device_id: self.midi_bar.device_id,
-                                        bank: 0x00,
-                                        prog: 0x40, // Single Edit Buffer
-                                        patch: Box::new(patch_to_send),
-                                    });
-                                    self.midi_bar.trigger_tx();
-                                    self.midi_bar.status_message = "Sent patch to synth edit buffer.".to_string();
-                                }
-                            }
-                            LibrarianAction::StoreActiveToSlot(prog) => {
-                                let bank_id = self.librarian_panel.selected_bank_id;
-                                let _ = self.db.save_patch(
-                                    bank_id,
-                                    prog,
-                                    &mut self.patch,
-                                    SoundCategory::Off,
-                                    SoundCategory::Off,
-                                    "",
-                                    false,
-                                );
-                                self.midi_bar.status_message = format!("Stored active patch to slot {:03}", prog);
-                            }
-                            LibrarianAction::StatusMessage(msg) => {
-                                self.midi_bar.status_message = msg;
-                            }
-                        }
-                    }
-                }
-            }
+        let mut edits = Vec::new();
+        let mut actions = Vec::new();
+        CentralPanel::default().show(ctx, |ui| match self.tab {
+            Tab::Editor => self.editor.show(ui, self.session.patch(), &mut edits),
+            Tab::Modulation => modulation::show(ui, self.session.patch(), &mut edits),
+            Tab::Librarian => self.librarian.show(ui, &self.db, &mut self.session.received, &mut actions),
         });
+        self.librarian.show_dialogs(ctx, &self.db, self.session.patch(), &mut actions);
+        self.apply_edits(edits);
+        for action in actions {
+            self.handle_library_action(action);
+        }
 
-        // Request continuous repaint for smooth UI controls and LED countdowns
-        ctx.request_repaint_after(Duration::from_millis(30));
+        // Only keep repainting while an activity LED is lit.
+        if let Some(remaining) = self.leds.next_change(Instant::now()) {
+            ctx.request_repaint_after(remaining);
+        }
     }
 }

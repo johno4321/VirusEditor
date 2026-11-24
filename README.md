@@ -1,17 +1,19 @@
 # VirusEditor
 
-A desktop editor and patch librarian for the **Access Virus B / Rack / Classic** synthesizers, written in Rust.
+A desktop sound editor and patch librarian for the **Access Virus Rack (classic), OS 2.00**, written in Rust. Other Virus models are out of scope for now.
 
-It talks to the synth over MIDI (SysEx, CC and Poly Pressure), edits the current sound live, and keeps a searchable library of patches in a local SQLite database.
+It talks to the synth over MIDI SysEx, edits the current sound live, and keeps a searchable library of patches in a local SQLite database. Patches are stored as their exact 256 dump bytes, so a sound that goes in and comes back out untouched is byte-identical.
 
-> **Work in progress.** The parameter layout doesn't yet match the hardware, and loading and saving a patch can change it. Don't use it on patches you can't replace. See [TODO.md](TODO.md).
+> **Work in progress.** The editor hasn't been tried against real hardware yet, and the assign/definable destination names are unverified (see below). See [TODO.md](TODO.md).
 
 ## Features
 
-- **Sound editor:** oscillators, dual filters with a frequency-response view, filter and amp envelopes with curve views, LFOs, EQ, phaser and analog boost.
-- **Mod matrix and arpeggiator:** six matrix slots, each with a source, amount and two destinations.
-- **Librarian:** banks A–D, search by name and tags, filter by the 17 Virus categories, favourites, and `.syx` / `.mid` bank import and `.syx` export.
-- **MIDI:** port auto-detection (names containing "Virus", "Access" or "OSR1"), device ID selection, fetch and send the edit buffer, and Rx/Tx activity lights.
+- **Sound editor:** generated from the OS 2.0 parameter table, grouped by section (common, oscillators, filters, envelopes, LFO 1–3, unison, input, effects incl. phaser, arpeggiator, clocks, velocity, vocoder, analog boost). Knobs for continuous values, lists for choices (undocumented values show as `#n` and are kept), checkboxes for switches. Filter-response and envelope views. Name (10 ASCII characters) and the two categories are written into the patch; the Sound Version is shown read-only.
+- **Modulation:** Assign 1 (1 destination), Assign 2 (2), Assign 3 (3), LFO 1/2 assign and the two Definable knobs. Destinations are edited as **raw numbers**; the printed names are shown greyed as unverified hints, because the raw value → name mapping isn't confirmed yet (open question Q1 in [SPEC.md](SPEC.md)).
+- **Librarian:** banks A–D (C and D marked ROM), all 128 slots per bank including empty ones, search by name and tags, category and favourite filters, tags, Load / Send to edit buffer / Store with overwrite confirmation.
+- **Import / export:** `.syx`, `.bin` and `.mid` import honours the bank byte (edit-buffer dumps are offered as loose patches, never put into a slot), and reports wrong checksums, skipped multi dumps and other messages. Export writes a bank as `.syx`.
+- **Synth transfer:** fetch and send the edit buffer (Single mode or Multi part 1–16), request banks A–D, send library bank A or B to the synth (with a warning and a backup option).
+- **MIDI:** ports chosen by name with auto-detection (names containing "Virus", "Access" or "OSR"), synth channel, device ID (default 1, or Omni), Rx/Tx lights. Edits go out as SysEx parameter changes; incoming CC/Poly Pressure is accepted only on the synth's channel and only for sound parameters.
 
 ## Requirements
 
@@ -34,15 +36,18 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
-The app creates `virus_library.db` in the folder you run it from.
+The library is stored in your user data folder (on Windows `%APPDATA%\VirusEditor\data\virus_library.db`); the path is shown in the bottom bar. If it can't be opened, the app runs with an in-memory library and shows a red warning that nothing will be saved.
+
+The app needs OpenGL 2.0 or later (it won't start in a remote desktop session on a VM without a GPU).
 
 ## Using it
 
-1. Connect the Virus. Pick the MIDI in and out ports in the bottom bar (or let auto-detect find them) and set the device ID to match the synth (or Omni).
-2. **📥 Fetch Synth Buffer** loads the synth's current sound into the editor.
-3. Turn knobs in **🎹 Sound Engine** or **🔀 Mod Matrix & Arp**; each change is sent to the synth straight away.
-4. **📤 Send to Synth Buffer** sends the whole patch to the synth's edit buffer.
-5. In **📚 Patch Librarian**, import a bank file, then **Load**, **Send** or **Store Active** on any row.
+1. Connect the Virus. Pick the MIDI in and out ports in the bottom bar (or let auto-detect find them), and set the synth's MIDI channel, device ID (global C93; default 1) and the part you're editing (Single, or a Multi part).
+2. **📥 Fetch** loads the synth's edit buffer into the editor; **📤 Send** sends the edited patch to it.
+3. Turn knobs in **🎹 Sound Editor** or **🔀 Modulation**; each change is sent straight away as a SysEx parameter change.
+4. **💾 Store…** saves the edited patch to a library slot (you're asked before overwriting).
+5. In **📚 Librarian**, import a bank file, then **Load** or **Send** any patch, edit its tags or favourite flag, or export a bank. Edit-buffer dumps from a file appear in a separate list from which you can load or store them.
+6. To put a bank on the synth, select library bank A or B and use **📤 Send bank to synth…**. This overwrites the synth's RAM bank, so back it up first: **Request bank** sends the synth's bank to the app, and **Received from synth → Import as a new library bank** keeps it safe.
 
 Factory banks to try are in `VirusOSR200_INT/OSR200_INT/Goodies/Factory soundset/`.
 
@@ -53,7 +58,7 @@ Factory banks to try are in `VirusOSR200_INT/OSR200_INT/Goodies/Factory soundset
 | [`crates/virus-syx`](crates/virus-syx) | Core domain: SysEx framing and checksums, the 256-byte `Patch` (Page A + Page B), parameter types and enums. No I/O |
 | [`crates/virus-midi`](crates/virus-midi) | MIDI I/O on a background thread (`midir`), SysEx stream assembly, and command/event channels for the UI |
 | [`crates/virus-db`](crates/virus-db) | SQLite librarian: banks, patches, categories, search, and bank import/export |
-| [`crates/virus-app`](crates/virus-app) | The desktop app (`eframe` / `egui`): panels, knobs and curve widgets |
+| [`crates/virus-app`](crates/virus-app) | The desktop app (`eframe` / `egui`). Non-UI logic (MIDI interpretation, outgoing SysEx, import/export, storage) lives in `session.rs`, `library.rs` and `storage.rs` and is unit-tested; `views/` and `widgets/` draw it |
 
 ## Documentation
 
