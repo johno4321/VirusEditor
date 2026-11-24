@@ -15,8 +15,9 @@ use crate::library::{
 mod files;
 use files::PendingFile;
 
-/// Pause between dumps when sending a bank, so the synth can write each program.
-pub const BANK_SEND_GAP_MS: u64 = 150;
+/// Pause between dumps when sending a bank, so the synth can write each program. The Virus sends
+/// its own bank dumps ≈340 ms apart (SPEC §3.7), so ours shouldn't come faster.
+pub const BANK_SEND_GAP_MS: u64 = 300;
 
 /// What the librarian asks the app to do.
 #[derive(Debug, Clone)]

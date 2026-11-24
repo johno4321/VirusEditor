@@ -161,8 +161,8 @@ pub enum Command {
         /// Confirm that the RAM bank on the synth will be overwritten.
         #[arg(long)]
         yes: bool,
-        /// Pause between dumps in ms.
-        #[arg(long, value_name = "MS", default_value_t = 150)]
+        /// Pause between dumps in ms. The Virus sends its own bank dumps ≈340 ms apart (SPEC §3.7).
+        #[arg(long, value_name = "MS", default_value_t = 300)]
         gap_ms: u64,
         /// Which bank of the file, when it holds several (A-D).
         #[arg(long, value_name = "A-D", value_parser = parse_bank_letter)]

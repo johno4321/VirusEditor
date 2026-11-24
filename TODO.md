@@ -142,9 +142,9 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | # | Status | Item | Notes |
 |---|---|---|---|
 | G1 | ✅ | **The GUI can't start on this dev VM** (Hyper-V over RDP, no GPU): `egui_glow requires opengl 2.0+`; wgpu also fails (`NoSuitableAdapterFound`). This happens before any app code runs; the old app had the same backend | Done 24 Nov (`rework/gui-vm`): eframe built wgpu without its DX12 backend, so WARP was never offered. A direct `wgpu` dependency now enables `dx12`; glow stays the default and, if it fails at start-up, the app retries with wgpu, which picks the WARP software rasteriser. Force with `--renderer glow\|wgpu` or `VIRUS_RENDERER`. Verified rendering on this VM (debug and release). Still to check: glow on a machine with a GPU |
-| G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 150 ms gaps (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items); **which part byte the Virus puts in its own outgoing SysEx param changes in Single mode (RV-L4)** | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
+| G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 300 ms gaps (default since the live timing, SPEC §3.7) (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items); **which part byte the Virus puts in its own outgoing SysEx param changes in Single mode (RV-L4)** | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
 | G3 | ✅ | Persist settings between runs (ports, channel, device ID, part, window) | Versioned `settings.json` in the data dir (`settings.rs`, tested): ports, channel, device ID, part, audition settings (Hold always starts off), tab, bank, import/export folders, window geometry. Bad fields fall back to defaults, a corrupt file becomes `.bak` with a banner, vanished ports aren't selected. The window position isn't checked against the monitor layout |
-| G4 | ⬜ | The app should also wait for a quiet line before requests (SPEC §3.7), like the CLI: e.g. Fetch right after Send, or Request bank right after a fetch | `session.rs` / `app.rs`; the CLI does it since 24 Nov |
+| G4 | ✅ | The app should also wait for a quiet line before requests (SPEC §3.7), like the CLI: e.g. Fetch right after Send, or Request bank right after a fetch | Done 24 Nov: `PacedSend` (`session.rs`) queues requests until 500 ms (bank 2 s) after the last MIDI sent or received; `app.rs` notes every `Sent` and incoming event (incl. audition notes); later messages wait behind a queued request. Tested; live check in G2 |
 
 ### Live test results (24 Nov, laptop + iConnectivity mioXC, CLI `virus`)
 
@@ -159,7 +159,8 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | Send edit buffer `10 00 40` → read back | ✅ byte-identical |
 | Global request `35` | ✅ answered with command **`12`** (SPEC §3.6) |
 | Timing | Requests too soon after an exchange are ignored (SPEC §3.7); fixed in the CLI with quiet gaps |
-| Still to do | Steps 7–14 of the CLI runbook: audible cutoff, full fetch, factory patch send, Q1–Q3 probes, banks E–H (Q2), Multi, bank send (last) |
+| Deferred | Steps 7–9 of the CLI runbook (audible cutoff, full fetch, factory patch send): **deferred by the owner (audio not set up yet)** |
+| Still to do | Steps 10–14 of the CLI runbook: Q1–Q3 probes, banks E–H (Q2), Multi, bank send (last) |
 
 ## ❓ Open questions (SPEC §7)
 
@@ -212,7 +213,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | H4 | ✅ | `Patch::from_sysex` returns `InvalidPayloadLength` for any non-dump message; add a proper error | `SyxError::NotASingleDump` |
 | H5 | ✅ | Short-message parsing: check `F7` sits right after the payload | Test `fixed_size_messages_require_exact_length` |
 | H6 | ✅ | SPEC.md: `D:\VirusEditor` paths and the unverified "Phase 1" claims corrected (24 Nov rewrite) | |
-| H7 | ✅ | Add a CI workflow (build, test, clippy) on GitHub Actions | `.github/workflows/ci.yml` (Windows + Ubuntu: clippy `-D warnings`, tests, release build; Windows exe as artifact); toolchain pinned in `rust-toolchain.toml` (1.100.0, keep in sync with ci.yml). Ubuntu job not yet run (first push) |
+| H7 | ✅ | Add a CI workflow (build, test, clippy) on GitHub Actions | `.github/workflows/ci.yml` (Windows + Ubuntu: clippy `-D warnings`, tests, release build; Windows exe as artifact); toolchain pinned in `rust-toolchain.toml` (1.100.0, keep in sync with ci.yml). Ubuntu job green on GitHub (24 Nov) |
 | H8 | ✅ | **16 `float_literal_f32_fallback` warnings will become hard errors** in a future Rust release: write `1.0_f32` (e.g. in `Stroke::new(1.0, …)`) | Done: app rewritten with typed literals; no warnings or future-incompat notes |
 | H9 | ✅ | Q4 decided: the repo stays private, so the Access material stays | |
 | H10 | ⬜ | README: say "Virus Rack (classic), OS 2.00" as the verified target, and mention open questions Q1/Q5 | |

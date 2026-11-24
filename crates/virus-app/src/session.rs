@@ -70,11 +70,30 @@ impl MidiSettings {
 }
 
 /// Keeps live messages (edits, requests) out of a paced bank send (L2): while a batch is
-/// being transmitted they wait, then go out in order.
+/// being transmitted they wait, then go out in order. Requests (`30`–`37`) also wait for a
+/// quiet line, because the Virus ignores requests that arrive too soon after it has sent or
+/// applied something (SPEC §3.7, G4).
 #[derive(Debug, Default)]
 pub struct PacedSend {
     busy_until: Option<Instant>,
     queue: VecDeque<Vec<u8>>,
+    /// Last MIDI sent or received.
+    last_activity: Option<Instant>,
+}
+
+/// Silence the Virus needs before a request (measured live, SPEC §3.7).
+pub const REQUEST_QUIET: Duration = Duration::from_millis(500);
+/// Silence before a bank, arrangement or total request.
+pub const BANK_REQUEST_QUIET: Duration = Duration::from_millis(2000);
+
+/// How long the line must be quiet before `message` may go out (zero for non-requests).
+pub fn required_quiet(message: &[u8]) -> Duration {
+    let is_virus = message.len() > 6 && message[..5] == [0xF0, 0x00, 0x20, 0x33, 0x01];
+    match message.get(6) {
+        Some(0x32 | 0x33 | 0x34 | 0x36) if is_virus => BANK_REQUEST_QUIET,
+        Some(0x30..=0x37) if is_virus => REQUEST_QUIET,
+        _ => Duration::ZERO,
+    }
 }
 
 impl PacedSend {
@@ -88,35 +107,57 @@ impl PacedSend {
         self.busy_until = None;
     }
 
+    /// MIDI was sent or received at `now`; requests wait for the line to go quiet again.
+    pub fn note_activity(&mut self, now: Instant) {
+        self.last_activity = Some(now);
+    }
+
     fn busy(&self, now: Instant) -> bool {
         self.busy_until.is_some_and(|t| now < t)
     }
 
+    /// When `message` may go out, if not now.
+    fn ready_at(&self, message: &[u8], now: Instant) -> Option<Instant> {
+        if let Some(until) = self.busy_until.filter(|&t| now < t) {
+            return Some(until);
+        }
+        let quiet = required_quiet(message);
+        let at = self.last_activity? + quiet;
+        (!quiet.is_zero() && now < at).then_some(at)
+    }
+
     /// Returns the message if it can go out immediately, otherwise queues it.
     pub fn submit(&mut self, message: Vec<u8>, now: Instant) -> Option<Vec<u8>> {
-        if self.busy(now) || !self.queue.is_empty() {
+        if self.ready_at(&message, now).is_some() || !self.queue.is_empty() {
             self.queue.push_back(message);
             None
         } else {
+            self.last_activity = Some(now);
             Some(message)
         }
     }
 
-    /// Queued messages that may be sent now (all of them once the batch is over).
+    /// Queued messages that may be sent now, in order; stops at the first that must still wait.
     pub fn drain_ready(&mut self, now: Instant) -> Vec<Vec<u8>> {
-        if self.busy(now) {
-            return Vec::new();
+        if !self.busy(now) {
+            self.busy_until = None;
         }
-        self.busy_until = None;
-        self.queue.drain(..).collect()
+        let mut ready = Vec::new();
+        while let Some(message) = self.queue.front() {
+            if self.ready_at(message, now).is_some() {
+                break;
+            }
+            let message = self.queue.pop_front().expect("front exists");
+            self.last_activity = Some(now);
+            ready.push(message);
+        }
+        ready
     }
 
     /// How long until queued messages can be sent, if any are waiting.
     pub fn next_wakeup(&self, now: Instant) -> Option<Duration> {
-        if self.queue.is_empty() {
-            return None;
-        }
-        Some(self.busy_until.map_or(Duration::ZERO, |t| t.saturating_duration_since(now)))
+        let front = self.queue.front()?;
+        Some(self.ready_at(front, now).map_or(Duration::ZERO, |t| t.saturating_duration_since(now)))
     }
 }
 
@@ -583,6 +624,91 @@ mod tests {
         assert_eq!(p.submit(vec![5], t0), None);
         p.cancel();
         assert_eq!(p.drain_ready(t0), vec![vec![5]]);
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn paced_send_lets_a_request_out_on_a_quiet_line() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        let request = encode_dump_request(0x00, 0, 0x40);
+        assert_eq!(p.submit(request.clone(), t0), Some(request));
+    }
+
+    #[test]
+    fn paced_send_holds_a_request_for_500_ms_after_activity() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        let request = encode_dump_request(0x00, 0, 0x40);
+        p.note_activity(t0);
+        assert_eq!(p.submit(request.clone(), t0 + ms(100)), None);
+        assert_eq!(p.next_wakeup(t0 + ms(100)), Some(ms(400)));
+        assert!(p.drain_ready(t0 + ms(499)).is_empty());
+        assert_eq!(p.drain_ready(t0 + ms(500)), vec![request]);
+        assert_eq!(p.next_wakeup(t0 + ms(500)), None);
+    }
+
+    #[test]
+    fn paced_send_holds_a_bank_request_for_two_seconds_after_activity() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        let request = encode_single_bank_request(0x00, 1);
+        p.note_activity(t0);
+        assert_eq!(p.submit(request.clone(), t0), None);
+        assert!(p.drain_ready(t0 + ms(500)).is_empty());
+        assert!(p.drain_ready(t0 + ms(1999)).is_empty());
+        assert_eq!(p.drain_ready(t0 + ms(2000)), vec![request]);
+    }
+
+    #[test]
+    fn paced_send_does_not_delay_param_changes_after_activity() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        let change = encode_param_change(0x00, Page::PageA, 0x40, 40, 11);
+        p.note_activity(t0);
+        assert_eq!(p.submit(change.clone(), t0), Some(change));
+    }
+
+    #[test]
+    fn paced_send_keeps_a_param_change_behind_a_waiting_request() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        let request = encode_dump_request(0x00, 0, 0x40);
+        let change = encode_param_change(0x00, Page::PageA, 0x40, 40, 11);
+        p.note_activity(t0);
+        assert_eq!(p.submit(request.clone(), t0), None);
+        assert_eq!(p.submit(change.clone(), t0 + ms(10)), None);
+        assert!(p.drain_ready(t0 + ms(400)).is_empty());
+        assert_eq!(p.drain_ready(t0 + ms(500)), vec![request, change]);
+    }
+
+    #[test]
+    fn paced_send_spaces_back_to_back_requests() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        let first = encode_dump_request(0x00, 0, 0x40);
+        let second = encode_dump_request(0x00, 1, 5);
+        assert_eq!(p.submit(first.clone(), t0), Some(first));
+        assert_eq!(p.submit(second.clone(), t0), None);
+        assert_eq!(p.drain_ready(t0 + ms(500)), vec![second]);
+    }
+
+    #[test]
+    fn paced_send_incoming_stream_pushes_a_waiting_request_back() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        let request = encode_dump_request(0x00, 0, 0x40);
+        p.note_activity(t0);
+        assert_eq!(p.submit(request.clone(), t0), None);
+        p.note_activity(t0 + ms(300));
+        assert!(p.drain_ready(t0 + ms(500)).is_empty());
+        p.note_activity(t0 + ms(700));
+        assert!(p.drain_ready(t0 + ms(1000)).is_empty());
+        assert_eq!(p.next_wakeup(t0 + ms(1000)), Some(ms(200)));
+        assert_eq!(p.drain_ready(t0 + ms(1200)), vec![request]);
     }
 
     #[test]

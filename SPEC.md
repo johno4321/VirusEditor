@@ -154,8 +154,13 @@ Page C parameter changes, independent of MIDI channel and of the program-change 
 * **The Virus answers one request at a time and ignores requests while busy:**
   * During a bank stream it ignores everything; cancelling the client doesn't stop the stream.
   * Shortly after it has sent an answer or applied a change, it also ignores requests. Measured: a bank request right after an edit-buffer answer got no reply; 2 s later it did. An edit-buffer request 60 ms after a param change was lost; after 500 ms it worked.
-* **Rule for clients:** wait for the MIDI input to be silent before every request, about 500 ms for normal requests and 2 s for bank requests. Drain and report anything that arrives meanwhile. The CLI does this (`--quiet-ms`, `--bank-quiet-ms`).
+* **Rule for clients:** wait for the MIDI input to be silent before every request, about 500 ms for normal requests and 2 s for bank requests. Drain and report anything that arrives meanwhile. The CLI does this (`--quiet-ms`, `--bank-quiet-ms`). The app does the same: `PacedSend` (`session.rs`) holds requests (`30`–`37`) until nothing has been sent or received for 500 ms (2 s before `32/33/34/36`); later live messages queue behind them so the order is kept.
 * **Bank transfers are reliable:** two bank A requests 27 minutes apart were byte-identical.
+* **Measured latencies** (selftest log, `-v` timestamps):
+  * edit-buffer request → answer **≈123 ms** (267 bytes take ≈85 ms on the wire, so the Virus reacts in ≈40 ms);
+  * Global request → answer 113 ms;
+  * bank request → first dump 122 ms. The whole bank of 128 dumps takes **43 s, one every ≈339 ms**, so the Virus pauses ≈250 ms between its own dumps.
+* **Sending banks:** pace our dumps at least as slowly as the Virus sends its own, i.e. ≥ 300 ms gaps after each 267-byte dump. 150 ms is untested and probably too fast. Verify with a read-back.
 
 ---
 
@@ -437,7 +442,7 @@ Detailed tasks are in [TODO.md](TODO.md).
   * New crate `virus-cli` (binary `virus`), on branch `rework/cli`. Commands:
     * `ports`, `monitor`, `fetch`, `send`, `set`;
     * `get-bank` (optionally into the library);
-    * `put-bank` (RAM A/B only; `--yes`; automatic backup first; 150 ms gaps; `--verify`);
+    * `put-bank` (RAM A/B only; `--yes`; automatic backup first; 300 ms gaps (was 150 before the live timing, §3.7); `--verify`);
     * `probe-destinations` (Q1), `probe-values` (Q3), `probe-table`;
     * `selftest` (G2).
   * The probes back up and restore the edit buffer, read each value back to find where ranges end, and save JSON after every step.

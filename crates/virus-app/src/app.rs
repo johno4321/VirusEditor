@@ -307,10 +307,15 @@ impl VirusApp {
                     ));
                     self.ports.on_status(input, output);
                 }
-                MidiEvent::Sent { .. } => self.leds.tx(now),
+                // Every message out (edits, bank sends, audition notes) or in delays requests (G4).
+                MidiEvent::Sent { .. } => {
+                    self.leds.tx(now);
+                    self.paced.note_activity(now);
+                }
                 MidiEvent::Error(e) => self.notice = Notice::error(format!("MIDI: {e}")),
                 incoming => {
                     self.leds.rx(now);
+                    self.paced.note_activity(now);
                     self.handle_incoming(&incoming);
                 }
             }
