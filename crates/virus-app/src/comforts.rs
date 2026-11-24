@@ -10,6 +10,67 @@ use crate::sections::{self, SectionClip};
 use crate::session::Session;
 use crate::views::Edit;
 
+/// A library slot a loaded patch came from, for "Select on synth" (F7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LibrarySlot {
+    pub bank_id: i64,
+    pub program: u8,
+}
+
+/// A replacement of the edited patch, held until the user confirms (E5).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Replace {
+    /// `select`: also switch the synth to this library slot, once the load has happened (E6).
+    Load { patch: Patch, origin: String, select: Option<LibrarySlot> },
+    SendToEditBuffer { patch: Patch, origin: String },
+    Init,
+    Fetch,
+}
+
+impl Replace {
+    /// What the confirmation says happens to the unstored edits of `name`. A fetched dump over
+    /// an edited patch is kept as one undo step (`Comforts::adopt_dump`); the others start a new
+    /// history.
+    pub fn warning(&self, name: &str) -> String {
+        let intro = format!("'{name}' has edits that are not stored in the library.");
+        match self {
+            Replace::Fetch => format!(
+                "{intro} Fetching replaces them with the synth's edit buffer; they stay in the undo history, \
+                 so Undo brings them back."
+            ),
+            _ => format!("{intro} Replacing it discards them and the undo history."),
+        }
+    }
+}
+
+/// Holds a [`Replace`] while the "replace the edited patch?" dialog is open.
+#[derive(Debug, Default)]
+pub struct ReplaceRequest {
+    pending: Option<Replace>,
+}
+
+impl ReplaceRequest {
+    /// The action to perform now, or `None` if it waits for the user because the patch is edited.
+    pub fn request(&mut self, action: Replace, edited: bool) -> Option<Replace> {
+        if edited {
+            self.pending = Some(action);
+            None
+        } else {
+            Some(action)
+        }
+    }
+
+    pub fn pending(&self) -> Option<&Replace> {
+        self.pending.as_ref()
+    }
+
+    /// The user's answer: `true` returns the action to perform; `false` drops it with everything
+    /// it would have done, including the synth selection.
+    pub fn resolve(&mut self, replace: bool) -> Option<Replace> {
+        self.pending.take().filter(|_| replace)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Comforts {
     /// The patch as loaded (library slot, file, synth fetch, init) or last stored.
@@ -292,5 +353,50 @@ mod tests {
         let two = [one[0].clone(), Edit::Name("x".into())];
         assert_eq!(describe(&two).1, None);
         assert_eq!(describe(&[Edit::Name("x".into())]).0, "name");
+    }
+
+    fn library_load(select: Option<LibrarySlot>) -> Replace {
+        Replace::Load { patch: Patch::init(), origin: "library (Init)".into(), select }
+    }
+
+    #[test]
+    fn unedited_patch_is_replaced_at_once_with_its_selection() {
+        let mut request = ReplaceRequest::default();
+        let slot = LibrarySlot { bank_id: 1, program: 5 };
+        assert_eq!(request.request(library_load(Some(slot)), false), Some(library_load(Some(slot))));
+        assert!(request.pending().is_none());
+    }
+
+    #[test]
+    fn cancelling_the_replace_drops_the_synth_selection() {
+        let mut request = ReplaceRequest::default();
+        let slot = LibrarySlot { bank_id: 1, program: 5 };
+        assert_eq!(request.request(library_load(Some(slot)), true), None, "waits for the user");
+        assert!(request.pending().is_some());
+        assert_eq!(request.resolve(false), None, "nothing to perform, so nothing is selected on the synth");
+        assert!(request.pending().is_none());
+    }
+
+    #[test]
+    fn confirming_the_replace_performs_the_load_and_its_selection() {
+        let mut request = ReplaceRequest::default();
+        let slot = LibrarySlot { bank_id: 2, program: 127 };
+        request.request(library_load(Some(slot)), true);
+        match request.resolve(true) {
+            Some(Replace::Load { select, .. }) => assert_eq!(select, Some(slot)),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(request.resolve(true), None, "performed once");
+    }
+
+    #[test]
+    fn replace_warning_tells_the_truth_about_undo() {
+        let fetch = Replace::Fetch.warning("Lead");
+        assert!(fetch.contains("Undo brings them back"), "{fetch}");
+        assert!(!fetch.contains("discards"), "{fetch}");
+        for action in [library_load(None), Replace::Init, Replace::SendToEditBuffer { patch: Patch::init(), origin: String::new() }] {
+            let text = action.warning("Lead");
+            assert!(text.contains("discards them and the undo history"), "{text}");
+        }
     }
 }

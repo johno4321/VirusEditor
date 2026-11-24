@@ -64,6 +64,11 @@ impl FakeVirus {
         }
     }
 
+    /// Queues an event as if it were still arriving from an earlier exchange.
+    pub fn push_stale(&mut self, event: MidiEvent) {
+        self.queue.push_back(event);
+    }
+
     fn handle(&mut self, message: &[u8]) {
         let Ok(parsed) = parse_sysex(message) else {
             return;

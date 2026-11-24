@@ -9,7 +9,8 @@ use crate::address::ParamAddress;
 use crate::messages;
 use crate::settings::{bank_label, Target};
 use crate::transport::{
-    exchange, BankCollector, CollectError, EditBufferCollector, FirstVirusMessage, ReceivedDump, Transport,
+    exchange, wait_quiet, BankCollector, CollectError, EditBufferCollector, FirstVirusMessage, ReceivedDump,
+    Transport,
 };
 
 /// A transport plus how to address the synth and how long to wait.
@@ -24,11 +25,14 @@ pub struct Synth<T> {
     pub quiet: Duration,
     /// Quiet line required before a bank request; the Virus needs longer here.
     pub bank_quiet: Duration,
+    /// Called with the number of stale messages dropped while waiting for a quiet line (only
+    /// when some were dropped); `--verbose` prints it.
+    pub on_stale: Option<Box<dyn FnMut(usize)>>,
 }
 
 impl<T: Transport> Synth<T> {
     pub fn new(transport: T, target: Target, timeout: Duration, settle: Duration) -> Self {
-        Self { transport, target, timeout, settle, quiet: Duration::ZERO, bank_quiet: Duration::ZERO }
+        Self { transport, target, timeout, settle, quiet: Duration::ZERO, bank_quiet: Duration::ZERO, on_stale: None }
     }
 
     /// Sets the quiet gaps before requests (real hardware; the fake needs none).
@@ -44,11 +48,20 @@ impl<T: Transport> Synth<T> {
         }
     }
 
+    /// Waits for a quiet line and reports what was dropped. [`exchange`] then finds nothing left.
+    fn quiet_line(&mut self, quiet: Duration) {
+        let dropped = wait_quiet(&mut self.transport, quiet);
+        if let Some(report) = self.on_stale.as_mut().filter(|_| dropped > 0) {
+            report(dropped);
+        }
+    }
+
     /// Requests the target part's edit buffer (`30 00 pp`) and waits for its dump.
     pub fn fetch(&mut self) -> Result<ReceivedDump, CollectError> {
         let request = messages::fetch_request(&self.target);
         let mut collector = EditBufferCollector::new(self.target.device, self.target.part.raw());
-        exchange(&mut self.transport, Some(&request), &mut collector, self.quiet, self.timeout, |_| {})?;
+        self.quiet_line(self.quiet);
+        exchange(&mut self.transport, Some(&request), &mut collector, Duration::ZERO, self.timeout, |_| {})?;
         Ok(collector.into_result().expect("collector is done"))
     }
 
@@ -74,7 +87,8 @@ impl<T: Transport> Synth<T> {
     ) -> (BankCollector, Option<CollectError>) {
         let request = messages::bank_request(&self.target, bank);
         let mut collector = BankCollector::new(self.target.device, bank);
-        let result = exchange(&mut self.transport, Some(&request), &mut collector, self.bank_quiet, self.timeout, |c| {
+        self.quiet_line(self.bank_quiet);
+        let result = exchange(&mut self.transport, Some(&request), &mut collector, Duration::ZERO, self.timeout, |c| {
             progress(c.count())
         });
         (collector, result.err())
@@ -102,7 +116,8 @@ impl<T: Transport> Synth<T> {
     pub fn global(&mut self) -> Result<Vec<u8>, CollectError> {
         let request = messages::global_request(&self.target);
         let mut collector = FirstVirusMessage::new(self.target.device);
-        exchange(&mut self.transport, Some(&request), &mut collector, self.quiet, self.timeout, |_| {})?;
+        self.quiet_line(self.quiet);
+        exchange(&mut self.transport, Some(&request), &mut collector, Duration::ZERO, self.timeout, |_| {})?;
         Ok(collector.into_result().expect("collector is done"))
     }
 }
@@ -205,6 +220,25 @@ mod tests {
     fn global_request_returns_raw_answer() {
         let mut s = synth(FakeVirus::new(0));
         assert_eq!(s.global().unwrap()[6], 0x12);
+    }
+
+    #[test]
+    fn stale_messages_dropped_before_a_request_are_reported() {
+        let reports = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut s = synth(FakeVirus::new(0));
+        let sink = reports.clone();
+        s.on_stale = Some(Box::new(move |n| sink.borrow_mut().push(n)));
+
+        s.fetch().unwrap();
+        assert!(reports.borrow().is_empty(), "nothing is reported when the line was already quiet");
+
+        for program in 70..73u8 {
+            s.transport.push_stale(virus_midi::MidiEvent::SysEx(virus_syx::encode_program_dump(0, 1, program, &pattern(program))));
+        }
+        let (bank, error) = s.get_bank(1, |_| {});
+        assert!(error.is_none());
+        assert_eq!(bank.started_mid_stream(), None, "the stale tail was not mistaken for the answer");
+        assert_eq!(*reports.borrow(), vec![3]);
     }
 
     #[test]

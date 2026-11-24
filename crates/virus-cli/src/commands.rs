@@ -80,13 +80,19 @@ fn open(conn: &ConnArgs) -> Result<Synth<MidiLink>, String> {
         conn.part,
         conn.channel + 1
     );
-    Ok(Synth::new(
+    let mut synth = Synth::new(
         link,
         conn.target(),
         Duration::from_millis(conn.timeout_ms),
         Duration::from_millis(conn.settle_ms),
     )
-    .with_quiet(Duration::from_millis(conn.quiet_ms), Duration::from_millis(conn.bank_quiet_ms)))
+    .with_quiet(Duration::from_millis(conn.quiet_ms), Duration::from_millis(conn.bank_quiet_ms));
+    if conn.verbose {
+        synth.on_stale = Some(Box::new(|n| {
+            eprintln!("dropped {n} stale message(s) while waiting for a quiet line before the request")
+        }));
+    }
+    Ok(synth)
 }
 
 fn ports(conn: &ConnArgs) -> Outcome {

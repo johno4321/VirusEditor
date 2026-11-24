@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use virus_db::{
-    BadChecksumPolicy, BankRecord, DbError, ImportPlan, ImportReport, ImportTarget, IncomingDump, PatchDatabase,
-    PatchFilter, PatchMeta, PatchSummary, SoundCategory,
+    BadChecksumPolicy, BankRecord, DbError, ImportPlan, ImportReport, ImportTarget, IncomingDump, IncomingMultiDump,
+    MultiImportReport, PatchDatabase, PatchFilter, PatchMeta, PatchSummary, SoundCategory,
 };
 use virus_syx::{extract_sysex_frames, parse_sysex, Patch, SingleBank, SysExMessage};
 
@@ -15,8 +15,8 @@ use virus_syx::{extract_sysex_frames, parse_sysex, Patch, SingleBank, SysExMessa
 pub struct ParsedFrames {
     /// Every single dump (`10`), in file order, whatever its bank byte.
     pub dumps: Vec<IncomingDump>,
-    /// Multi dumps (`11`): not imported yet (F5).
-    pub multi_dumps: usize,
+    /// Every multi dump (`11`), in file order; imported into the Multi bank (F9).
+    pub multis: Vec<IncomingMultiDump>,
     /// Other Virus messages (requests, parameter changes, the undocumented `12`, …).
     pub other_messages: usize,
     /// Frames that aren't valid Virus SysEx (other manufacturers, damaged lengths).
@@ -30,7 +30,9 @@ pub fn parse_frames(frames: &[Vec<u8>]) -> ParsedFrames {
             Ok(SysExMessage::SingleDump { bank, program, data, checksum_ok, .. }) => {
                 parsed.dumps.push(IncomingDump { bank, program, data: *data, checksum_ok });
             }
-            Ok(SysExMessage::MultiDump { .. }) => parsed.multi_dumps += 1,
+            Ok(SysExMessage::MultiDump { bank, program, data, checksum_ok, .. }) => {
+                parsed.multis.push(IncomingMultiDump { bank, program, data: *data, checksum_ok });
+            }
             Ok(_) => parsed.other_messages += 1,
             Err(_) => parsed.invalid_frames += 1,
         }
@@ -41,10 +43,13 @@ pub fn parse_frames(frames: &[Vec<u8>]) -> ParsedFrames {
 /// Result of importing a file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportOutcome {
-    pub parsed_multi_dumps: usize,
     pub parsed_other_messages: usize,
     pub parsed_invalid_frames: usize,
     pub report: ImportReport,
+    /// The file's multi dumps, if it had any (F9).
+    pub multis: Option<MultiImportReport>,
+    /// Multi bank slots left alone because "import as new bank(s)" never overwrites.
+    pub multis_left_out: Vec<u8>,
 }
 
 impl ImportOutcome {
@@ -75,8 +80,23 @@ impl ImportOutcome {
                 slots.join(", ")
             ));
         }
-        if self.parsed_multi_dumps > 0 {
-            parts.push(format!("{} multi dump(s) skipped", self.parsed_multi_dumps));
+        if let Some(m) = &self.multis {
+            parts.push(format!("{} multi(s) into the Multi bank", m.imported));
+            if m.bad_checksum > 0 {
+                parts.push(format!("{} multi(s) with a wrong checksum (flagged ⚠)", m.bad_checksum));
+            }
+            if !m.loose.is_empty() {
+                parts.push(format!("{} Multi edit-buffer dump(s) listed on the Multi tab", m.loose.len()));
+            }
+            if m.skipped > 0 {
+                parts.push(format!("{} multi dump(s) skipped (unsupported bank or program)", m.skipped));
+            }
+        }
+        if !self.multis_left_out.is_empty() {
+            parts.push(format!(
+                "⚠ {} multi(s) not imported because their Multi bank slots are occupied (import again and choose Overwrite)",
+                self.multis_left_out.len()
+            ));
         }
         if self.parsed_other_messages > 0 {
             parts.push(format!("{} other Virus message(s) skipped", self.parsed_other_messages));
@@ -89,8 +109,22 @@ impl ImportOutcome {
 
     pub fn has_warnings(&self) -> bool {
         let r = &self.report;
-        r.bad_checksum > 0 || r.skipped > 0 || !r.duplicates.is_empty() || self.parsed_invalid_frames > 0
+        let multi_warnings = self.multis.as_ref().is_some_and(|m| m.bad_checksum > 0 || m.skipped > 0);
+        r.bad_checksum > 0
+            || r.skipped > 0
+            || !r.duplicates.is_empty()
+            || self.parsed_invalid_frames > 0
+            || multi_warnings
+            || !self.multis_left_out.is_empty()
     }
+}
+
+/// A Multi bank slot an import would overwrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiOverwrite {
+    pub slot: u8,
+    pub old_name: String,
+    pub new_name: String,
 }
 
 /// A parsed import waiting for the user's decision (H1): what it would overwrite is known
@@ -102,7 +136,10 @@ pub struct PendingImport {
     pub dumps: Vec<IncomingDump>,
     pub target: ImportTarget,
     pub plan: ImportPlan,
-    pub parsed_multi_dumps: usize,
+    /// Multi dumps from the same file (F9); they always go to the Multi bank.
+    pub multis: Vec<IncomingMultiDump>,
+    /// Occupied Multi bank slots the multis would replace, in slot order.
+    pub multi_overwrites: Vec<MultiOverwrite>,
     pub parsed_other_messages: usize,
     pub parsed_invalid_frames: usize,
 }
@@ -116,35 +153,74 @@ impl PendingImport {
             dumps: dumps.to_vec(),
             target,
             plan,
-            parsed_multi_dumps: 0,
+            multis: Vec::new(),
+            multi_overwrites: Vec::new(),
             parsed_other_messages: 0,
             parsed_invalid_frames: 0,
         })
     }
 
-    /// Whether importing as planned would replace stored patches.
-    pub fn needs_confirmation(&self) -> bool {
-        !self.plan.overwrites.is_empty()
+    /// Adds multi dumps and plans which occupied Multi bank slots they would replace.
+    pub fn with_multis(mut self, db: &PatchDatabase, multis: Vec<IncomingMultiDump>) -> Result<Self, String> {
+        let slots = db.get_multi_slots().map_err(|e| format!("Import failed: {e}"))?;
+        let mut overwrites: Vec<MultiOverwrite> = Vec::new();
+        for dump in multis.iter().filter(|d| d.bank == virus_syx::MULTI_BANK) {
+            let Some(Some(existing)) = slots.get(dump.program as usize) else { continue };
+            let new_name = virus_db::multi_name(&dump.data);
+            match overwrites.iter_mut().find(|o| o.slot == dump.program) {
+                Some(o) => o.new_name = new_name,
+                None => overwrites.push(MultiOverwrite { slot: dump.program, old_name: existing.name.clone(), new_name }),
+            }
+        }
+        overwrites.sort_by_key(|o| o.slot);
+        self.multis = multis;
+        self.multi_overwrites = overwrites;
+        Ok(self)
     }
 
-    fn outcome(&self, report: ImportReport) -> ImportOutcome {
-        ImportOutcome {
-            parsed_multi_dumps: self.parsed_multi_dumps,
+    /// Whether importing as planned would replace stored patches or multis.
+    pub fn needs_confirmation(&self) -> bool {
+        !self.plan.overwrites.is_empty() || !self.multi_overwrites.is_empty()
+    }
+
+    /// Writes the multis (all of them, or only those into empty slots) after the singles.
+    fn finish(&self, db: &PatchDatabase, report: ImportReport, overwrite_multis: bool) -> Result<ImportOutcome, String> {
+        let mut outcome = ImportOutcome {
             parsed_other_messages: self.parsed_other_messages,
             parsed_invalid_frames: self.parsed_invalid_frames,
             report,
+            multis: None,
+            multis_left_out: Vec::new(),
+        };
+        if self.multis.is_empty() {
+            return Ok(outcome);
         }
+        let occupied = |d: &IncomingMultiDump| {
+            d.bank == virus_syx::MULTI_BANK && self.multi_overwrites.iter().any(|o| o.slot == d.program)
+        };
+        let multis: Vec<IncomingMultiDump> =
+            self.multis.iter().filter(|d| overwrite_multis || !occupied(d)).cloned().collect();
+        if !overwrite_multis {
+            outcome.multis_left_out = self.multi_overwrites.iter().map(|o| o.slot).collect();
+        }
+        let report = db.import_multi_dumps(&multis).map_err(|e| {
+            format!("{} patch(es) were imported, but importing the multis failed: {e}", outcome.report.imported)
+        })?;
+        outcome.multis = Some(report);
+        Ok(outcome)
     }
 
-    /// Writes into the planned target, replacing occupied slots.
+    /// Writes into the planned target, replacing occupied slots (and Multi bank slots).
     pub fn commit_overwrite(&self, db: &PatchDatabase) -> Result<ImportOutcome, String> {
-        import_dumps(db, &self.dumps, self.target).map(|r| self.outcome(r))
+        let report = import_dumps(db, &self.dumps, self.target)?;
+        self.finish(db, report, true)
     }
 
-    /// Writes into fresh library banks named after `name`, one per source bank (nothing is
-    /// overwritten).
+    /// Writes into fresh library banks named after `name`, one per source bank. Nothing is
+    /// overwritten: multis whose Multi bank slot is occupied are left out and reported.
     pub fn commit_as_new_banks(&self, db: &PatchDatabase, name: &str) -> Result<ImportOutcome, String> {
-        import_as_new_banks(db, name, &self.dumps).map(|r| self.outcome(r))
+        let report = import_as_new_banks(db, name, &self.dumps)?;
+        self.finish(db, report, false)
     }
 }
 
@@ -160,17 +236,15 @@ pub fn prepare_import_bytes(
         return Err("No SysEx messages found in the file.".to_owned());
     }
     let parsed = parse_frames(&frames);
-    if parsed.dumps.is_empty() {
+    if parsed.dumps.is_empty() && parsed.multis.is_empty() {
         return Err(format!(
-            "No single dumps found ({} SysEx message(s): {} multi, {} other, {} invalid).",
+            "No single or multi dumps found ({} SysEx message(s): {} other, {} invalid).",
             frames.len(),
-            parsed.multi_dumps,
             parsed.other_messages,
             parsed.invalid_frames
         ));
     }
-    let mut pending = PendingImport::from_dumps(db, label, &parsed.dumps, target)?;
-    pending.parsed_multi_dumps = parsed.multi_dumps;
+    let mut pending = PendingImport::from_dumps(db, label, &parsed.dumps, target)?.with_multis(db, parsed.multis)?;
     pending.parsed_other_messages = parsed.other_messages;
     pending.parsed_invalid_frames = parsed.invalid_frames;
     Ok(pending)
@@ -322,6 +396,44 @@ pub fn sendable_count(count: usize, flagged: usize, include_flagged: bool) -> us
         count
     } else {
         count.saturating_sub(flagged)
+    }
+}
+
+/// What "mark as checked" means, shown before the user confirms it (R9).
+pub const MARK_CHECKED_EXPLANATION: &str = "A ⚠ flag means the patch came from a dump with a wrong checksum, \
+or was migrated from an old library whose bytes may have been altered. Marking it as checked only clears the flag: \
+the stored bytes stay as they are. Bank send and export then include it with a correct checksum, so neither you \
+nor the synth will be warned about it again. Only do this after you have checked the sound, ideally by loading \
+it, sending it to the synth and listening to it.";
+
+/// A "mark as checked" waiting for the user's confirmation (R9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarkChecked {
+    Patch { id: i64, label: String },
+    Bank { id: i64, name: String, flagged: usize },
+}
+
+impl MarkChecked {
+    pub fn question(&self) -> String {
+        match self {
+            Self::Patch { label, .. } => format!("Mark {label} as checked?"),
+            Self::Bank { name, flagged, .. } => format!("Mark all {flagged} flagged patch(es) in {name} as checked?"),
+        }
+    }
+
+    /// Clears the flag(s); returns the status-bar text.
+    pub fn apply(&self, db: &PatchDatabase) -> Result<String, String> {
+        match self {
+            Self::Patch { id, label } => match db.mark_checked(*id) {
+                Ok(true) => Ok(format!("{label} marked as checked.")),
+                Ok(false) => Err("That patch no longer exists.".to_owned()),
+                Err(e) => Err(format!("Cannot mark {label} as checked: {e}")),
+            },
+            Self::Bank { id, name, .. } => db
+                .mark_bank_checked(*id)
+                .map(|n| format!("{n} patch(es) in {name} marked as checked."))
+                .map_err(|e| format!("Cannot mark {name} as checked: {e}")),
+        }
     }
 }
 
@@ -484,7 +596,7 @@ mod tests {
     fn parse_frames_classifies_messages() {
         let parsed = parse_frames(&extract_sysex_frames(&mixed_file()));
         assert_eq!(parsed.dumps.len(), 3);
-        assert_eq!((parsed.multi_dumps, parsed.other_messages, parsed.invalid_frames), (1, 1, 1));
+        assert_eq!((parsed.multis.len(), parsed.other_messages, parsed.invalid_frames), (1, 1, 1));
         assert_eq!(parsed.dumps[0].bank, 0);
         assert!(!parsed.dumps[2].checksum_ok);
     }
@@ -505,9 +617,87 @@ mod tests {
         assert!(!b[64].as_ref().unwrap().checksum_ok);
 
         let summary = outcome.summary();
-        for expected in ["Imported 2", "Bank A: 1", "1 with a wrong checksum", "1 edit-buffer", "1 multi", "1 other", "1 invalid"] {
+        for expected in ["Imported 2", "Bank A: 1", "1 with a wrong checksum", "1 edit-buffer", "1 multi(s) into the Multi bank", "1 other", "1 invalid"] {
             assert!(summary.contains(expected), "{summary:?} lacks {expected:?}");
         }
+    }
+
+    fn multi(name: &str) -> virus_syx::Multi {
+        let mut multi = virus_syx::Multi::from_bytes(&[0; 256]);
+        multi.set_name(name);
+        multi
+    }
+
+    fn multi_dump(bank: u8, program: u8, name: &str) -> Vec<u8> {
+        encode_multi_dump(DEVICE_ID_OMNI, bank, program, multi(name).as_bytes())
+    }
+
+    #[test]
+    fn a_file_of_only_multis_goes_into_the_multi_bank() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let file = [multi_dump(1, 3, "Three"), multi_dump(0, 0, "EditBuf")].concat();
+        let outcome = import_bytes(&db, &file, ImportTarget::OriginalBanks).unwrap();
+        assert_eq!(db.get_multi_by_slot(3).unwrap().unwrap().name, "Three");
+        let multis = outcome.multis.as_ref().unwrap();
+        assert_eq!((multis.imported, multis.loose.len()), (1, 1));
+        let summary = outcome.summary();
+        assert!(summary.contains("1 multi(s) into the Multi bank"), "{summary}");
+        assert!(summary.contains("1 Multi edit-buffer dump(s) listed on the Multi tab"), "{summary}");
+    }
+
+    #[test]
+    fn occupied_multi_slots_need_confirmation_and_new_banks_leave_them_alone() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        crate::multi_session::store_multi(&db, Some(3), &multi("Mine")).unwrap();
+        let file = [
+            encode_program_dump(DEVICE_ID_OMNI, 1, 0, named("A zero").as_bytes()),
+            multi_dump(1, 3, "Theirs"),
+            multi_dump(1, 4, "Free"),
+        ]
+        .concat();
+
+        let pending = prepare_import_bytes(&db, "f", &file, ImportTarget::OriginalBanks).unwrap();
+        assert!(pending.plan.overwrites.is_empty());
+        assert!(pending.needs_confirmation(), "the multi in slot 3 would be replaced");
+        assert_eq!(
+            pending.multi_overwrites,
+            [MultiOverwrite { slot: 3, old_name: "Mine".into(), new_name: "Theirs".into() }]
+        );
+        assert_eq!(db.get_multi_by_slot(4).unwrap(), None, "planning must not write");
+
+        let outcome = pending.commit_as_new_banks(&db, "Imported").unwrap();
+        assert_eq!(db.get_multi_by_slot(3).unwrap().unwrap().name, "Mine");
+        assert_eq!(db.get_multi_by_slot(4).unwrap().unwrap().name, "Free");
+        assert_eq!(outcome.multis_left_out, [3]);
+        assert!(outcome.has_warnings());
+        assert!(outcome.summary().contains("1 multi(s) not imported because their Multi bank slots are occupied"));
+
+        pending.commit_overwrite(&db).unwrap();
+        assert_eq!(db.get_multi_by_slot(3).unwrap().unwrap().name, "Theirs");
+    }
+
+    #[test]
+    fn mark_checked_for_a_patch_and_a_bank() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        import_bytes(&db, &mixed_file(), ImportTarget::OriginalBanks).unwrap();
+        let b = bank_id(&db, "B");
+        let id = db.get_patch_by_slot(b, 64).unwrap().unwrap().id;
+
+        let one = MarkChecked::Patch { id, label: "B064".into() };
+        assert_eq!(one.question(), "Mark B064 as checked?");
+        assert_eq!(one.apply(&db).unwrap(), "B064 marked as checked.");
+        assert_eq!(flagged_count(&db.get_bank_slots(b).unwrap()), 0);
+        let gone = MarkChecked::Patch { id: 9999, label: "X".into() };
+        assert!(gone.apply(&db).unwrap_err().contains("no longer exists"));
+
+        db.import_single_dumps(
+            &[IncomingDump { checksum_ok: false, ..dump(2, 1, "Again") }],
+            ImportTarget::OriginalBanks,
+        )
+        .unwrap();
+        let bank = MarkChecked::Bank { id: b, name: "Bank B".into(), flagged: 1 };
+        assert_eq!(bank.apply(&db).unwrap(), "1 patch(es) in Bank B marked as checked.");
+        assert_eq!(flagged_count(&db.get_bank_slots(b).unwrap()), 0);
     }
 
     #[test]
@@ -515,7 +705,7 @@ mod tests {
         let db = PatchDatabase::open_in_memory().unwrap();
         assert!(import_bytes(&db, b"not sysex", ImportTarget::OriginalBanks).unwrap_err().contains("No SysEx"));
         let param = encode_param_change(0, Page::PageA, 0x40, 40, 1);
-        assert!(import_bytes(&db, &param, ImportTarget::OriginalBanks).unwrap_err().contains("No single dumps"));
+        assert!(import_bytes(&db, &param, ImportTarget::OriginalBanks).unwrap_err().contains("No single or multi dumps"));
     }
 
     #[test]
@@ -569,8 +759,9 @@ mod tests {
         assert_eq!(db.get_patch_by_slot(a, 0).unwrap().unwrap().name, "A zero");
     }
 
-    /// The damaged `multis.mid` total dump end to end (REVIEW T4): singles go to A and B, the
-    /// 33 edit-buffer dumps stay loose, multis and the undocumented message are only counted.
+    /// The damaged `multis.mid` total dump end to end (REVIEW T4, F9): singles go to A and B,
+    /// the 33 edit-buffer dumps stay loose, the multis go to the Multi bank (the edit-buffer
+    /// multi stays loose) and the undocumented message is only counted.
     #[test]
     fn multis_mid_total_dump_imports_end_to_end() {
         let path = concat!(
@@ -581,10 +772,14 @@ mod tests {
         let db = PatchDatabase::open_in_memory().unwrap();
         let pending = prepare_import_bytes(&db, "multis.mid", &bytes, ImportTarget::OriginalBanks).unwrap();
         assert!(!pending.needs_confirmation(), "factory banks are empty on a fresh library");
+        assert_eq!(pending.multis.len(), 129);
         let outcome = pending.commit_overwrite(&db).unwrap();
         let r = &outcome.report;
         assert_eq!(r.loose.len(), 33);
-        assert_eq!(outcome.parsed_multi_dumps, 129);
+        let multis = outcome.multis.as_ref().unwrap();
+        // Multi 10 reads as mm = 13 in the damaged file, so slot 13 is written twice.
+        assert_eq!((multis.imported, multis.loose.len()), (128, 1));
+        assert_eq!(db.get_multi_slots().unwrap().iter().flatten().count(), 127);
         assert_eq!(outcome.parsed_other_messages, 1);
         // The damaged file has one slot addressed twice per bank.
         assert_eq!((r.imported, r.duplicates.len()), (254, 2));

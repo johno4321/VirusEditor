@@ -230,6 +230,8 @@ pub struct BankCollector {
     slots: Vec<Option<ReceivedDump>>,
     received: usize,
     duplicates: usize,
+    /// Program of the first dump accepted; a fresh answer to `32 bb` starts at 0.
+    first_program: Option<u8>,
     notes: Vec<String>,
 }
 
@@ -237,7 +239,22 @@ pub const BANK_SIZE: usize = 128;
 
 impl BankCollector {
     pub fn new(device: DeviceId, bank: u8) -> Self {
-        Self { device, bank, slots: vec![None; BANK_SIZE], received: 0, duplicates: 0, notes: Vec::new() }
+        Self {
+            device,
+            bank,
+            slots: vec![None; BANK_SIZE],
+            received: 0,
+            duplicates: 0,
+            first_program: None,
+            notes: Vec::new(),
+        }
+    }
+
+    /// The program the stream started at, if not 0: the dumps are most likely the rest of an
+    /// earlier, interrupted bank stream (the Virus finishes a stream even when the client
+    /// stops), and the request itself was ignored while the synth was busy (SPEC §3.7).
+    pub fn started_mid_stream(&self) -> Option<u8> {
+        self.first_program.filter(|&p| p != 0)
     }
 
     /// Distinct programs received so far.
@@ -285,6 +302,7 @@ impl Collector for BankCollector {
             return Feed::Ignored;
         }
         let slot = &mut self.slots[dump.program as usize];
+        self.first_program.get_or_insert(dump.program);
         if slot.is_some() {
             self.duplicates += 1;
         } else {
@@ -301,13 +319,21 @@ impl Collector for BankCollector {
     fn missing(&self) -> String {
         let missing = self.missing_programs();
         let shown: Vec<String> = missing.iter().take(12).map(u8::to_string).collect();
-        format!(
-            "bank {}: {} of {BANK_SIZE} received, missing programs {}{}",
-            bank_label(self.bank),
+        let counts = format!(
+            "{} of {BANK_SIZE} received, missing programs {}{}",
             self.received,
             shown.join(", "),
             if missing.len() > 12 { ", …" } else { "" }
-        )
+        );
+        match self.started_mid_stream() {
+            Some(first) => format!(
+                "bank {}: the dumps started at program {first}, not 0, so they are the rest of an earlier, \
+                 interrupted bank stream and the request was ignored while the Virus was busy. Wait until \
+                 it has finished sending (or raise --bank-quiet-ms) and request the bank again ({counts})",
+                bank_label(self.bank)
+            ),
+            None => format!("bank {}: {counts}", bank_label(self.bank)),
+        }
     }
 
     fn notes(&self) -> &[String] {
@@ -405,6 +431,31 @@ mod tests {
         assert_eq!(c.bad_checksums(), vec![127]);
         let dumps = c.dumps();
         assert!(dumps.iter().enumerate().all(|(i, d)| d.program as usize == i));
+    }
+
+    #[test]
+    fn a_stream_that_does_not_start_at_program_0_is_explained() {
+        // The request was ignored; only the tail of an earlier bank A stream arrives.
+        let tail: Vec<MidiEvent> = (68..128).map(|p| dump_event(0, 1, p, 0)).collect();
+        let mut t = Replay(tail.into(), Vec::new());
+        let mut c = BankCollector::new(DeviceId(0), 1);
+        let err = exchange(&mut t, Some(&[0xF0, 0xF7]), &mut c, Duration::ZERO, Duration::from_millis(10), |_| {})
+            .unwrap_err();
+        assert_eq!(c.started_mid_stream(), Some(68));
+        let text = err.to_string();
+        assert!(text.contains("started at program 68, not 0"), "{text}");
+        assert!(text.contains("interrupted bank stream"), "{text}");
+        assert!(text.contains("60 of 128 received"), "{text}");
+    }
+
+    #[test]
+    fn a_stream_from_program_0_keeps_the_plain_count() {
+        let mut c = BankCollector::new(DeviceId(0), 1);
+        for p in 0..10u8 {
+            c.feed(&dump_event(0, 1, p, 0));
+        }
+        assert_eq!(c.started_mid_stream(), None);
+        assert!(c.missing().starts_with("bank A: 10 of 128 received"), "{}", c.missing());
     }
 
     /// A transport that replays a fixed event list.
