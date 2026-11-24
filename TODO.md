@@ -10,9 +10,10 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 1. ✅ **Baseline (24 Nov):** Rust 1.100.0 + VS 2022 Build Tools. Behind the corporate proxy, cargo needs `[http] check-revoke = false` in `%USERPROFILE%\.cargo\config.toml`.
 2. ✅ **Sources re-read (24 Nov)** and SPEC.md rewritten from them.
 3. ✅ **Data-loss bugs** D1–D8, **patch model** P1–P8, **import rules** L1–L4, **golden tests** T1–T4 (24 Nov, sub-agents + sub-chats).
-4. **Next without hardware:** G1 (the GUI can't start on this VM), the note audition feature (N items, sub-chat in progress), then features F1–F7 and U5.
+4. **Next without hardware:** G1 (the GUI can't start on this VM), the red & black theme (V1), then features F1–F7 and U5.
 5. **When the MIDI cable arrives:** live tests (G2), then Q1–Q3.
 6. Review and merge `rework/integration` into `main`.
+7. ✅ **Note audition** (owner request, N1–N9, SPEC §5.9): play notes on the Virus from the editor (piano strip, computer keys, Audition, hold, phrases, panic, no stuck notes). Left: live test N8, real Multi part channels N9.
 
 ## Where we stand
 
@@ -90,6 +91,20 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | F6 | ⬜ | "Pass through the synth" step after import (send to edit buffer, request back) so the Virus updates the sound version | SPEC §5.2 |
 | F7 | ⬜ | Bank/program change via SysEx (C31–33) so selecting a library patch can also select it on the synth | SPEC §3.5 |
 | F8 | ⬜ | Banks E–H (1,024-sound OS) | Blocked on Q2 |
+
+## 🎹 Note audition (SPEC §5.9)
+
+| # | Status | Item | Notes |
+|---|---|---|---|
+| N1 | ✅ | Pure MIDI builders `note_on`/`note_off`/`control_change`/`all_notes_off`/`all_sound_off` | `virus-midi/src/notes.rs` |
+| N2 | ✅ | `NoteTracker`: every note on tracked per channel; note offs on release, octave/channel/part change, disconnect, focus loss, exit; panic = tracked note offs + CC123 + CC120 (+ CC64 0) | `virus-midi/src/notes.rs`; tests for each trigger |
+| N3 | ✅ | `PhrasePlayer`: plays a list of (start ms, note, vel, length ms) from a clock the GUI passes in; stop releases sounding notes; built-in test phrases (note, chord, bass line) at a tempo | `virus-midi/src/notes.rs` |
+| N4 | ✅ | egui **piano keyboard** widget: click/drag, velocity from click height or a fixed slider, held keys highlighted | `virus-app/src/widgets/piano.rs`; geometry and velocity tested |
+| N5 | ✅ | Audition state: computer keys `A W S E D F T G Y H U J K` = C..C, `Z`/`X` octave, only without text focus, no key-repeat retrigger; octave shift; hold/latch; Audition button (note/chord, length); test phrases with tempo | `virus-app/src/audition.rs`, tested |
+| N6 | ✅ | Wired into the app: collapsible "🎹 Keyboard" strip above the MIDI bar on every tab; channel = synth channel (Single) or part *n* → channel *n* (Multi, see N9), with a manual override; disabled without output | `app.rs`, `audition::auto_channel` / `sync_target` |
+| N7 | ✅ | Safety wiring: note offs before output disconnect/change (also when a port vanishes), on channel and part change, window focus loss, collapsing the strip, and app exit (`on_exit` waits ≤ 300 ms for the worker to send them); Panic button | `app.rs` `release_notes_before`, `on_exit` |
+| N8 | ⬜ | **Live test when the MIDI cable arrives:** notes sound on the Global Channel in Single mode and on the part channel in Multi mode; velocity changes the sound with B60 Velocity→Amp ≠ 0; Hold latches the arp (B1 ≠ Off); Panic silences long releases; no stuck notes after unplugging/alt-tab/quitting; note 60 is C3 on the Virus display; Tx LED flashes; computer keys don't play while typing in the name/search fields | Needs the synth. Also check the UI on a machine with OpenGL 2+ (this dev box can't start the app) |
+| N9 | ⬜ | Multi mode: use the part's real MIDI channel (C34 / multi dump bytes 64–79) instead of assuming part *n* = channel *n* | Needs F4 (read the Multi edit buffer) |
 
 ## 🖥️ Running and live testing
 

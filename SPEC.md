@@ -283,6 +283,34 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
    * A file can hold several banks (`multis.mid` is a Total dump with edit buffers, A, B, multis and globals).
 7. **Sending banks overwrites RAM irrevocably** (manual p. 177). Confirm before sending A/B bank dumps, and offer a backup first (request A and B).
 8. **Bundled third-party material:** the manual, addenda, OS files and factory sounds are © Access Music. They stay in this repository only because it is **private** (Q4). Don't publish them.
+9. **Note audition** (owner request, 24 Nov): the editor can play notes on the connected Virus to test patch changes without a keyboard. Details in §5.9.
+
+### 5.9 Note audition
+
+**Why:** the owner edits sounds with no keyboard attached and needs to hear each change immediately. The Virus' own *Audition* (UP+DOWN on the panel, manual p. 90) plays only C3; the editor should do more.
+
+**MIDI facts (manual pp. 54–58, 90, 168–170; addendum):**
+* **Single mode:** the Virus plays notes received on the **Global Channel** (C124, default 1).
+* **Multi / Multi-Single mode:** each part plays notes on its own **Part MIDI Channel** (C34; multi dump bytes 64–79). Audition must target the channel of the **part being edited**. If several parts share that channel, they all sound (layering), and the part's **Low/High Key** (C35/C36) and **Transpose** (C37) still apply.
+* Notes are plain channel messages: Note On `9c nn vv`, Note Off `8c nn 40` (vv = 0 is not used for note off, so that it's unambiguous). Notes 0–127; the Virus calls note 60 **C3**.
+* **Velocity matters:** Page B **B47–B61** (Velocity → Osc shapes, PW, FM, filter env amounts, resonance, Amp, Pan) make velocity part of what is being tested.
+* **Hold pedal** = CC64 (A64, performance controller); value ≥ 64 holds, < 64 releases. Not stored in the patch.
+* **All Notes Off** = CC123 (A123); **All Sound Off** = CC120 (also cuts release tails). Both value 0.
+* The **arpeggiator** (B1 Arp Mode ≠ Off, B4 Arp Hold) plays the held notes, so holding/latching notes is how arpeggiator patches are tested.
+
+**Requirements:**
+1. **On-screen piano keyboard** (at least 2 octaves, scrollable by octave). Click to play, drag across keys to glide from note to note (old note off before new note on). Velocity comes from the vertical click position on the key (top = soft, bottom = loud) or, if the user prefers, a fixed **velocity slider** (1–127). Held keys are highlighted.
+2. **Computer keyboard playing**: `A W S E D F T G Y H U J K` = C, C♯, D … C one octave up; `Z` / `X` = octave down / up. Active only when **no text field has focus**, and key repeat must not retrigger notes.
+3. **Octave shift** (buttons and Z/X), range so that every note stays in 0–127.
+4. **Hold / latch toggle**: keys stay on after release until pressed again or hold is turned off (for pads and the arpeggiator). Optionally send CC64 instead of latching in the editor.
+5. **Audition button**: one click plays a configurable note or chord (default C3, velocity 100) for a configurable length (default 1 s), like the Virus' own Audition.
+6. **Test phrases** (optional): single note, chord, bass line, played at a set tempo. A phrase is a list of (start ms, note, velocity, length ms) relative to its start; it can be stopped at any time.
+7. **Panic button**: note offs for all tracked notes, then **CC123 All Notes Off** and **CC120 All Sound Off** on the target channel (and CC64 = 0 if the editor sent a hold).
+8. **No stuck notes:** every note on is tracked per channel and gets a note off on **key release, octave change, channel change, part change, MIDI disconnect, window focus loss and app exit**. Hold/latch is released by the same triggers except octave change.
+9. Notes go out through `virus_midi::MidiCommand::Send` (immediately, never queued behind a slow bank batch); the **Tx LED** flashes through the existing `Sent` event.
+10. The feature is available on **every tab** (a collapsible strip above the MIDI bar) and greys out when no MIDI output is connected.
+
+**Implementation:** pure builders (`note_on`, `note_off`, `control_change`, `all_notes_off`, `all_sound_off`), `NoteTracker` and `PhrasePlayer` live in `virus-midi` (`notes` module) and are unit-tested. The egui piano widget and the audition state (computer-key mapping, settings) live in `virus-app` (`widgets/piano.rs`, `audition.rs`). Until the app reads the Multi (F4), Multi part *n* is assumed to listen on channel *n*, and the strip has a manual channel override (TODO N9).
 
 ### 5.10 Look and feel (owner requirement, 24 Nov)
 The UI should look like the Virus Rack's front panel: **red and black**. Starting palette, taken from a photo of the unit (tune on a real screen):
@@ -358,6 +386,7 @@ Detailed tasks are in [TODO.md](TODO.md).
   * App rebuilt on the new crates (98 workspace tests, clippy clean with `-D warnings`, release build OK).
   * New requirement: note audition, so you can play the synth from the editor (in progress).
 * **2026-11-24**
+  * Owner request: **note audition** (§5.9): play notes on the synth from the editor (piano, computer keys, Audition button, hold, panic, no stuck notes).
   * Code review: see TODO.md.
   * Re-read the manual, both addenda, the patch list and the OS 2.00 readme.
   * Rewrote §1, §3–§8 from those sources, and checked them against the factory dumps.

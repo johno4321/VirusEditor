@@ -5,9 +5,10 @@ use std::time::Instant;
 use eframe::{egui, App, Frame};
 use egui::{CentralPanel, Color32, RichText, TopBottomPanel, Visuals};
 use virus_db::PatchDatabase;
-use virus_midi::{MidiCommand, MidiEvent, MidiService};
+use virus_midi::{MidiCommand, MidiEvent, MidiService, ReleaseTrigger};
 use virus_syx::Patch;
 
+use crate::audition::Audition;
 use crate::session::{Activity, Incoming, Ports, Session};
 use crate::storage::{open_library, LibraryLocation};
 use crate::views::librarian::{LibAction, LibrarianView, BANK_SEND_GAP_MS};
@@ -31,6 +32,7 @@ pub struct VirusApp {
     tab: Tab,
     editor: EditorView,
     librarian: LibrarianView,
+    audition: Audition,
     notice: Notice,
     /// Where the edited patch came from, for the header.
     origin: String,
@@ -75,6 +77,7 @@ impl VirusApp {
             tab: Tab::default(),
             editor: EditorView::default(),
             librarian: LibrarianView::default(),
+            audition: Audition::new(),
             notice,
             origin: "init".to_owned(),
         }
@@ -100,6 +103,30 @@ impl VirusApp {
         self.command(MidiCommand::Send(message));
     }
 
+    /// Sends audition notes; silently dropped without an output (the strip is disabled then).
+    fn send_notes(&mut self, messages: Vec<Vec<u8>>) {
+        if !self.ports.output_connected() {
+            return;
+        }
+        for message in messages {
+            self.command(MidiCommand::Send(message));
+        }
+    }
+
+    /// Note offs must go out before the output is closed or changed (SPEC §5.9).
+    fn release_notes_before(&mut self, commands: &[MidiCommand]) {
+        let closes_output = commands.iter().any(|c| {
+            matches!(
+                c,
+                MidiCommand::Disconnect | MidiCommand::DisconnectOutput | MidiCommand::ConnectOutput(_)
+            )
+        });
+        if closes_output && self.audition.is_active() {
+            let offs = self.audition.release_all(ReleaseTrigger::Disconnect);
+            self.send_notes(offs);
+        }
+    }
+
     fn poll_midi(&mut self) {
         let Some(midi) = &self.midi else { return };
         let events: Vec<MidiEvent> = std::iter::from_fn(|| midi.try_recv_event()).collect();
@@ -107,7 +134,9 @@ impl VirusApp {
         for event in events {
             match event {
                 MidiEvent::PortListUpdated { inputs, outputs } => {
-                    for command in self.ports.on_port_list(inputs, outputs) {
+                    let commands = self.ports.on_port_list(inputs, outputs);
+                    self.release_notes_before(&commands);
+                    for command in commands {
                         self.command(command);
                     }
                 }
@@ -285,9 +314,25 @@ impl App for VirusApp {
                 commands
             })
             .inner;
+        self.release_notes_before(&commands);
         for command in commands {
             self.command(command);
         }
+
+        // Above the MIDI bar, on every tab.
+        let target = self.audition.sync_target(self.session.settings.channel, self.session.settings.part);
+        self.send_notes(target);
+        let output_connected = self.ports.output_connected();
+        let now_ms = (ctx.input(|i| i.time) * 1000.0) as u64;
+        let notes = TopBottomPanel::bottom("audition")
+            .show(ctx, |ui| {
+                ui.add_space(2.0);
+                let notes = self.audition.show(ui, now_ms, output_connected);
+                ui.add_space(2.0);
+                notes
+            })
+            .inner;
+        self.send_notes(notes);
 
         let mut edits = Vec::new();
         let mut actions = Vec::new();
@@ -305,6 +350,31 @@ impl App for VirusApp {
         // Only keep repainting while an activity LED is lit.
         if let Some(remaining) = self.leds.next_change(Instant::now()) {
             ctx.request_repaint_after(remaining);
+        }
+    }
+
+    /// Releases sounding notes and waits briefly for the worker to send them, so quitting
+    /// never leaves a note hanging on the synth.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let offs = self.audition.release_all(ReleaseTrigger::Exit);
+        let Some(midi) = &self.midi else { return };
+        if offs.is_empty() || !self.ports.output_connected() {
+            return;
+        }
+        let mut pending = offs.len();
+        for message in offs {
+            if midi.send_command(MidiCommand::Send(message)).is_err() {
+                return;
+            }
+        }
+        let deadline = Instant::now() + std::time::Duration::from_millis(300);
+        while pending > 0 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match midi.event_receiver().recv_timeout(left) {
+                Ok(MidiEvent::Sent { .. } | MidiEvent::Error(_)) => pending -= 1,
+                Ok(_) => {}
+                Err(_) => break,
+            }
         }
     }
 }
