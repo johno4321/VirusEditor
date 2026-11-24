@@ -8,7 +8,8 @@ use virus_midi::engine::MidiService;
 use virus_midi::events::{MidiCommand, MidiEvent};
 use virus_syx::domain::{Page, PageA, PageB, Patch};
 
-use crate::views::{LibrarianAction, LibrarianPanel, MatrixPanel, MidiBar, SynthPanel};
+use crate::views::librarian_panel::LibrarianAction;
+use crate::views::{LibrarianPanel, MatrixPanel, MidiBar, SynthPanel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AppTab {
@@ -33,7 +34,7 @@ impl VirusApp {
         let mut visuals = Visuals::dark();
         visuals.panel_fill = Color32::from_rgb(22, 24, 28);
         visuals.window_fill = Color32::from_rgb(26, 28, 34);
-        visuals.extreme_dark_color = Color32::from_rgb(14, 15, 18);
+        visuals.extreme_bg_color = Color32::from_rgb(14, 15, 18);
         visuals.selection.bg_fill = Color32::from_rgb(200, 60, 40); // Classic Virus red
         visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(240, 160, 60));
         cc.egui_ctx.set_visuals(visuals);
@@ -107,13 +108,13 @@ impl VirusApp {
                     MidiEvent::ParamReceived { page, param, value, .. } => {
                         self.midi_bar.trigger_rx();
                         match page {
-                            Page::A => {
+                            Page::PageA => {
                                 if (param as usize) < self.patch.page_a.raw.len() {
                                     self.patch.page_a.raw[param as usize] = value;
                                     self.patch.page_a = PageA::from_bytes(&self.patch.page_a.raw);
                                 }
                             }
-                            Page::B => {
+                            Page::PageB => {
                                 if (param as usize) < self.patch.page_b.raw.len() {
                                     self.patch.page_b.raw[param as usize] = value;
                                     self.patch.page_b = PageB::from_bytes(&self.patch.page_b.raw);
@@ -223,7 +224,7 @@ impl App for VirusApp {
                     if !changes.is_empty() {
                         if let Some(ref service) = self.midi_service {
                             for (page_code, param, val) in changes {
-                                let page = if page_code == 0x71 { Page::B } else { Page::A };
+                                let page = if page_code == 0x71 { Page::PageB } else { Page::PageA };
                                 let _ = service.send_command(MidiCommand::SendParam {
                                     device_id: self.midi_bar.device_id,
                                     page,
@@ -243,7 +244,7 @@ impl App for VirusApp {
                             for (_page_code, param, val) in changes {
                                 let _ = service.send_command(MidiCommand::SendParam {
                                     device_id: self.midi_bar.device_id,
-                                    page: Page::B,
+                                    page: Page::PageB,
                                     part: 0x40, // Single Edit Buffer
                                     param,
                                     value: val,

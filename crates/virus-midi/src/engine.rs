@@ -149,7 +149,7 @@ fn run_midi_worker(rx_cmd: Receiver<MidiCommand>, tx_evt: Sender<MidiEvent>) {
                     let _ = out.send(&msg);
                 }
             }
-            MidiCommand::SendPatchDump { device_id, bank, prog, patch } => {
+            MidiCommand::SendPatchDump { device_id, bank, prog, mut patch } => {
                 if let Some(ref mut out) = out_conn {
                     let raw = patch.to_bytes();
                     let msg = encode_program_dump(device_id, bank, prog, &raw);

@@ -166,7 +166,7 @@ impl SynthPanel {
                                 ComboBox::from_id_source("f1_mode")
                                     .selected_text(format!("{:?}", patch.page_a.filter1_mode))
                                     .show_ui(ui, |ui| {
-                                        for mode in [FilterMode::Lowpass, FilterMode::Highpass, FilterMode::Bandpass, FilterMode::Bandstop] {
+                                        for mode in [FilterMode::Lowpass, FilterMode::Highpass, FilterMode::Bandpass, FilterMode::Notch] {
                                             if ui.selectable_value(&mut patch.page_a.filter1_mode, mode, format!("{:?}", mode)).changed() {
                                                 changes.push((0x70, 32, patch.page_a.filter1_mode.to_raw()));
                                             }
@@ -205,7 +205,7 @@ impl SynthPanel {
                                 ComboBox::from_id_source("f2_mode")
                                     .selected_text(format!("{:?}", patch.page_a.filter2_mode))
                                     .show_ui(ui, |ui| {
-                                        for mode in [FilterMode::Lowpass, FilterMode::Highpass, FilterMode::Bandpass, FilterMode::Bandstop] {
+                                        for mode in [FilterMode::Lowpass, FilterMode::Highpass, FilterMode::Bandpass, FilterMode::Notch] {
                                             if ui.selectable_value(&mut patch.page_a.filter2_mode, mode, format!("{:?}", mode)).changed() {
                                                 changes.push((0x70, 40, patch.page_a.filter2_mode.to_raw()));
                                             }

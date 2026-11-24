@@ -148,7 +148,7 @@ fn eval_filter_mag(f: f32, fc: f32, q: f32, mode: FilterMode) -> f32 {
         FilterMode::Bandpass => {
             (ratio / q) / ((1.0 - ratio * ratio).powi(2) + (ratio / q).powi(2)).sqrt()
         }
-        FilterMode::Bandstop => {
+        FilterMode::Notch => {
             ((1.0 - ratio * ratio).abs())
                 / ((1.0 - ratio * ratio).powi(2) + (ratio / q).powi(2)).sqrt()
         }

@@ -221,7 +221,7 @@ impl<'a> Widget for BipolarKnob<'a> {
         let (rect, mut response) = ui.allocate_exact_size(total_size, Sense::click_and_drag());
 
         // Normalized from 0.0 (-64) to 1.0 (+63), center (0) is at 64/127 ~= 0.5039
-        let current_i8 = self.value.as_i8();
+        let current_i8 = self.value.0;
         let norm_val = (current_i8 as f32 + 64.0) / 127.0;
 
         // Center angle (12 o'clock) is 1.5 * PI (270 degrees)
@@ -256,7 +256,7 @@ impl<'a> Widget for BipolarKnob<'a> {
 
         // Double click to reset to center (0)
         if response.double_clicked() {
-            if self.value.as_i8() != 0 {
+            if self.value.0 != 0 {
                 *self.value = Bipolar7::new(0);
                 response.mark_changed();
             }
