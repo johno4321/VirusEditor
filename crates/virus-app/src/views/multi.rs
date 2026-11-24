@@ -8,6 +8,7 @@ use virus_syx::{
     MULTI_PARTS,
 };
 
+use super::librarian::TRANSPORT_REMINDER;
 use super::{Notice, ACCENT, DANGER, DIM, WARN};
 use crate::library::sendable_count;
 use crate::multi_session::{
@@ -94,6 +95,7 @@ impl MultiView {
                 "The dumps go out {MULTI_BANK_SEND_GAP_MS} ms apart (about {} s).",
                 (count as u64 * MULTI_BANK_SEND_GAP_MS).div_ceil(1000)
             ));
+            ui.label(TRANSPORT_REMINDER);
             ui.label(
                 "Back up the synth's Multi bank first: request it, wait until all 128 multis have arrived, \
                  then use \"Save to file…\" under the received multis.",

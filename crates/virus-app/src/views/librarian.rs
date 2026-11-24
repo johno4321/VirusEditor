@@ -22,6 +22,9 @@ use files::PendingFile;
 /// its own bank dumps ≈340 ms apart (SPEC §3.7), so ours shouldn't come faster.
 pub const BANK_SEND_GAP_MS: u64 = 300;
 
+/// Shown in the bank-send confirmations: clock merged into the Virus MIDI IN can't be seen by the editor.
+pub const TRANSPORT_REMINDER: &str = "Stop the clock/transport on your sequencer first.";
+
 /// What the librarian asks the app to do.
 #[derive(Debug, Clone)]
 pub enum LibAction {
@@ -815,6 +818,7 @@ impl LibrarianView {
                      {count} stored slot(s) will be sent; empty library slots are skipped."
                 ),
             );
+            ui.label(TRANSPORT_REMINDER);
             ui.label("Back up the synth's bank first: request it, then import it as a new library bank under 'Received from synth'.");
             let backed_up = synth_bank.is_some_and(|b| self.backed_up.contains(&b.to_raw()));
             if backed_up {
