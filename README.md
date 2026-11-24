@@ -14,6 +14,8 @@ It talks to the synth over MIDI SysEx, edits the current sound live, and keeps a
 - **Import / export:** `.syx`, `.bin` and `.mid` import honours the bank byte (edit-buffer dumps are offered as loose patches, never put into a slot), and reports wrong checksums, skipped multi dumps and other messages. Export writes a bank as `.syx`.
 - **Synth transfer:** fetch and send the edit buffer (Single mode or Multi part 1–16), request banks A–D, send library bank A or B to the synth (with a warning and a backup option).
 - **MIDI:** ports chosen by name with auto-detection (names containing "Virus", "Access" or "OSR"), synth channel, device ID (default 1, or Omni), Rx/Tx lights. Edits go out as SysEx parameter changes; incoming CC/Poly Pressure is accepted only on the synth's channel and only for sound parameters.
+- **Settings:** MIDI ports, channel, device ID, part, audition settings (Hold always starts off), last tab and bank, import/export folders and window size/position are remembered between runs. File dialogs and import/export don't block the window.
+- **Select on synth (optional):** in the Librarian, tick *Select on synth* so that **Load** from bank A–D also sends a SysEx Bank Change and Program Change to the edited part. Only meaningful when the library bank mirrors the synth's bank.
 - **Note audition:** a collapsible keyboard strip on every tab plays the synth so you can hear your edits without a keyboard: an on-screen piano (velocity by click height or a fixed velocity), computer keys, octave shift, Hold (for pads and the arpeggiator), an **Audition** button (C3 for 1 s, like the Virus' own), test phrases (note, chord, bass line) at a set tempo, and **Panic**. Every note gets a note off when you release it, change octave, channel or part, disconnect, switch to another window, or quit.
 
 ## Requirements
@@ -44,8 +46,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
-The library is stored in your user data folder (on Windows `%APPDATA%\VirusEditor\data\virus_library.db`); the path is shown in the bottom bar. If it can't be opened, the app runs with an in-memory library and shows a red warning that nothing will be saved.
-
+The library is stored in your user data folder (on Windows `%APPDATA%\VirusEditor\data\virus_library.db`); the path is shown in the bottom bar. If it can't be opened, the app runs with an in-memory library and shows a red warning that nothing will be saved. Your settings are in `settings.json` in the same folder; if that file is corrupt it is renamed to `settings.json.bak` and the app starts with defaults.
 The app needs OpenGL 2.0 or later (it won't start in a remote desktop session on a VM without a GPU).
 
 ## Using it

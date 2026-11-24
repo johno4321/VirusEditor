@@ -107,11 +107,6 @@ pub fn import_bytes(db: &PatchDatabase, bytes: &[u8], target: ImportTarget) -> R
     })
 }
 
-pub fn import_file(db: &PatchDatabase, path: &Path, target: ImportTarget) -> Result<ImportOutcome, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    import_bytes(db, &bytes, target)
-}
-
 pub fn import_dumps(db: &PatchDatabase, dumps: &[IncomingDump], target: ImportTarget) -> Result<ImportReport, String> {
     db.import_single_dumps(dumps, target).map_err(|e| format!("Import failed: {e}"))
 }
@@ -131,20 +126,28 @@ pub fn import_as_new_bank(db: &PatchDatabase, name: &str, dumps: &[IncomingDump]
 
 /// Writes a bank as a `.syx` file (one single dump per stored slot, device ID Omni so any
 /// Virus accepts it). `target_bank` is the SysEx `bb` (1..=4); `None` = the bank's own letter.
+#[allow(dead_code)] // the app writes the bytes on a worker thread (dialogs.rs); this is the synchronous form
 pub fn export_bank_file(
     db: &PatchDatabase,
     bank_id: i64,
     target_bank: Option<u8>,
     path: &Path,
 ) -> Result<usize, String> {
+    let (bytes, count) = export_bank_bytes(db, bank_id, target_bank)?;
+    std::fs::write(path, bytes).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+    Ok(count)
+}
+
+/// The `.syx` content of [`export_bank_file`] and the number of patches, so the file can be
+/// written off the UI thread while the database is read on it.
+pub fn export_bank_bytes(db: &PatchDatabase, bank_id: i64, target_bank: Option<u8>) -> Result<(Vec<u8>, usize), String> {
     let frames = db
         .export_bank_dumps(bank_id, virus_syx::DEVICE_ID_OMNI, target_bank)
         .map_err(|e| format!("Export failed: {e}"))?;
     if frames.is_empty() {
         return Err("Export failed: the bank is empty.".to_owned());
     }
-    std::fs::write(path, frames.concat()).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
-    Ok(frames.len())
+    Ok((frames.concat(), frames.len()))
 }
 
 /// Stores `patch` byte-exact in a slot. The slot's tags and favourite flag are kept when the

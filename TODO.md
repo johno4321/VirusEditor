@@ -89,7 +89,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | F4 | ⬜ | Multi mode: choose the part (`00–0F`) for edits and fetches; part list from the Multi edit buffer | SPEC §4.4 |
 | F5 | ⬜ | Multi editor and librarian (dump `11`, layout SPEC §4.4) | Later |
 | F6 | ⬜ | "Pass through the synth" step after import (send to edit buffer, request back) so the Virus updates the sound version | SPEC §5.2 |
-| F7 | ⬜ | Bank/program change via SysEx (C31–33) so selecting a library patch can also select it on the synth | SPEC §3.5 |
+| F7 | 🔄 | Bank/program change via SysEx (C31–33) so selecting a library patch can also select it on the synth | SPEC §3.5. Done: opt-in "Select on synth" checkbox in the Librarian sends C32 + C33 to the edited part on **Load** from bank A–D (`synth_select.rs`, tested). Open: the C32 bank value is sent 0-based (A=0…D=3), unverified on hardware (G2) |
 | F8 | ⬜ | Banks E–H (1,024-sound OS) | Blocked on Q2 |
 
 ## 🎹 Note audition (SPEC §5.9)
@@ -112,7 +112,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 |---|---|---|---|
 | G1 | ⬜ | **The GUI can't start on this dev VM** (Hyper-V over RDP, no GPU): `egui_glow requires opengl 2.0+`; wgpu also fails (`NoSuitableAdapterFound`). This happens before any app code runs; the old app had the same backend | Check on a machine with a GPU first. Fallback options: a software OpenGL (Mesa `opengl32.dll` / llvmpipe next to the exe), or the wgpu renderer with a fallback adapter. Not done |
 | G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 150 ms gaps (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items) | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
-| G3 | ⬜ | Persist settings between runs (ports, channel, device ID, part, window) | e.g. eframe `persistence` or a small TOML in the data dir |
+| G3 | ✅ | Persist settings between runs (ports, channel, device ID, part, window) | Versioned `settings.json` in the data dir (`settings.rs`, tested): ports, channel, device ID, part, audition settings (Hold always starts off), tab, bank, import/export folders, window geometry. Bad fields fall back to defaults, a corrupt file becomes `.bak` with a banner, vanished ports aren't selected. The window position isn't checked against the monitor layout |
 
 ## ❓ Open questions (SPEC §7)
 
@@ -145,7 +145,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | U2 | ✅ | Remove the 30 ms forced repaint; repaint on MIDI events and while LEDs are lit | Done: `set_event_notifier` → `request_repaint`; `request_repaint_after` only while an LED glows |
 | U3 | ✅ | Allow storing into empty slots (show all 128 slots per bank) | Done: 128-slot list from `get_bank_slots`, empty slots selectable |
 | U4 | ✅ | Confirm before overwriting a slot | Done: the store dialog names the occupant and the button becomes "Overwrite A005" |
-| U5 | ⬜ | Move file dialogs and import off the UI thread | Still synchronous (a bank imports in well under a second) |
+| U5 | ✅ | Move file dialogs and import off the UI thread | `dialogs.rs`: `rfd::AsyncFileDialog` and file read/write run on one worker thread, one task at a time, with a busy indicator. Parsing and the DB insert still run on the UI thread (well under a second per bank) |
 
 ## 🎨 Look and feel
 

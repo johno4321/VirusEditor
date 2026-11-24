@@ -9,10 +9,12 @@ use virus_midi::{MidiCommand, MidiEvent, MidiService, ReleaseTrigger};
 use virus_syx::Patch;
 
 use crate::audition::Audition;
-use crate::session::{Activity, Incoming, Ports, Session};
+use crate::session::{Activity, Incoming, MidiSettings, Ports, Session};
+use crate::settings::{self, FolderPrefs, Loaded, Settings, SettingsStore, WindowPrefs};
 use crate::storage::{open_library, LibraryLocation};
+use crate::synth_select::select_messages;
 use crate::views::librarian::{LibAction, LibrarianView, BANK_SEND_GAP_MS};
-use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, ACCENT, DANGER, DIM};
+use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, ACCENT, DANGER, DIM, WARN};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
@@ -20,6 +22,24 @@ enum Tab {
     Editor,
     Modulation,
     Librarian,
+}
+
+impl Tab {
+    fn key(self) -> &'static str {
+        match self {
+            Tab::Editor => "editor",
+            Tab::Modulation => "modulation",
+            Tab::Librarian => "librarian",
+        }
+    }
+
+    fn from_key(key: &str) -> Self {
+        match key {
+            "modulation" => Tab::Modulation,
+            "librarian" => Tab::Librarian,
+            _ => Tab::Editor,
+        }
+    }
 }
 
 pub struct VirusApp {
@@ -36,10 +56,19 @@ pub struct VirusApp {
     notice: Notice,
     /// Where the edited patch came from, for the header.
     origin: String,
+    /// Settings between runs (G3).
+    settings_store: SettingsStore,
+    /// Saved ports, applied when the first port list arrives; kept in the file until then.
+    pending_ports: Option<settings::MidiPrefs>,
+    window: Option<WindowPrefs>,
+    /// Name of the selected library bank, looked up only when the selection changes.
+    bank_name: (Option<i64>, Option<String>),
+    /// Shown under the header until dismissed (e.g. a corrupt settings file was set aside).
+    settings_warning: Option<String>,
 }
 
 impl VirusApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, store: SettingsStore, loaded: Loaded) -> Self {
         let mut visuals = Visuals::dark();
         visuals.panel_fill = Color32::from_rgb(22, 24, 28);
         visuals.window_fill = Color32::from_rgb(26, 28, 34);
@@ -67,7 +96,7 @@ impl VirusApp {
             notice = Notice::error(format!("Library is in memory only and will NOT be saved: {reason}"));
         }
 
-        Self {
+        let mut app = Self {
             session: Session::default(),
             ports: Ports::default(),
             leds: Activity::default(),
@@ -80,6 +109,89 @@ impl VirusApp {
             audition: Audition::new(),
             notice,
             origin: "init".to_owned(),
+            settings_store: store,
+            pending_ports: None,
+            window: None,
+            bank_name: (None, None),
+            settings_warning: loaded.warning,
+        };
+        app.apply_settings(&loaded.settings);
+        app
+    }
+
+    fn apply_settings(&mut self, s: &Settings) {
+        self.session.settings = MidiSettings { channel: s.midi.channel, device_id: s.midi.device_id, part: s.edit_part() };
+        self.pending_ports = Some(s.midi.clone());
+        let audition = &mut self.audition;
+        audition.open = s.audition.open;
+        audition.set_octave(s.audition.octave);
+        audition.settings.velocity = s.audition.velocity;
+        audition.settings.velocity_from_position = s.audition.velocity_from_position;
+        audition.settings.audition_notes.clone_from(&s.audition.notes);
+        audition.settings.audition_length_ms = s.audition.length_ms;
+        self.tab = Tab::from_key(&s.ui.tab);
+        self.librarian.select_on_synth = s.ui.select_on_synth;
+        if let (Some(name), Ok(banks)) = (&s.ui.bank, self.db.get_banks()) {
+            self.librarian.set_bank_id(banks.iter().find(|b| &b.name == name).map(|b| b.id));
+        }
+        self.librarian.files.import_dir = FolderPrefs::existing(&s.folders.import);
+        self.librarian.files.export_dir = FolderPrefs::existing(&s.folders.export);
+        self.window = s.window;
+    }
+
+    /// Everything worth keeping between runs, as it is now.
+    fn snapshot(&mut self) -> Settings {
+        let bank_id = self.librarian.bank_id();
+        if self.bank_name.0 != bank_id {
+            let name = bank_id.and_then(|id| self.db.get_banks().ok()?.into_iter().find(|b| b.id == id)).map(|b| b.name);
+            self.bank_name = (bank_id, name);
+        }
+        let mut midi = match &self.pending_ports {
+            Some(saved) => saved.clone(),
+            None => settings::MidiPrefs {
+                input: self.ports.selected_input.clone(),
+                output: self.ports.selected_output.clone(),
+                auto_connect: self.ports.auto_connect,
+                ..Default::default()
+            },
+        };
+        midi.channel = self.session.settings.channel;
+        midi.device_id = self.session.settings.device_id;
+        midi.part = self.session.settings.part.raw();
+        let mut s = Settings {
+            midi,
+            audition: settings::AuditionPrefs {
+                open: self.audition.open,
+                octave: self.audition.octave(),
+                velocity_from_position: self.audition.settings.velocity_from_position,
+                velocity: self.audition.settings.velocity,
+                notes: self.audition.settings.audition_notes.clone(),
+                length_ms: self.audition.settings.audition_length_ms,
+            },
+            ui: settings::UiPrefs {
+                tab: self.tab.key().to_owned(),
+                bank: self.bank_name.1.clone(),
+                select_on_synth: self.librarian.select_on_synth,
+            },
+            folders: FolderPrefs {
+                import: FolderPrefs::from_path(&self.librarian.files.import_dir),
+                export: FolderPrefs::from_path(&self.librarian.files.export_dir),
+            },
+            window: self.window,
+            ..Settings::default()
+        };
+        s.sanitize();
+        s
+    }
+
+    fn save_settings(&mut self, ctx: Option<&egui::Context>, force: bool) {
+        let current = self.snapshot();
+        if let Some(error) = self.settings_store.save_if_changed(&current, Instant::now(), force) {
+            self.notice = Notice::error(error);
+        }
+        // A rate-limited change must still be written when no other repaint comes along.
+        if let Some(ctx) = ctx.filter(|_| self.settings_store.is_dirty(&current)) {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
     }
 
@@ -134,7 +246,11 @@ impl VirusApp {
         for event in events {
             match event {
                 MidiEvent::PortListUpdated { inputs, outputs } => {
-                    let commands = self.ports.on_port_list(inputs, outputs);
+                    let mut commands = Vec::new();
+                    if let Some(saved) = self.pending_ports.take() {
+                        commands = settings::restore_ports(&mut self.ports, &saved, &inputs, &outputs);
+                    }
+                    commands.extend(self.ports.on_port_list(inputs, outputs));
                     self.release_notes_before(&commands);
                     for command in commands {
                         self.command(command);
@@ -205,6 +321,7 @@ impl VirusApp {
     fn handle_library_action(&mut self, action: LibAction) {
         match action {
             LibAction::Load { patch, origin } => self.load(patch, origin),
+            LibAction::SelectOnSynth { bank_id, program } => self.select_on_synth(bank_id, program),
             LibAction::SendToEditBuffer { patch, origin } => {
                 let message = self.session.edit_buffer_dump(&patch);
                 self.load(patch, origin);
@@ -233,6 +350,32 @@ impl VirusApp {
             }
             LibAction::Notice(notice) => self.notice = notice,
         }
+    }
+
+    /// F7: switches the edited part to the stored program a loaded library patch mirrors.
+    fn select_on_synth(&mut self, bank_id: i64, program: u8) {
+        if !self.librarian.select_on_synth || !self.ports.output_connected() {
+            return;
+        }
+        let Ok(banks) = self.db.get_banks() else { return };
+        let Some(bank) = banks.into_iter().find(|b| b.id == bank_id) else { return };
+        let messages = select_messages(
+            self.session.settings.device_id,
+            self.session.settings.part,
+            bank.bank_letter.as_deref(),
+            program,
+        );
+        if messages.is_empty() {
+            return;
+        }
+        for message in messages {
+            self.send(message);
+        }
+        self.notice = Notice::info(format!(
+            "Selected {} on the synth ({}); the editor shows the library copy.",
+            crate::library::slot_label(Some(&bank), program),
+            self.session.settings.part.label()
+        ));
     }
 
     fn send_bank(&mut self, bank_id: i64) {
@@ -282,6 +425,16 @@ impl VirusApp {
                 ui.colored_label(DANGER, format!("⚠ The library is in memory only — nothing will be saved ({reason})."));
             }
             LibraryLocation::File(_) => {}
+        }
+        if self.settings_warning.is_some() {
+            ui.horizontal(|ui| {
+                if let Some(warning) = &self.settings_warning {
+                    ui.colored_label(WARN, format!("⚠ {warning}"));
+                }
+                if ui.small_button("✖").on_hover_text("Dismiss").clicked() {
+                    self.settings_warning = None;
+                }
+            });
         }
     }
 }
@@ -351,11 +504,15 @@ impl App for VirusApp {
         if let Some(remaining) = self.leds.next_change(Instant::now()) {
             ctx.request_repaint_after(remaining);
         }
+
+        self.window = WindowPrefs::capture(&ctx.input(|i| i.viewport().clone()), self.window);
+        self.save_settings(Some(ctx), false);
     }
 
     /// Releases sounding notes and waits briefly for the worker to send them, so quitting
     /// never leaves a note hanging on the synth.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_settings(None, true);
         let offs = self.audition.release_all(ReleaseTrigger::Exit);
         let Some(midi) = &self.midi else { return };
         if offs.is_empty() || !self.ports.output_connected() {
