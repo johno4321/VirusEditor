@@ -85,7 +85,8 @@ fn open(conn: &ConnArgs) -> Result<Synth<MidiLink>, String> {
         conn.target(),
         Duration::from_millis(conn.timeout_ms),
         Duration::from_millis(conn.settle_ms),
-    ))
+    )
+    .with_quiet(Duration::from_millis(conn.quiet_ms), Duration::from_millis(conn.bank_quiet_ms)))
 }
 
 fn ports(conn: &ConnArgs) -> Outcome {

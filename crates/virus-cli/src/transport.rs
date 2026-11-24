@@ -80,17 +80,35 @@ impl fmt::Display for CollectError {
 
 impl std::error::Error for CollectError {}
 
-/// Discards stale input, sends `request` (if any) and feeds incoming events to `collector`
-/// until it is done. Times out when nothing relevant arrives for `idle`; `progress` is
-/// called after every relevant event.
+/// Waits until no event has arrived for `quiet`, dropping whatever does arrive (stale answers,
+/// the rest of an interrupted bank stream). Returns how many events were dropped.
+///
+/// The Virus Rack ignores a request that arrives shortly after it has sent or applied
+/// something (measured 24 Nov: a bank request right after an edit-buffer answer gets no reply,
+/// 2 s later it does), so every request waits for a quiet line first.
+pub fn wait_quiet<T: Transport + ?Sized>(transport: &mut T, quiet: Duration) -> usize {
+    let mut dropped = transport.discard_pending();
+    if quiet.is_zero() {
+        return dropped;
+    }
+    while transport.recv(quiet).is_some() {
+        dropped += 1;
+    }
+    dropped
+}
+
+/// Waits for a quiet line (see [`wait_quiet`]), sends `request` (if any) and feeds incoming
+/// events to `collector` until it is done. Times out when nothing relevant arrives for `idle`;
+/// `progress` is called after every relevant event.
 pub fn exchange<T: Transport + ?Sized, C: Collector>(
     transport: &mut T,
     request: Option<&[u8]>,
     collector: &mut C,
+    quiet: Duration,
     idle: Duration,
     mut progress: impl FnMut(&C),
 ) -> Result<(), CollectError> {
-    transport.discard_pending();
+    wait_quiet(transport, quiet);
     if let Some(request) = request {
         transport.send(request).map_err(CollectError::Midi)?;
     }
@@ -412,7 +430,8 @@ mod tests {
     fn exchange_times_out_with_notes_and_reports_midi_errors() {
         let mut t = Replay(vec![dump_event(0, 0, 0x03, 0)].into(), Vec::new());
         let mut c = EditBufferCollector::new(DeviceId(0), 0x40);
-        let err = exchange(&mut t, Some(&[0xF0, 0xF7]), &mut c, Duration::from_millis(10), |_| {}).unwrap_err();
+        let err = exchange(&mut t, Some(&[0xF0, 0xF7]), &mut c, Duration::ZERO, Duration::from_millis(10), |_| {})
+            .unwrap_err();
         assert_eq!(t.1, vec![vec![0xF0, 0xF7]]);
         match &err {
             CollectError::Timeout { notes, .. } => assert_eq!(notes.len(), 1),
@@ -423,8 +442,25 @@ mod tests {
         let mut t = Replay(vec![MidiEvent::Error("boom".into())].into(), Vec::new());
         let mut c = EditBufferCollector::new(DeviceId(0), 0x40);
         assert_eq!(
-            exchange(&mut t, None, &mut c, Duration::from_millis(10), |_| {}),
+            exchange(&mut t, None, &mut c, Duration::ZERO, Duration::from_millis(10), |_| {}),
             Err(CollectError::Midi("boom".into()))
         );
+    }
+
+    #[test]
+    fn a_stale_stream_is_drained_before_the_request_is_sent() {
+        // The rest of an interrupted bank A stream, still arriving when the next command starts.
+        let stale: Vec<MidiEvent> = (68..72).map(|p| dump_event(0, 1, p, 0)).collect();
+        let mut t = Replay(stale.into(), Vec::new());
+        assert_eq!(wait_quiet(&mut t, Duration::from_millis(5)), 4);
+        assert!(t.1.is_empty(), "nothing may be sent while the line is busy");
+
+        let mut t = Replay(vec![dump_event(0, 1, 68, 0), dump_event(0, 0, 0x40, 0)].into(), Vec::new());
+        let mut c = EditBufferCollector::new(DeviceId(0), 0x40);
+        // The edit-buffer answer arrives inside the quiet window, so it counts as stale too and the
+        // collector waits for a fresh answer.
+        let err = exchange(&mut t, Some(&[0xF0, 0xF7]), &mut c, Duration::from_millis(5), Duration::from_millis(10), |_| {});
+        assert!(matches!(err, Err(CollectError::Timeout { .. })));
+        assert_eq!(t.1, vec![vec![0xF0, 0xF7]]);
     }
 }

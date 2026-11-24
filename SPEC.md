@@ -148,7 +148,14 @@ Page C parameter changes, independent of MIDI channel and of the program-change 
 **Implementation (F7):** the optional "Select on synth" setting sends C32 then C33 to the edited part (Single `40` or the Multi part) when a library patch from bank A–D is loaded (`synth_select.rs`). The C32 value is sent **0-based** (A=0 … D=3), unlike the dump byte `bb` (A=1 … D=4). **Unverified on hardware** (TODO G2). It only makes sense when the library bank mirrors the synth's bank, so the label says so. User banks send nothing.
 
 ### 3.6 Observed but undocumented
-* `multis.mid` contains one `F0 00 20 33 01 10 12 01 …` message, probably a **Global dump** (command `12`). It isn't documented, so keep it raw and pass it through untouched.
+* **Global dump = command `12`.** Confirmed live (24 Nov): Global request `35` is answered with `F0 00 20 33 01 dd 12 01 …` (267 bytes). The same `12` message is the one in `multis.mid`. Its layout isn't documented; keep it raw.
+
+### 3.7 Live timing (Virus Rack OS 2.00, 24 Nov, via an iConnectivity mioXC)
+* **The Virus answers one request at a time and ignores requests while busy:**
+  * During a bank stream it ignores everything; cancelling the client doesn't stop the stream.
+  * Shortly after it has sent an answer or applied a change, it also ignores requests. Measured: a bank request right after an edit-buffer answer got no reply; 2 s later it did. An edit-buffer request 60 ms after a param change was lost; after 500 ms it worked.
+* **Rule for clients:** wait for the MIDI input to be silent before every request, about 500 ms for normal requests and 2 s for bank requests. Drain and report anything that arrives meanwhile. The CLI does this (`--quiet-ms`, `--bank-quiet-ms`).
+* **Bank transfers are reliable:** two bank A requests 27 minutes apart were byte-identical.
 
 ---
 
@@ -168,7 +175,7 @@ Page C parameter changes, independent of MIDI channel and of the program-change 
 ### 4.1 Page A (dump bytes 0–127)
 | No. | Parameter | Values |
 |---|---|---|
-| 0 | *internal:* **Sound Version Number** (`6` in all factory OS 2.0 dumps) | never change (§5.2) |
+| 0 | *internal:* **Sound Version Number** (`6` in all factory dumps from the OS 1.5 era; **`7` on the live OS 2.00 synth**, which upgrades older sounds as it loads them) | never change (§5.2) |
 | 1–4, 6–9, 11–16 | performance controllers (mod wheel, breath, CC3, foot, data, ch. volume, balance, CC9, expression, CC12–16) | not stored |
 | 5 | Portamento Time | 0–127 |
 | 10 | Panorama | ± |

@@ -25,7 +25,9 @@ cargo build --release -p virus-cli          # → target\release\virus.exe
 | `--part <single\|1-16>` | `single` (`0x40`) | Which edit buffer to use: the Single buffer or a Multi part |
 | `--timeout-ms <ms>` | `3000` | How long to wait for an answer. For bank requests it's the longest allowed gap between two dumps |
 | `--settle-ms <ms>` | `60` | Pause after a parameter change or dump before reading it back |
-| `-v`, `--verbose` | off | Log every sent (`TX`) and received (`RX`) message as hex to stderr |
+| `--quiet-ms <ms>` | `500` | Silence required on the input before each request. The Virus ignores requests that arrive too soon after it has sent or applied something (SPEC §3.7). Anything that arrives meanwhile, such as the rest of an interrupted bank stream, is dropped |
+| `--bank-quiet-ms <ms>` | `2000` | The same before a bank request, which needs longer |
+| `-v`, `--verbose` | off | Log every sent (`TX`) and received (`RX`) message as hex to stderr, with a millisecond timestamp |
 
 Exit codes: `0` = OK; `1` = the command ran but a check failed, or it needs `--yes`; `2` = error.
 

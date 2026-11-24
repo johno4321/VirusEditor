@@ -65,6 +65,8 @@ pub struct MidiLink {
     service: MidiService,
     pending: VecDeque<MidiEvent>,
     verbose: bool,
+    /// Start of the session, for the millisecond timestamps in the `--verbose` log.
+    started: Instant,
     pub input: Option<String>,
     pub output: Option<String>,
 }
@@ -88,7 +90,7 @@ impl MidiLink {
         } else {
             None
         };
-        let mut link = Self { service: MidiService::spawn()?, pending: VecDeque::new(), verbose, input: None, output: None };
+        let mut link = Self { service: MidiService::spawn()?, pending: VecDeque::new(), verbose, started: Instant::now(), input: None, output: None };
         if let Some(name) = &input_name {
             link.service.send_command(MidiCommand::ConnectInput(name.clone()))?;
         }
@@ -113,16 +115,21 @@ impl MidiLink {
         Ok(link)
     }
 
+    /// Milliseconds since the link was opened, e.g. `12345ms`.
+    fn stamp(&self) -> String {
+        format!("{:>7}ms", self.started.elapsed().as_millis())
+    }
+
     /// The next event from the worker, logged when verbose. `Sent` events are not logged.
     fn next_event(&mut self, timeout: Duration) -> Option<MidiEvent> {
         let event = self.service.event_receiver().recv_timeout(timeout).ok()?;
         if self.verbose {
             match &event {
-                MidiEvent::SysEx(frame) => eprintln!("RX {}", hex(frame)),
-                MidiEvent::Error(e) => eprintln!("RX error: {e}"),
+                MidiEvent::SysEx(frame) => eprintln!("{} RX {}", self.stamp(), hex(frame)),
+                MidiEvent::Error(e) => eprintln!("{} RX error: {e}", self.stamp()),
                 other => {
                     if let Some(bytes) = channel_bytes(other) {
-                        eprintln!("RX {}", hex(&bytes));
+                        eprintln!("{} RX {}", self.stamp(), hex(&bytes));
                     }
                 }
             }
@@ -151,7 +158,7 @@ impl MidiLink {
 impl Transport for MidiLink {
     fn send(&mut self, message: &[u8]) -> Result<(), String> {
         if self.verbose {
-            eprintln!("TX {}", hex(message));
+            eprintln!("{} TX {}", self.stamp(), hex(message));
         }
         self.service.send_command(MidiCommand::Send(message.to_vec()))?;
         self.await_sent(1, CONFIRM_TIMEOUT, &mut |_, _| {})
@@ -165,7 +172,7 @@ impl Transport for MidiLink {
     ) -> Result<(), String> {
         if self.verbose {
             for (i, message) in messages.iter().enumerate() {
-                eprintln!("TX[{}/{}] {}", i + 1, messages.len(), hex(message));
+                eprintln!("{} TX[{}/{}] {}", self.stamp(), i + 1, messages.len(), hex(message));
             }
         }
         self.service.send_command(MidiCommand::SendBatch { messages: messages.to_vec(), gap_ms: gap.as_millis() as u64 })?;
@@ -186,7 +193,7 @@ impl Transport for MidiLink {
         while let Ok(event) = self.service.event_receiver().try_recv() {
             if self.verbose {
                 if let MidiEvent::SysEx(frame) = &event {
-                    eprintln!("RX (stale, dropped) {}", hex(frame));
+                    eprintln!("{} RX (stale, dropped) {}", self.stamp(), hex(frame));
                 }
             }
             dropped += 1;

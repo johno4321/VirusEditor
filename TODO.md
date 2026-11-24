@@ -144,6 +144,22 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | G1 | ✅ | **The GUI can't start on this dev VM** (Hyper-V over RDP, no GPU): `egui_glow requires opengl 2.0+`; wgpu also fails (`NoSuitableAdapterFound`). This happens before any app code runs; the old app had the same backend | Done 24 Nov (`rework/gui-vm`): eframe built wgpu without its DX12 backend, so WARP was never offered. A direct `wgpu` dependency now enables `dx12`; glow stays the default and, if it fails at start-up, the app retries with wgpu, which picks the WARP software rasteriser. Force with `--renderer glow\|wgpu` or `VIRUS_RENDERER`. Verified rendering on this VM (debug and release). Still to check: glow on a machine with a GPU |
 | G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 150 ms gaps (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items); **which part byte the Virus puts in its own outgoing SysEx param changes in Single mode (RV-L4)** | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
 | G3 | ✅ | Persist settings between runs (ports, channel, device ID, part, window) | Versioned `settings.json` in the data dir (`settings.rs`, tested): ports, channel, device ID, part, audition settings (Hold always starts off), tab, bank, import/export folders, window geometry. Bad fields fall back to defaults, a corrupt file becomes `.bak` with a banner, vanished ports aren't selected. The window position isn't checked against the monitor layout |
+| G4 | ⬜ | The app should also wait for a quiet line before requests (SPEC §3.7), like the CLI: e.g. Fetch right after Send, or Request bank right after a fetch | `session.rs` / `app.rs`; the CLI does it since 24 Nov |
+
+### Live test results (24 Nov, laptop + iConnectivity mioXC, CLI `virus`)
+
+| Check | Result |
+|---|---|
+| Ports | ✅ `mioXC MIDI IN/OUT` picked automatically |
+| Synth settings | Global Channel **11**, Device ID **1** (`0x00`); knob moves sent as **CC** (Low Page = Contr) |
+| Monitor | ✅ Cutoff knob = **CC 40** on ch 11 → confirms A40 = Cutoff |
+| Fetch edit buffer `30 00 40` | ✅ answer `10 00 40`, checksum ok, Sound Version **7** |
+| Back up RAM banks A and B (`32 01`/`32 02`) | ✅ 128/128 each, all checksums ok; stored in the laptop library; repeat of A byte-identical (`fc`) |
+| Param change `70` (A40) / `71` (B36) | ✅ exactly one byte changes; round trip back to the original |
+| Send edit buffer `10 00 40` → read back | ✅ byte-identical |
+| Global request `35` | ✅ answered with command **`12`** (SPEC §3.6) |
+| Timing | Requests too soon after an exchange are ignored (SPEC §3.7); fixed in the CLI with quiet gaps |
+| Still to do | Steps 7–14 of the CLI runbook: audible cutoff, full fetch, factory patch send, Q1–Q3 probes, banks E–H (Q2), Multi, bank send (last) |
 
 ## ❓ Open questions (SPEC §7)
 

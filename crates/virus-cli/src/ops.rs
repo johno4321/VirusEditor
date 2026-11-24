@@ -20,11 +20,22 @@ pub struct Synth<T> {
     pub timeout: Duration,
     /// Pause after parameter changes / dumps before reading back, so the synth has applied them.
     pub settle: Duration,
+    /// Quiet line required before a request (see [`crate::transport::wait_quiet`]).
+    pub quiet: Duration,
+    /// Quiet line required before a bank request; the Virus needs longer here.
+    pub bank_quiet: Duration,
 }
 
 impl<T: Transport> Synth<T> {
     pub fn new(transport: T, target: Target, timeout: Duration, settle: Duration) -> Self {
-        Self { transport, target, timeout, settle }
+        Self { transport, target, timeout, settle, quiet: Duration::ZERO, bank_quiet: Duration::ZERO }
+    }
+
+    /// Sets the quiet gaps before requests (real hardware; the fake needs none).
+    pub fn with_quiet(mut self, quiet: Duration, bank_quiet: Duration) -> Self {
+        self.quiet = quiet;
+        self.bank_quiet = bank_quiet;
+        self
     }
 
     fn pause(&self) {
@@ -37,7 +48,7 @@ impl<T: Transport> Synth<T> {
     pub fn fetch(&mut self) -> Result<ReceivedDump, CollectError> {
         let request = messages::fetch_request(&self.target);
         let mut collector = EditBufferCollector::new(self.target.device, self.target.part.raw());
-        exchange(&mut self.transport, Some(&request), &mut collector, self.timeout, |_| {})?;
+        exchange(&mut self.transport, Some(&request), &mut collector, self.quiet, self.timeout, |_| {})?;
         Ok(collector.into_result().expect("collector is done"))
     }
 
@@ -63,7 +74,7 @@ impl<T: Transport> Synth<T> {
     ) -> (BankCollector, Option<CollectError>) {
         let request = messages::bank_request(&self.target, bank);
         let mut collector = BankCollector::new(self.target.device, bank);
-        let result = exchange(&mut self.transport, Some(&request), &mut collector, self.timeout, |c| {
+        let result = exchange(&mut self.transport, Some(&request), &mut collector, self.bank_quiet, self.timeout, |c| {
             progress(c.count())
         });
         (collector, result.err())
@@ -91,7 +102,7 @@ impl<T: Transport> Synth<T> {
     pub fn global(&mut self) -> Result<Vec<u8>, CollectError> {
         let request = messages::global_request(&self.target);
         let mut collector = FirstVirusMessage::new(self.target.device);
-        exchange(&mut self.transport, Some(&request), &mut collector, self.timeout, |_| {})?;
+        exchange(&mut self.transport, Some(&request), &mut collector, self.quiet, self.timeout, |_| {})?;
         Ok(collector.into_result().expect("collector is done"))
     }
 }

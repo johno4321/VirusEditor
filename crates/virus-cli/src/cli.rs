@@ -42,6 +42,14 @@ pub struct ConnArgs {
     /// Pause after a parameter change or dump before reading back, in ms.
     #[arg(long, value_name = "MS", default_value_t = 60, global = true)]
     pub settle_ms: u64,
+    /// Silence required on the MIDI input before each request, in ms. The Virus ignores
+    /// requests that arrive too soon after it has sent or applied something.
+    #[arg(long, value_name = "MS", default_value_t = 500, global = true)]
+    pub quiet_ms: u64,
+    /// Silence required before a bank request, in ms (a bank request right after another
+    /// answer was ignored in the live test; 2 s worked).
+    #[arg(long, value_name = "MS", default_value_t = 2000, global = true)]
+    pub bank_quiet_ms: u64,
     /// Log every sent and received message as hex (to stderr).
     #[arg(short, long, global = true)]
     pub verbose: bool,
