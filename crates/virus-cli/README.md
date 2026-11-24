@@ -27,7 +27,7 @@ cargo build --release -p virus-cli          # → target\release\virus.exe
 | `--settle-ms <ms>` | `60` | Pause after a parameter change or dump before reading it back |
 | `--quiet-ms <ms>` | `500` | Silence required on the input before each request. The Virus ignores requests that arrive too soon after it has sent or applied something (SPEC §3.7). Anything that arrives meanwhile, such as the rest of an interrupted bank stream, is dropped |
 | `--bank-quiet-ms <ms>` | `2000` | The same before a bank request, which needs longer |
-| `-v`, `--verbose` | off | Log every sent (`TX`) and received (`RX`) message as hex to stderr, with a millisecond timestamp |
+| `-v`, `--verbose` | off | Log every sent (`TX`) and received (`RX`) message as hex to stderr, with a millisecond timestamp. Also reports how many stale messages were dropped while waiting for a quiet line |
 
 Exit codes: `0` = OK; `1` = the command ran but a check failed, or it needs `--yes`; `2` = error.
 
@@ -41,7 +41,8 @@ Exit codes: `0` = OK; `1` = the command ran but a check failed, or it needs `--y
 | `send <file.syx\|.mid> [--program N] [--from-bank X] [--verify]` | Sends one patch to the edit buffer (`10 00 pp`). For bank files, pick the patch with `--program`. Refuses dumps with a bad checksum unless you pass `--allow-bad-checksum` |
 | `get-bank <A-D> --out-file bank.syx [--to-library] [--db file]` | Sends a bank request (`32 bb`) and collects the 128 dumps, showing progress and checking checksums. Writes them as received, in program order. `--to-library` also saves them as a new bank in the editor's library. Banks E–H are allowed for Q2 (undocumented addressing) |
 | `put-bank <A\|B> <file> --yes [--gap-ms 150] [--verify]` | Sends a bank to RAM bank A or B, paced with `SendBatch`. Refuses banks C/D. Without `--yes` it prints the warning and the exact backup command, then stops. With `--yes` it **backs up the target bank first** (`backup_bank_X_<stamp>.syx`) unless you pass `--no-backup`. `--verify` requests the bank back and compares every program |
-| `set <A\|B><num> <value> [--verify]` | Sends one parameter change, e.g. `set A40 64` or `set A10 -5` (bipolar). A0 is always refused; performance controllers and undocumented bytes need `--force` |
+| `set <A\|B\|C><num> <value> [--verify]` | Sends one parameter change to `--part`, e.g. `set A40 64`, `set A10 -5` (bipolar) or `set C32 1`. Page C (`72`) covers part, multi and global settings; it isn't in the single dump, so `--verify` only works for A/B. A0 is always refused. These need `--force`: performance controllers, undocumented bytes, and globals that can break the session (C93 Device ID, C94/C95 Control Pages, C98/C99 Dump Tx/Rx, C118 Memory Protect, C120 Soft Thru, C122 Play Mode, C123 Part Number, C124 Global Channel) |
+| `send-hex "F0 … F7" [--yes] [--listen-ms 1000]` | For experiments: sends one raw SysEx message, checking that it is framed `F0 … F7` with 7-bit data. It always prints the message and what it decodes to. Nothing is sent without `--yes`, because raw messages bypass every safety check. It waits for a quiet line, sends, then prints what arrives within `--listen-ms` |
 | `probe-destinations [--slot assign1\|lfo1\|definable1]` | Q1 resolver: steps a destination through raw values `--from 0 --to 127` (details below). Writes `q1_destinations.json` |
 | `probe-values <A49\|A112\|A102\|B39>` | Q3 helper: the same flow for value lists. Writes `q3_<param>.json`. The default `--to` is 40, 40, 15 and 20 respectively |
 | `probe-table <file.json> [--name CONST]` | Turns probe results into a Rust `&[&str]` table, indexed by raw value |
@@ -81,6 +82,27 @@ Exit codes: `0` = OK; `1` = the command ran but a check failed, or it needs `--y
 | Global request (`35`) | Informational only: prints the raw answer, for F3 |
 
 The report ends with the G2 items that still need ears, eyes or the GUI.
+
+### Testing C32 (F7: is Part Bank Change 0-based or 1-based?)
+
+The editor's "Select on synth" sends C32 Part Bank Change as **A = 0, B = 1, …** (unverified).
+The dump byte `bb` uses A = 1. To find out which is right:
+
+1. Put the Virus in Single mode. Store anything you want to keep: selecting a program replaces the
+   edit buffer.
+2. Pick a program number whose sounds differ between RAM banks A and B, e.g. 5. Note both names
+   (from the Virus display, or from the "Synth A/B backup" banks in the editor's library).
+3. `virus set C32 1`, then `virus set C33 5`, then `virus fetch --brief`.
+   * B005's name means **0-based** (1 = B), which is what the editor sends.
+   * A005's name means **1-based** (1 = A).
+4. Cross-check with `virus set C32 0`, `virus set C33 5`, `virus fetch --brief`. With 0-based this
+   gives A005; with 1-based, 0 is out of range and the sound probably doesn't change.
+5. If nothing changes at all, the Single part (`0x40`) may not accept C32/C33. Try the same in
+   Multi mode with `--part 1`. Raw equivalent for experiments, with device 1 and part `0x40`:
+   `virus send-hex "F0 00 20 33 01 00 72 40 20 01 F7" --yes`.
+
+Record the result in TODO F7/G2. If it's 1-based, change `virus-app/src/synth_select.rs`
+(`bank.to_raw() - 1` → `bank.to_raw()`) and its tests.
 
 ## First cable session runbook
 
