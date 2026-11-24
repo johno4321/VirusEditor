@@ -6,10 +6,14 @@ use virus_db::{ImportTarget, IncomingDump, PatchDatabase, PatchSummary, SoundCat
 use virus_syx::{Patch, SingleBank};
 
 use super::{Notice, ACCENT, DANGER, DIM, WARN};
+use crate::dialogs::FileJobs;
 use crate::library::{
-    export_bank_file, first_free_slot, import_as_new_bank, import_dumps, import_file, slot_label, store_patch,
-    ImportOutcome, LibraryCache, LibraryQuery,
+    first_free_slot, import_as_new_bank, import_dumps, slot_label, store_patch, ImportOutcome, LibraryCache,
+    LibraryQuery,
 };
+
+mod files;
+use files::PendingFile;
 
 /// Pause between dumps when sending a bank, so the synth can write each program.
 pub const BANK_SEND_GAP_MS: u64 = 150;
@@ -19,6 +23,8 @@ pub const BANK_SEND_GAP_MS: u64 = 150;
 pub enum LibAction {
     Load { patch: Patch, origin: String },
     SendToEditBuffer { patch: Patch, origin: String },
+    /// A library patch was loaded: the app may select the same program on the synth (F7).
+    SelectOnSynth { bank_id: i64, program: u8 },
     RequestBank(SingleBank),
     SendBank { bank_id: i64 },
     CancelBatch,
@@ -54,9 +60,22 @@ pub struct LibrarianView {
     loose: Vec<IncomingDump>,
     store: Option<StoreDialog>,
     confirm_send_bank: Option<i64>,
+    /// File dialogs and file I/O on a worker thread (U5).
+    pub files: FileJobs,
+    pending_file: Option<PendingFile>,
+    /// F7: loading a library patch also selects it on the synth.
+    pub select_on_synth: bool,
 }
 
 impl LibrarianView {
+    pub fn bank_id(&self) -> Option<i64> {
+        self.query.bank_id
+    }
+
+    pub fn set_bank_id(&mut self, bank_id: Option<i64>) {
+        self.query.bank_id = bank_id;
+    }
+
     fn refresh(&mut self, db: &PatchDatabase) {
         self.cache.refresh(db, &self.query);
         if self.query.bank_id.is_none() {
@@ -137,14 +156,22 @@ impl LibrarianView {
 
         ui.separator();
         ui.label(RichText::new("Files").strong().color(ACCENT));
-        if ui.button("📂 Import .syx / .mid / .bin…").clicked() {
-            self.import_from_file(db, actions);
+        let busy = self.files.busy();
+        if let Some(label) = busy {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new(label).color(DIM));
+            });
+        }
+        let idle = busy.is_none();
+        if ui.add_enabled(idle, Button::new("📂 Import .syx / .mid / .bin…")).clicked() {
+            self.start_import(&ui.ctx().clone(), actions);
         }
         ui.checkbox(&mut self.import_into_selected, "Import into the selected bank")
             .on_hover_text("Off: dumps go to the bank they were saved from (bb = A–D). On: all go into the selected bank.");
         ui.horizontal(|ui| {
-            if ui.button("💾 Export bank .syx…").clicked() {
-                self.export_to_file(db, actions);
+            if ui.add_enabled(idle, Button::new("💾 Export bank .syx…")).clicked() {
+                self.start_export(&ui.ctx().clone(), actions);
             }
             let as_text = |bb: Option<u8>| bb.and_then(SingleBank::from_raw).map_or("own".to_owned(), |b| b.letter().to_string());
             ComboBox::from_id_source("export-as").width(48.0).selected_text(as_text(self.export_as)).show_ui(ui, |ui| {
@@ -168,6 +195,12 @@ impl LibrarianView {
             }
         });
         let selected_bank = self.query.bank_id.and_then(|id| self.cache.bank(id));
+        ui.checkbox(&mut self.select_on_synth, "Select on synth (library bank A–D mirrors the synth's)")
+            .on_hover_text(
+                "When you load a patch from library bank A–D, also switch the edited part to the same bank and \
+                 program on the synth (SysEx C32/C33). Only correct while the library bank holds the same \
+                 sounds as the synth's bank; user banks are never selected.",
+            );
         let ram_letter = selected_bank
             .filter(|b| !b.is_rom)
             .and_then(|b| b.bank_letter.as_deref())
@@ -288,53 +321,6 @@ impl LibrarianView {
         }
         if let Some(index) = remove {
             self.loose.remove(index);
-        }
-    }
-
-    fn import_from_file(&mut self, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("SysEx / MIDI", &["syx", "mid", "midi", "bin"])
-            .add_filter("All files", &["*"])
-            .pick_file()
-        else {
-            return;
-        };
-        let target = match (self.import_into_selected, self.query.bank_id) {
-            (true, Some(id)) => ImportTarget::Bank(id),
-            _ => ImportTarget::OriginalBanks,
-        };
-        match import_file(db, &path, target) {
-            Ok(outcome) => {
-                let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                let text = format!("{file}: {}", outcome.summary());
-                actions.push(LibAction::Notice(if outcome.has_warnings() { Notice::warning(text) } else { Notice::info(text) }));
-                self.loose = outcome.report.loose.clone();
-                self.last_import = Some(outcome);
-            }
-            Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
-        }
-    }
-
-    fn export_to_file(&mut self, db: &PatchDatabase, actions: &mut Vec<LibAction>) {
-        let Some(bank) = self.query.bank_id.and_then(|id| self.cache.bank(id)).cloned() else {
-            actions.push(LibAction::Notice(Notice::warning("Select a bank to export.")));
-            return;
-        };
-        let file_name: String = bank.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("SysEx", &["syx"])
-            .set_file_name(format!("{file_name}.syx"))
-            .save_file()
-        else {
-            return;
-        };
-        match export_bank_file(db, bank.id, self.export_as, &path) {
-            Ok(count) => actions.push(LibAction::Notice(Notice::info(format!(
-                "Exported {count} patch(es) of {} to {}.",
-                bank.name,
-                path.display()
-            )))),
-            Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
         }
     }
 
@@ -483,6 +469,7 @@ impl LibrarianView {
         }
         self.store_dialog(ctx, db, editor_patch, actions);
         self.send_bank_dialog(ctx, actions);
+        self.poll_files(ctx, db, actions);
     }
 
     fn store_dialog(&mut self, ctx: &Context, db: &PatchDatabase, editor_patch: &Patch, actions: &mut Vec<LibAction>) {
@@ -604,6 +591,9 @@ fn load(db: &PatchDatabase, id: i64, send: bool, actions: &mut Vec<LibAction>) {
             let patch = Patch::from_bytes(&record.data);
             let origin = format!("library ({})", record.name);
             actions.push(if send { LibAction::SendToEditBuffer { patch, origin } } else { LibAction::Load { patch, origin } });
+            if !send {
+                actions.push(LibAction::SelectOnSynth { bank_id: record.bank_id, program: record.program_number });
+            }
         }
         Ok(None) => actions.push(LibAction::Notice(Notice::error("That patch no longer exists."))),
         Err(e) => actions.push(LibAction::Notice(Notice::error(format!("Cannot load patch: {e}")))),

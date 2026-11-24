@@ -15,11 +15,16 @@ pub enum LibraryLocation {
     InMemory { reason: String },
 }
 
-/// `…/VirusEditor/data/virus_library.db` in the platform's per-user data directory.
-pub fn default_db_path() -> Result<PathBuf, String> {
+/// `…/VirusEditor/data` in the platform's per-user data directory (library and settings).
+pub fn data_dir() -> Result<PathBuf, String> {
     ProjectDirs::from("", "", "VirusEditor")
-        .map(|dirs| dirs.data_dir().join(DB_FILE_NAME))
+        .map(|dirs| dirs.data_dir().to_path_buf())
         .ok_or_else(|| "no user data directory could be determined".to_owned())
+}
+
+/// `…/VirusEditor/data/virus_library.db`.
+pub fn default_db_path() -> Result<PathBuf, String> {
+    data_dir().map(|dir| dir.join(DB_FILE_NAME))
 }
 
 pub fn open_library() -> (PatchDatabase, LibraryLocation) {

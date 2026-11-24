@@ -78,6 +78,9 @@ VirusEditor\
             ├── session.rs      # MIDI settings, incoming interpretation (§5.5), outgoing edits
             ├── library.rs      # File import/export glue, store rules, cached queries
             ├── storage.rs      # DB location and in-memory fallback
+            ├── settings.rs     # Persisted settings (settings.json), migration, port restore, window geometry
+            ├── dialogs.rs      # Off-thread file dialogs and file I/O (one task at a time)
+            ├── synth_select.rs # SysEx bank/program change messages for "Select on synth" (F7)
             ├── views\          # editor.rs (generated from SINGLE_PARAMS), modulation.rs, librarian.rs, midi_bar.rs, controls.rs
             └── widgets\        # knob.rs, curves.rs (filter response, envelopes)
 ```
@@ -125,6 +128,8 @@ Page C parameter changes, independent of MIDI channel and of the program-change 
 * `72 pp 20 vv`: C32 Part Bank Change (immediate)
 * `72 pp 21 vv`: C33 Part Program Change
 * `72 00 69 vv`: C105 Multi Program Change
+
+**Implementation (F7):** the optional "Select on synth" setting sends C32 then C33 to the edited part (Single `40` or the Multi part) when a library patch from bank A–D is loaded (`synth_select.rs`). The C32 value is sent **0-based** (A=0 … D=3), unlike the dump byte `bb` (A=1 … D=4). **Unverified on hardware** (TODO G2). It only makes sense when the library bank mirrors the synth's bank, so the label says so. User banks send nothing.
 
 ### 3.6 Observed but undocumented
 * `multis.mid` contains one `F0 00 20 33 01 10 12 01 …` message, probably a **Global dump** (command `12`). It isn't documented, so keep it raw and pass it through untouched.
@@ -285,6 +290,9 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 8. **Bundled third-party material:** the manual, addenda, OS files and factory sounds are © Access Music. They stay in this repository only because it is **private** (Q4). Don't publish them.
 9. **Note audition** (owner request, 24 Nov): the editor can play notes on the connected Virus to test patch changes without a keyboard. Details in §5.9.
 
+10. **Settings persistence** (G3): the app remembers MIDI port names, synth channel, device ID, edited part, audition settings, last tab and bank, import/export folders and window geometry in a versioned `settings.json` in the data directory (next to the library). Loading tolerates unknown or invalid fields (defaults), a corrupt file is renamed to `.bak` with a visible notice, and a saved port that no longer exists is not selected (auto-detect instead). Hold/latch is never persisted. Our own JSON file was chosen over eframe's `persistence` for per-field validation and testability.
+11. **File dialogs and import/export** (U5) run off the UI thread (`dialogs.rs`): one task at a time with a busy indicator. File reads and writes happen on the worker; all database work stays on the UI thread.
+
 ### 5.9 Note audition
 
 **Why:** the owner edits sounds with no keyboard attached and needs to hear each change immediately. The Virus' own *Audition* (UP+DOWN on the panel, manual p. 90) plays only C3; the editor should do more.
@@ -376,11 +384,13 @@ Detailed tasks are in [TODO.md](TODO.md).
 | 5. GUI (`virus-app`) | ✅ Rebuilt 24 Nov on the new crates (generated editor, Assign panel, 128-slot librarian, synth transfer). ⚠️ Not yet started on a machine with a GPU (TODO G1), not yet tried with the synth (G2) |
 | 6. In progress | Note audition (keyboard, audition, panic; TODO N items) |
 | 7. Needs the synth | Live tests (G2), destination names (Q1), value lists (Q3), banks E–H (Q2) |
-| 8. Later | Settings persistence (G3), synth globals (F3), Multi part selection and Multi editing (§4.4), controller-dump sync, arrangement/total dump import |
+| 8. Later | Synth globals (F3), Multi part selection and Multi editing (§4.4), controller-dump sync, arrangement/total dump import |
 
 ---
 
 ## 9. Changelog
+* **2026-11-24 (evening)**
+  * Settings persistence (G3), off-thread file dialogs and import/export (U5) and the optional SysEx "Select on synth" (F7, C32 bank value to be verified on hardware).
 * **2026-11-24 (afternoon)**
   * Library crates reworked in parallel (`virus-syx`, `virus-midi`, `virus-db`) and merged into `rework/integration`.
   * Factory `.mid` files found to be LF→CR damaged; clean Banks A/B recovered from the SoundDiver `.lib` into `testdata/factory`.

@@ -184,6 +184,15 @@ impl Audition {
         out
     }
 
+    pub fn octave(&self) -> i8 {
+        self.octave
+    }
+
+    /// Restores a saved octave at startup (no notes can be sounding yet).
+    pub fn set_octave(&mut self, octave: i8) {
+        self.octave = octave.clamp(MIN_OCTAVE, MAX_OCTAVE);
+    }
+
     pub fn shift_octave(&mut self, delta: i8) -> Vec<Message> {
         let octave = self
             .octave
