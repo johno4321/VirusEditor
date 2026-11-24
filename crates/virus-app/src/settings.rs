@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use virus_midi::MidiCommand;
+use virus_midi::{find_port_or_renamed, MidiCommand};
 use virus_syx::{DEVICE_ID_OMNI, PART_SINGLE_BUFFER};
 
 use crate::audition::{AuditionSettings, MAX_OCTAVE, MIN_OCTAVE};
@@ -114,11 +114,14 @@ pub struct UiPrefs {
     pub bank: Option<String>,
     /// F7: also select the loaded library patch on the synth.
     pub select_on_synth: bool,
+    /// The Store dialog fetches the synth's edit buffer before storing (other controllers may
+    /// have changed it behind the editor's back).
+    pub fetch_before_store: bool,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { tab: "editor".to_owned(), bank: None, select_on_synth: false }
+        Self { tab: "editor".to_owned(), bank: None, select_on_synth: false, fetch_before_store: false }
     }
 }
 
@@ -398,24 +401,19 @@ impl SettingsStore {
     }
 }
 
-/// Applies the saved ports once, when the first port list arrives. A saved port that is
-/// present is selected and connected; one that vanished is not selected and auto-detect is
-/// switched on, so the Virus is still found.
+/// Applies the saved ports once, when the first port list arrives. The saved names become the
+/// wanted ports (kept even if absent, so they reconnect later); a saved port that is present or
+/// renamed is connected. If one is missing, auto-detect is switched on so the Virus is still
+/// found meanwhile.
 pub fn restore_ports(ports: &mut Ports, prefs: &MidiPrefs, inputs: &[String], outputs: &[String]) -> Vec<MidiCommand> {
-    let mut commands = Vec::new();
-    let input = prefs.input.as_ref().filter(|n| inputs.contains(n));
-    let output = prefs.output.as_ref().filter(|n| outputs.contains(n));
-    if let Some(name) = input {
-        ports.selected_input = Some(name.clone());
-        commands.push(MidiCommand::ConnectInput(name.clone()));
-    }
-    if let Some(name) = output {
-        ports.selected_output = Some(name.clone());
-        commands.push(MidiCommand::ConnectOutput(name.clone()));
-    }
-    let missing = (prefs.input.is_some() && input.is_none()) || (prefs.output.is_some() && output.is_none());
+    let found = |wanted: &Option<String>, available: &[String]| {
+        wanted.as_deref().is_none_or(|w| find_port_or_renamed(w, available).is_some())
+    };
+    let missing = !found(&prefs.input, inputs) || !found(&prefs.output, outputs);
+    ports.wanted_input.clone_from(&prefs.input);
+    ports.wanted_output.clone_from(&prefs.output);
     ports.auto_connect = prefs.auto_connect || missing;
-    commands
+    ports.on_port_list(inputs.to_vec(), outputs.to_vec())
 }
 
 #[cfg(test)]
@@ -444,7 +442,12 @@ mod tests {
                 device_id: DEVICE_ID_OMNI,
                 part: 2,
             },
-            ui: UiPrefs { tab: "librarian".into(), bank: Some("Bank B".into()), select_on_synth: true },
+            ui: UiPrefs {
+                tab: "librarian".into(),
+                bank: Some("Bank B".into()),
+                select_on_synth: true,
+                fetch_before_store: true,
+            },
             window: Some(WindowPrefs { width: 1400.0, height: 900.0, x: Some(10.0), y: Some(20.0), maximized: false }),
             ..Settings::default()
         };
@@ -459,6 +462,7 @@ mod tests {
     fn defaults_keep_hold_off_and_select_off() {
         let s = Settings::default();
         assert!(!s.ui.select_on_synth);
+        assert!(!s.ui.fetch_before_store, "fetching before a store is opt-in");
         assert!(!serialize(&s).contains("latch") && !serialize(&s).contains("hold"));
         assert!(s.midi.auto_connect);
     }
@@ -576,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn vanished_ports_are_not_selected_and_auto_detect_returns() {
+    fn vanished_ports_are_remembered_and_auto_detect_stands_in() {
         let prefs = MidiPrefs {
             input: Some("Gone In".into()),
             output: Some("Virus Out".into()),
@@ -585,12 +589,26 @@ mod tests {
         };
         let mut ports = Ports::default();
         let commands = restore_ports(&mut ports, &prefs, &names(&["Virus In"]), &names(&["Virus Out"]));
-        assert_eq!(commands, vec![MidiCommand::ConnectOutput("Virus Out".into())]);
-        assert_eq!(ports.selected_input, None);
+        assert_eq!(commands, vec![MidiCommand::ConnectInput("Virus In".into()), MidiCommand::ConnectOutput("Virus Out".into())]);
+        assert_eq!(ports.selected_input, Some("Virus In".into()));
         assert!(ports.auto_connect);
-        // The regular reconcile then auto-detects the input.
         let more = ports.on_port_list(names(&["Virus In"]), names(&["Virus Out"]));
-        assert_eq!(more, vec![MidiCommand::ConnectInput("Virus In".into())]);
+        assert!(more.is_empty());
+        assert_eq!(ports.wanted_input.as_deref(), Some("Gone In"), "the saved name is remembered");
+    }
+
+    #[test]
+    fn saved_port_renamed_by_windows_is_connected_without_auto_detect() {
+        let prefs = MidiPrefs {
+            output: Some("mioXC MIDI OUT".into()),
+            auto_connect: false,
+            ..MidiPrefs::default()
+        };
+        let mut ports = Ports::default();
+        let commands = restore_ports(&mut ports, &prefs, &[], &names(&["2- mioXC MIDI OUT"]));
+        assert_eq!(commands, vec![MidiCommand::ConnectOutput("2- mioXC MIDI OUT".into())]);
+        assert!(!ports.auto_connect);
+        assert_eq!(ports.wanted_output.as_deref(), Some("mioXC MIDI OUT"));
     }
 
     #[test]

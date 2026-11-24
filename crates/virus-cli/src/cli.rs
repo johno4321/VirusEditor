@@ -208,6 +208,13 @@ pub enum Command {
         #[arg(long, value_name = "MS", default_value_t = 1000)]
         listen_ms: u64,
     },
+    /// Silence the synth: All Notes Off (CC123) and All Sound Off (CC120) on --channel, or on
+    /// every channel with --all-channels. Needs only the output port.
+    Panic {
+        /// Send on all 16 channels instead of --channel.
+        #[arg(long)]
+        all_channels: bool,
+    },
     /// Q1: step a destination through raw values and record what the display shows.
     ProbeDestinations {
         #[arg(long, value_enum, default_value = "assign1")]
@@ -278,6 +285,16 @@ mod tests {
         assert_eq!(cli.conn.timeout_ms, 3000);
         assert!(Cli::try_parse_from(["virus", "get-bank", "A"]).is_err(), "--out-file is required");
         assert!(Cli::try_parse_from(["virus", "--device", "0", "ports"]).is_err());
+    }
+
+    #[test]
+    fn panic_uses_the_global_channel_or_all_channels() {
+        let cli = Cli::try_parse_from(["virus", "panic", "--channel", "11"]).unwrap();
+        assert_eq!(cli.conn.channel, 10);
+        assert!(matches!(cli.command, Command::Panic { all_channels: false }));
+        let cli = Cli::try_parse_from(["virus", "panic", "--all-channels", "--out", "mioXC"]).unwrap();
+        assert!(matches!(cli.command, Command::Panic { all_channels: true }));
+        assert!(Cli::try_parse_from(["virus", "panic", "--channel", "17"]).is_err());
     }
 
     #[test]

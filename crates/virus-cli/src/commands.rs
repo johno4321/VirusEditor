@@ -50,6 +50,7 @@ pub fn run(cli: Cli) -> Outcome {
         }
         Command::Set { param, value, force, verify } => set(conn, param, value, force, verify),
         Command::SendHex { hex, yes, listen_ms } => send_hex(conn, &hex.join(" "), yes, listen_ms),
+        Command::Panic { all_channels } => panic_command(conn, all_channels),
         Command::ProbeDestinations { slot, from, to, out_file, probe } => {
             let plan = destination_plan(slot, range(from, to)?);
             probe_command(conn, &plan, &out_file, &probe)
@@ -391,6 +392,17 @@ fn send_hex(conn: &ConnArgs, text: &str, yes: bool, listen_ms: u64) -> Outcome {
         }
     });
     println!("{arrived} message(s) arrived.");
+    Ok(true)
+}
+
+fn panic_command(conn: &ConnArgs, all_channels: bool) -> Outcome {
+    use crate::transport::Transport;
+    let mut link = MidiLink::open(None, conn.output.as_deref(), false, true, conn.verbose)?;
+    for message in crate::messages::panic_messages(conn.channel, all_channels) {
+        link.send(&message)?;
+    }
+    let scope = if all_channels { "all 16 channels".to_owned() } else { format!("channel {}", conn.channel + 1) };
+    println!("Sent All Notes Off and All Sound Off on {scope} to {}.", link.output.as_deref().unwrap_or("-"));
     Ok(true)
 }
 

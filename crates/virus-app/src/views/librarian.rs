@@ -11,8 +11,8 @@ use super::{Notice, ACCENT, DANGER, DIM, WARN};
 use crate::comforts::LibrarySlot;
 use crate::dialogs::FileJobs;
 use crate::library::{
-    first_free_slot, flagged_count, import_as_new_banks, sendable_count, slot_label, store_patch, ImportOutcome,
-    LibraryCache, LibraryQuery, MarkChecked, PendingImport, MARK_CHECKED_EXPLANATION,
+    first_free_slot, flagged_count, import_as_new_banks, plan_store, sendable_count, slot_label, store_patch,
+    ImportOutcome, LibraryCache, LibraryQuery, MarkChecked, PendingImport, StorePlan, MARK_CHECKED_EXPLANATION,
 };
 
 mod files;
@@ -40,6 +40,8 @@ pub enum LibAction {
     StoredEditor { label: String },
     /// [F9] Multi edit-buffer dumps from a file import, for the Multi tab's list.
     LooseMultis(Vec<IncomingMultiDump>),
+    /// "Fetch from synth first": request the edit buffer, adopt it, then store it in this slot.
+    FetchThenStore { bank_id: i64, program: u8 },
 }
 
 struct StoreDialog {
@@ -89,6 +91,11 @@ pub struct LibrarianView {
     pub editor_comparing: bool,
     /// [R9] A "mark as checked" waiting for confirmation.
     mark_checked: Option<MarkChecked>,
+    /// Remembered in settings.json: the Store dialog fetches the synth's edit buffer first.
+    pub fetch_before_store: bool,
+    /// Set by the app every frame: a MIDI output is connected, and the editor has unstored edits.
+    pub output_connected: bool,
+    pub editor_edited: bool,
 }
 
 /// [E6] Hover text for the store buttons while the editor compares.
@@ -769,20 +776,41 @@ impl LibrarianView {
             if let Some(reason) = blocked {
                 ui.colored_label(WARN, reason);
             }
+            let editor_patch = dialog.patch.is_none();
+            if editor_patch {
+                ui.add_enabled(
+                    self.output_connected,
+                    egui::Checkbox::new(&mut self.fetch_before_store, "Fetch from synth first"),
+                )
+                .on_hover_text(
+                    "Other controllers can change the synth behind the editor's back. Request the synth's \
+                     edit buffer and store that sound instead of the editor's copy (needs a MIDI output).",
+                )
+                .on_disabled_hover_text("Connect a MIDI output to fetch from the synth.");
+                if self.fetch_before_store && self.output_connected && self.editor_edited {
+                    ui.colored_label(WARN, "Your unsaved edits will be replaced by the synth's sound (Undo brings them back).");
+                }
+            }
             ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
                 if ui.add_enabled(bank.is_some() && blocked.is_none(), confirm).clicked() {
                     let bank_id = bank.map(|b| b.id).unwrap_or_default();
-                    match store_patch(db, bank_id, dialog.program, &patch) {
-                        Ok(id) => {
-                            actions.push(LibAction::Notice(Notice::info(format!("Stored '{}' to {label}.", patch.name()))));
-                            if dialog.patch.is_none() {
-                                actions.push(LibAction::StoredEditor { label: label.clone() }); // [comforts]
+                    if plan_store(self.fetch_before_store, editor_patch, self.output_connected) == StorePlan::FetchThenStore {
+                        actions.push(LibAction::FetchThenStore { bank_id, program: dialog.program });
+                        self.selected_program = Some(dialog.program);
+                        done = true;
+                    } else {
+                        match store_patch(db, bank_id, dialog.program, &patch) {
+                            Ok(id) => {
+                                actions.push(LibAction::Notice(Notice::info(format!("Stored '{}' to {label}.", patch.name()))));
+                                if dialog.patch.is_none() {
+                                    actions.push(LibAction::StoredEditor { label: label.clone() }); // [comforts]
+                                }
+                                self.selected_program = Some(dialog.program);
+                                self.selected_id = Some(id);
+                                done = true;
                             }
-                            self.selected_program = Some(dialog.program);
-                            self.selected_id = Some(id);
-                            done = true;
+                            Err(e) => dialog.error = Some(format!("Store failed: {e}")),
                         }
-                        Err(e) => dialog.error = Some(format!("Store failed: {e}")),
                     }
                 }
                 if ui.button("Cancel").clicked() {

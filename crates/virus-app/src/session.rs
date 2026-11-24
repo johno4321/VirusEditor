@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use virus_db::IncomingDump;
 use crate::library::queue_received;
-use virus_midi::{find_virus_ports, MidiCommand, MidiEvent};
+use virus_midi::{auto_pick_port, find_port_or_renamed, MidiCommand, MidiEvent};
 use virus_syx::{
     encode_dump_request, encode_param_change, encode_single_bank_request, is_sound_param,
     parse_sysex, single_param, DumpTarget, Page, ParamClass, Patch, SingleBank, SysExMessage,
@@ -319,10 +319,14 @@ pub struct Ports {
     pub outputs: Vec<String>,
     pub selected_input: Option<String>,
     pub selected_output: Option<String>,
+    /// The port the user chose or the settings remembered. Unlike `selected_*` it is kept while
+    /// the port is unplugged or renamed, so the app reconnects when it comes back.
+    pub wanted_input: Option<String>,
+    pub wanted_output: Option<String>,
     /// As reported by the worker's `ConnectionStatus`.
     pub connected_input: Option<String>,
     pub connected_output: Option<String>,
-    /// Connect to Virus-looking ports automatically until the user picks ports by hand.
+    /// Connect to a Virus-looking port (or the only real port) until the user picks ports by hand.
     pub auto_connect: bool,
 }
 
@@ -333,6 +337,8 @@ impl Default for Ports {
             outputs: Vec::new(),
             selected_input: None,
             selected_output: None,
+            wanted_input: None,
+            wanted_output: None,
             connected_input: None,
             connected_output: None,
             auto_connect: true,
@@ -341,17 +347,25 @@ impl Default for Ports {
 }
 
 impl Ports {
-    /// Updates the port lists. Selections whose port vanished are cleared and disconnected;
-    /// empty selections are auto-connected to the first Virus-looking port.
+    /// Updates the port lists and reconnects. The wanted port is used if present, or a port
+    /// with the same base name (Windows renames ports when the USB socket changes); else
+    /// auto-connect picks one, else the input/output is disconnected.
     pub fn on_port_list(&mut self, inputs: Vec<String>, outputs: Vec<String>) -> Vec<MidiCommand> {
         let mut commands = Vec::new();
-        if let Some(cmd) = reconcile(&mut self.selected_input, &inputs, self.auto_connect, Side::Input) {
-            commands.push(cmd);
-        }
-        if let Some(cmd) = reconcile(&mut self.selected_output, &outputs, self.auto_connect, Side::Output)
-        {
-            commands.push(cmd);
-        }
+        commands.extend(reconcile(
+            &mut self.wanted_input,
+            &mut self.selected_input,
+            &inputs,
+            self.auto_connect,
+            Side::Input,
+        ));
+        commands.extend(reconcile(
+            &mut self.wanted_output,
+            &mut self.selected_output,
+            &outputs,
+            self.auto_connect,
+            Side::Output,
+        ));
         self.inputs = inputs;
         self.outputs = outputs;
         commands
@@ -366,6 +380,7 @@ impl Ports {
     pub fn select_input(&mut self, name: Option<String>) -> MidiCommand {
         self.auto_connect = false;
         self.selected_input.clone_from(&name);
+        self.wanted_input.clone_from(&name);
         name.map_or(MidiCommand::DisconnectInput, MidiCommand::ConnectInput)
     }
 
@@ -373,6 +388,7 @@ impl Ports {
     pub fn select_output(&mut self, name: Option<String>) -> MidiCommand {
         self.auto_connect = false;
         self.selected_output.clone_from(&name);
+        self.wanted_output.clone_from(&name);
         name.map_or(MidiCommand::DisconnectOutput, MidiCommand::ConnectOutput)
     }
 
@@ -387,26 +403,36 @@ enum Side {
     Output,
 }
 
-fn reconcile(selected: &mut Option<String>, available: &[String], auto: bool, side: Side) -> Option<MidiCommand> {
-    match selected {
-        Some(name) if !available.contains(name) => {
-            *selected = None;
-            Some(match side {
-                Side::Input => MidiCommand::DisconnectInput,
-                Side::Output => MidiCommand::DisconnectOutput,
-            })
-        }
-        Some(_) => None,
+/// Decides which port `selected` should be and returns the command if that changes. A wanted
+/// name that cannot be found is kept; auto-connect remembers its pick only when nothing was wanted.
+fn reconcile(
+    wanted: &mut Option<String>,
+    selected: &mut Option<String>,
+    available: &[String],
+    auto: bool,
+    side: Side,
+) -> Option<MidiCommand> {
+    let target = match wanted.as_deref().and_then(|w| find_port_or_renamed(w, available)) {
+        Some(found) => Some(found),
         None if auto => {
-            let name = find_virus_ports(available).into_iter().next()?;
-            *selected = Some(name.clone());
-            Some(match side {
-                Side::Input => MidiCommand::ConnectInput(name),
-                Side::Output => MidiCommand::ConnectOutput(name),
-            })
+            let pick = auto_pick_port(available);
+            if wanted.is_none() {
+                wanted.clone_from(&pick);
+            }
+            pick
         }
         None => None,
+    };
+    if target == *selected {
+        return None;
     }
+    selected.clone_from(&target);
+    Some(match (target, side) {
+        (Some(name), Side::Input) => MidiCommand::ConnectInput(name),
+        (Some(name), Side::Output) => MidiCommand::ConnectOutput(name),
+        (None, Side::Input) => MidiCommand::DisconnectInput,
+        (None, Side::Output) => MidiCommand::DisconnectOutput,
+    })
 }
 
 /// Rx/Tx activity LEDs.
@@ -822,6 +848,59 @@ mod tests {
         let mut ports = Ports::default();
         assert_eq!(ports.select_output(None), MidiCommand::DisconnectOutput);
         assert!(ports.on_port_list(names(&["Virus In"]), names(&["Virus Out"])).is_empty());
+    }
+
+    #[test]
+    fn renamed_port_is_reconnected_and_the_wanted_name_is_kept() {
+        let mut ports = Ports::default();
+        ports.select_output(Some("mioXC MIDI OUT".into()));
+        let commands = ports.on_port_list(vec![], names(&["2- mioXC MIDI OUT"]));
+        assert_eq!(commands, vec![MidiCommand::ConnectOutput("2- mioXC MIDI OUT".into())]);
+        assert_eq!(ports.selected_output.as_deref(), Some("2- mioXC MIDI OUT"));
+        assert_eq!(ports.wanted_output.as_deref(), Some("mioXC MIDI OUT"));
+        assert!(ports.on_port_list(vec![], names(&["2- mioXC MIDI OUT"])).is_empty());
+    }
+
+    #[test]
+    fn port_returns_after_being_gone() {
+        let mut ports = Ports::default();
+        ports.select_output(Some("mioXC MIDI OUT".into()));
+        ports.on_port_list(vec![], names(&["mioXC MIDI OUT"]));
+        ports.on_status(None, Some("mioXC MIDI OUT".into()));
+        assert_eq!(ports.on_port_list(vec![], vec![]), vec![MidiCommand::DisconnectOutput]);
+        assert_eq!(ports.selected_output, None);
+        assert_eq!(ports.wanted_output.as_deref(), Some("mioXC MIDI OUT"));
+        let back = ports.on_port_list(vec![], names(&["3- mioXC MIDI OUT"]));
+        assert_eq!(back, vec![MidiCommand::ConnectOutput("3- mioXC MIDI OUT".into())]);
+    }
+
+    #[test]
+    fn user_chosen_port_is_kept_when_auto_connect_would_pick_another() {
+        let mut ports = Ports { wanted_output: Some("UM-ONE".into()), ..Ports::default() };
+        let commands = ports.on_port_list(vec![], names(&["UM-ONE", "Virus Out"]));
+        assert_eq!(commands, vec![MidiCommand::ConnectOutput("UM-ONE".into())]);
+        assert_eq!(ports.wanted_output.as_deref(), Some("UM-ONE"));
+        // While it is missing, auto-connect may stand in, but the wish is not overwritten.
+        let commands = ports.on_port_list(vec![], names(&["Virus Out"]));
+        assert_eq!(commands, vec![MidiCommand::ConnectOutput("Virus Out".into())]);
+        assert_eq!(ports.wanted_output.as_deref(), Some("UM-ONE"));
+        let commands = ports.on_port_list(vec![], names(&["UM-ONE", "Virus Out"]));
+        assert_eq!(commands, vec![MidiCommand::ConnectOutput("UM-ONE".into())]);
+    }
+
+    #[test]
+    fn auto_connect_falls_back_to_the_only_real_port() {
+        let mut ports = Ports::default();
+        let commands = ports.on_port_list(
+            names(&["mioXC MIDI IN"]),
+            names(&["Microsoft GS Wavetable Synth", "mioXC MIDI OUT"]),
+        );
+        assert_eq!(
+            commands,
+            vec![MidiCommand::ConnectInput("mioXC MIDI IN".into()), MidiCommand::ConnectOutput("mioXC MIDI OUT".into())]
+        );
+        let mut ports = Ports::default();
+        assert!(ports.on_port_list(vec![], names(&["mioXC MIDI OUT", "loopMIDI"])).is_empty());
     }
 
     #[test]

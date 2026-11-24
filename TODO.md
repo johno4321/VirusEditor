@@ -203,7 +203,14 @@ Earlier milestones, all ✅ on 24 Nov: baseline toolchain, sources re-read, SPEC
 | R7 | ✅ | Escape `%` and `_` in librarian search (`LIKE … ESCAPE`) | `escape_like`; test `query_filters_and_like_escaping` |
 | R8 | ✅ | Show export write failures in the status bar | Done: `library::export_bank_file` errors (empty bank, write failure) shown (tested) |
 | R9 | ✅ | Patches migrated from an old v1 library are flagged `checksum_ok = 0` (RV-L1), so bank send/export skip them by default, and there's no UI to clear the flag. Add "mark as checked" per patch/bank, ideally after passing them through the synth (F6) | From the review-fixes handoff (24 Nov). **Done 24 Nov:** `mark_checked` / `mark_bank_checked` in virus-db; "✔ Mark as checked…" per patch and per bank with an explanation. Passing patches through the synth (F6) is still the better check |
+| R10 | ✅ | **Port renames:** Windows may rename a port when the USB socket changes ("mioXC MIDI OUT" → "2- mioXC MIDI OUT"). Reconnect to the port with the same base name (leading "<digits>- " stripped, case-insensitive), keep the remembered name, and reconnect when the port returns. Auto-pick with nothing saved: a Virus-looking port, else the only real port (not Microsoft GS Wavetable) | `virus_midi::ports` (`find_port_or_renamed`, `auto_pick_port`, shared with the CLI); `session::Ports` `wanted_*`; tests for rename, return, user choice kept, only-real-port |
+| R11 | ✅ | **Panic everywhere:** header "🛑 Panic" button (note-offs, CC123, CC120 on the synth channel; in Multi mode also on every enabled part's channel); CLI `virus panic [--all-channels]` | `VirusApp::panic`, `MultiSession::panic_channels`, `Audition::panic_on`; `virus-cli` `panic_messages`; parse test |
+| R12 | ✅ | **Stale edit buffer:** other controllers can change the Virus behind the editor's back. The Store dialog has "Fetch from synth first" (only with an output connected; remembered in `settings.json`): it requests the edit buffer, adopts it, then stores. Overwrite confirmation stays (RV-H1) | `library::plan_store` / `PendingStore` (5 s timeout, nothing stored on timeout or bad checksum); `LibAction::FetchThenStore` |
+| R13 | 🔲 | **Live check** of R10–R12 on the real studio: mioXC reconnect after a socket change, Panic on channel 11 and on the Multi part channels, Fetch-before-store with knobs moved on the Virus | Needs the hardware |
 
+**Studio notes (not code):**
+* Multi parts must be on the planned MIDI channels and routed to **Out 1** (the outputs the Kenton merge and the mioXC listen to).
+* **USB selective suspend must be off** in Windows power settings, or the mioXC can drop off the bus and be renamed.
 ## ⚪ Performance and UX
 
 | # | Status | Item | Notes |
