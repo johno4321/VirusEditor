@@ -46,14 +46,14 @@ impl Notice {
 
     pub fn colour(&self) -> Color32 {
         match self.level {
-            Level::Info => Color32::from_rgb(160, 165, 180),
-            Level::Warning => Color32::from_rgb(235, 190, 70),
-            Level::Error => Color32::from_rgb(240, 90, 70),
+            Level::Info => crate::theme::DIM,
+            Level::Warning => crate::theme::WARN,
+            Level::Error => crate::theme::DANGER,
         }
     }
 }
 
-pub const DIM: Color32 = Color32::from_rgb(120, 125, 140);
-pub const ACCENT: Color32 = Color32::from_rgb(220, 70, 40);
-pub const WARN: Color32 = Color32::from_rgb(235, 190, 70);
-pub const DANGER: Color32 = Color32::from_rgb(240, 90, 70);
+pub const DIM: Color32 = crate::theme::DIM;
+pub const ACCENT: Color32 = crate::theme::ACCENT_TEXT;
+pub const WARN: Color32 = crate::theme::WARN;
+pub const DANGER: Color32 = crate::theme::DANGER;

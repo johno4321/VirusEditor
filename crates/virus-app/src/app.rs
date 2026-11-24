@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use eframe::{egui, App, Frame};
-use egui::{CentralPanel, Color32, RichText, TopBottomPanel, Visuals};
+use egui::{CentralPanel, RichText, TopBottomPanel};
 use virus_db::PatchDatabase;
 use virus_midi::{MidiCommand, MidiEvent, MidiService, ReleaseTrigger};
 use virus_syx::Patch;
@@ -11,8 +11,9 @@ use virus_syx::Patch;
 use crate::audition::Audition;
 use crate::session::{Activity, Incoming, Ports, Session};
 use crate::storage::{open_library, LibraryLocation};
+use crate::theme::{self, DARK_RED, ON_RED};
 use crate::views::librarian::{LibAction, LibrarianView, BANK_SEND_GAP_MS};
-use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, ACCENT, DANGER, DIM};
+use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, DANGER, DIM};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
@@ -40,13 +41,7 @@ pub struct VirusApp {
 
 impl VirusApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut visuals = Visuals::dark();
-        visuals.panel_fill = Color32::from_rgb(22, 24, 28);
-        visuals.window_fill = Color32::from_rgb(26, 28, 34);
-        visuals.extreme_bg_color = Color32::from_rgb(14, 15, 18);
-        visuals.selection.bg_fill = Color32::from_rgb(200, 60, 40);
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(240, 160, 60));
-        cc.egui_ctx.set_visuals(visuals);
+        crate::theme::apply(&cc.egui_ctx);
 
         let mut notice = Notice::info("Ready. Select the MIDI ports, or let auto-detect find the Virus.");
         let midi = match MidiService::spawn() {
@@ -252,14 +247,17 @@ impl VirusApp {
 
     fn header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("ACCESS VIRUS").strong().size(16.0).color(ACCENT));
-            ui.label(RichText::new("Rack Editor & Librarian").size(12.0).color(DIM));
+            ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, DARK_RED);
+            ui.label(RichText::new("ACCESS VIRUS").strong().size(18.0).color(ON_RED));
+            ui.label(RichText::new("Rack Editor & Librarian").size(12.0).color(ON_RED));
             ui.separator();
-            ui.selectable_value(&mut self.tab, Tab::Editor, "🎹 Sound Editor");
-            ui.selectable_value(&mut self.tab, Tab::Modulation, "🔀 Modulation");
-            ui.selectable_value(&mut self.tab, Tab::Librarian, "📚 Librarian");
+            theme::tab(ui, &mut self.tab, Tab::Editor, "🎹 Sound Editor");
+            theme::tab(ui, &mut self.tab, Tab::Modulation, "🔀 Modulation");
+            theme::tab(ui, &mut self.tab, Tab::Librarian, "📚 Librarian");
             ui.separator();
-            ui.label(RichText::new(self.session.patch().name()).monospace().strong())
+            theme::lcd_frame()
+                .show(ui, |ui| ui.label(theme::lcd_text(self.session.patch().name())))
+                .response
                 .on_hover_text(format!("Edited patch, from {}", self.origin));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -279,7 +277,9 @@ impl VirusApp {
         });
         match &self.location {
             LibraryLocation::InMemory { reason } => {
-                ui.colored_label(DANGER, format!("⚠ The library is in memory only — nothing will be saved ({reason})."));
+                theme::lcd_frame().show(ui, |ui| {
+                    ui.colored_label(DANGER, format!("⚠ The library is in memory only — nothing will be saved ({reason})."));
+                });
             }
             LibraryLocation::File(_) => {}
         }
@@ -290,7 +290,7 @@ impl App for VirusApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         self.poll_midi();
 
-        TopBottomPanel::top("header").show(ctx, |ui| {
+        TopBottomPanel::top("header").frame(theme::header_frame()).show(ctx, |ui| {
             ui.add_space(4.0);
             self.header(ui);
             ui.add_space(4.0);

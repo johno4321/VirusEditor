@@ -7,6 +7,7 @@ mod audition;
 mod library;
 mod session;
 mod storage;
+mod theme;
 mod views;
 mod widgets;
 

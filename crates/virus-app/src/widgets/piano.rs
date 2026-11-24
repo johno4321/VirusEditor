@@ -3,6 +3,7 @@
 //! The widget only reports presses and releases; [`crate::audition::Audition`] turns them into
 //! MIDI and tracks what is sounding.
 
+use crate::theme;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Sense, Stroke, Ui, Vec2};
 use virus_midi::notes::note_name;
 
@@ -191,9 +192,8 @@ impl Piano {
 
     fn paint(&self, ui: &Ui, rect: Rect, mouse_note: Option<u8>) {
         let painter = ui.painter_at(rect);
-        let visuals = ui.visuals();
-        let held_colour = visuals.selection.bg_fill;
-        let outline = Stroke::new(1.0_f32, Color32::from_gray(60));
+        let held_colour = theme::KEY_HELD;
+        let outline = Stroke::new(1.0_f32, theme::KEY_OUTLINE);
         let dim = |c: Color32| {
             if self.enabled {
                 c
@@ -209,7 +209,7 @@ impl Piano {
             let fill = if held(n) {
                 held_colour
             } else {
-                Color32::from_gray(235)
+                theme::KEY_WHITE
             };
             painter.rect_filled(r, Rounding::same(2.0_f32), dim(fill));
             painter.rect_stroke(r, Rounding::same(2.0_f32), outline);
@@ -219,7 +219,7 @@ impl Piano {
                     Align2::CENTER_BOTTOM,
                     note_name(n),
                     FontId::proportional(9.0),
-                    dim(Color32::from_gray(80)),
+                    dim(theme::KEY_LABEL),
                 );
             }
         }
@@ -228,7 +228,7 @@ impl Piano {
             let fill = if held(n) {
                 held_colour
             } else {
-                Color32::from_gray(25)
+                theme::KEY_BLACK
             };
             painter.rect_filled(r, Rounding::same(2.0_f32), dim(fill));
             painter.rect_stroke(r, Rounding::same(2.0_f32), outline);

@@ -4,7 +4,7 @@ use egui::{RichText, ScrollArea, TextEdit, Ui};
 use virus_syx::{single_param, Page, ParamClass, ParamDef, Patch, SINGLE_PARAMS};
 
 use super::controls::param_control;
-use super::{Edit, ACCENT, DIM};
+use super::{Edit, DIM};
 use crate::session::sanitize_name;
 use crate::widgets::{EnvelopeCurve, EnvelopeParams, FilterCurve, FilterParams};
 
@@ -111,9 +111,7 @@ impl EditorView {
 }
 
 fn section(ui: &mut Ui, name: &str, defs: &[&'static ParamDef], patch: &Patch, edits: &mut Vec<Edit>) {
-    ui.group(|ui| {
-        ui.set_width(ui.available_width());
-        ui.label(RichText::new(name).strong().color(ACCENT));
+    crate::theme::section(ui, name, None, |ui| {
         ui.horizontal_wrapped(|ui| {
             for def in defs {
                 param_control(ui, patch, def, edits);
