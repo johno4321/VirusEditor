@@ -30,6 +30,8 @@ pub enum LibAction {
     SendBank { bank_id: i64, policy: BadChecksumPolicy },
     CancelBatch,
     Notice(Notice),
+    /// [comforts] The editor's own patch was stored in a library slot (clears "edited").
+    StoredEditor { label: String },
 }
 
 struct StoreDialog {
@@ -665,6 +667,9 @@ impl LibrarianView {
                     match store_patch(db, bank_id, dialog.program, &patch) {
                         Ok(id) => {
                             actions.push(LibAction::Notice(Notice::info(format!("Stored '{}' to {label}.", patch.name()))));
+                            if dialog.patch.is_none() {
+                                actions.push(LibAction::StoredEditor { label: label.clone() }); // [comforts]
+                            }
                             self.selected_program = Some(dialog.program);
                             self.selected_id = Some(id);
                             done = true;

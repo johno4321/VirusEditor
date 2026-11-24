@@ -1,6 +1,7 @@
 //! UI panels. They only read the patch and the database and report what the user did;
 //! the app applies edits through `Session` so every change is also sent to the synth.
 
+pub mod comforts;
 pub mod controls;
 pub mod editor;
 pub mod librarian;
