@@ -132,6 +132,12 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | U4 | ✅ | Confirm before overwriting a slot | Done: the store dialog names the occupant and the button becomes "Overwrite A005" |
 | U5 | ⬜ | Move file dialogs and import off the UI thread | Still synchronous (a bank imports in well under a second) |
 
+## 🎨 Look and feel
+
+| # | Status | Item | Notes |
+|---|---|---|---|
+| V1 | ⬜ | **Match the Virus Rack's colours: red and black** (owner, 24 Nov). The front panel is signal red with black legends; the chassis, knobs and buttons are black or dark grey; the LEDs are amber; the LCD is dark with light characters | Palette in SPEC §5.10. Apply to the egui `Visuals` theme, knob widget, LEDs, tabs/headers and curve views. Keep text contrast readable (WCAG AA) on red. One central `theme.rs` so it can be tuned later |
+
 ## 🧹 Housekeeping
 
 | # | Status | Item | Notes |

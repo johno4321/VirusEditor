@@ -284,6 +284,21 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 7. **Sending banks overwrites RAM irrevocably** (manual p. 177). Confirm before sending A/B bank dumps, and offer a backup first (request A and B).
 8. **Bundled third-party material:** the manual, addenda, OS files and factory sounds are © Access Music. They stay in this repository only because it is **private** (Q4). Don't publish them.
 
+### 5.10 Look and feel (owner requirement, 24 Nov)
+The UI should look like the Virus Rack's front panel: **red and black**. Starting palette, taken from a photo of the unit (tune on a real screen):
+
+| Role | Colour | Where |
+|---|---|---|
+| Panel red | `#D7262B` (signal red) | Header bar, section frames, selected tab, active knob arc, accents |
+| Panel red, dark | `#9E1B1F` | Hover/pressed states, the big "VIRUS" lettering style for watermarks |
+| Chassis black | `#141414` | Window and panel backgrounds |
+| Control black | `#1E1E1E` / `#2A2A2A` | Knob bodies, buttons, combo boxes |
+| Legend | `#0A0A0A` on red, `#E8E8E8` on black | Labels; text on red must stay readable (WCAG AA) |
+| LED amber | `#FFB000` | Rx/Tx and section LEDs, knob pointer |
+| LCD | dark slate `#1C2A33` with light text `#CFE3EA` | Patch name / value readouts |
+
+Keep all colours in one theme module so they can be adjusted in one place.
+
 ---
 
 ## 6. Ground-Truth Test Data
