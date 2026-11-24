@@ -1,8 +1,8 @@
 # virus-cli (`virus`)
 
 A headless command-line tool for working with an **Access Virus Rack (OS 2.00)** over MIDI.
-It's built for the first live session, when the MIDI cable arrives: the G2 live tests and open
-questions Q1–Q3 (SPEC §7) can be run quickly without the GUI.
+It runs the G2 live tests and open questions Q1–Q3 (SPEC §7) quickly without the GUI. It was
+first used with the real synth on 24 Nov (results in TODO G2).
 
 It uses the workspace crates: `virus-syx` for SysEx encoding, parsing, the parameter table and
 `Patch`; `virus-midi` (`MidiService`) for the transport; and `virus-db` for the optional library
@@ -21,7 +21,7 @@ cargo build --release -p virus-cli          # → target\release\virus.exe
 |---|---|---|
 | `--in <name part>` / `--out <name part>` | the only Virus-looking port, else the only real port | MIDI ports. Matching is a case-insensitive substring; an exact name wins |
 | `--device <1-16\|omni>` | `1` (`0x00`, the default since OS 1.50) | SysEx device ID |
-| `--channel <1-16>` | `1` | The synth's channel. `monitor` uses it to interpret CC and Poly Pressure |
+| `--channel <1-16>` | `1` | The synth's channel. `monitor` uses it to interpret CC and Poly Pressure. **The owner's Virus is on 11**, so pass `--channel 11` |
 | `--part <single\|1-16>` | `single` (`0x40`) | Which edit buffer to use: the Single buffer or a Multi part |
 | `--timeout-ms <ms>` | `3000` | How long to wait for an answer. For bank requests it's the longest allowed gap between two dumps |
 | `--settle-ms <ms>` | `60` | Pause after a parameter change or dump before reading it back |
@@ -106,6 +106,10 @@ Record the result in TODO F7/G2. If it's 1-based, change `virus-app/src/synth_se
 
 ## First cable session runbook
 
+**Status (24 Nov):** steps 1–6 are done (results in TODO G2). Steps 7–9 were deferred until audio
+was wired; steps 10–14 and 12a are still to do. Stop the sequencer transport (MIDI clock) before
+dump requests and bank sends.
+
 **Before you start**
 * Connect **both** cables: the Virus MIDI OUT to the interface IN, and the interface OUT to the
   Virus MIDI IN. Every request needs the answer path.
@@ -151,8 +155,8 @@ The modules that hold the logic are pure and unit-tested without hardware:
 
 | Module | What it does |
 |---|---|
-| `settings`, `address` | Parse device IDs, parts, channels, bank letters, `A40`/`B39` and values |
-| `messages` | Build every outgoing message |
+| `settings`, `address` | Parse device IDs, parts, channels, bank letters, `A40`/`B39`/`C32` and values; guard risky parameters (`--force`) |
+| `messages` | Build every outgoing message; parse and check `send-hex` input |
 | `transport` | The `Transport` trait, plus collectors fed with `MidiEvent`s: edit buffer, 128-dump bank, first Virus answer. Also `exchange()`, which handles idle timeouts and diagnostics |
 | `ops` | Fetch, send, set, get/put bank, verify |
 | `probe` | Plans, records/JSON, the runner with restore, and the prompter |

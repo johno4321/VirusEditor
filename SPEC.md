@@ -45,7 +45,7 @@ Page numbers below are the manual's printed page numbers (PDF page − 2).
 * **`virus-midi`:** a plain transport on its own thread (`midir` + channels). It doesn't interpret Virus messages.
 * **`virus-db`:** a byte-exact SQLite librarian (`rusqlite`, bundled). The library lives at `%APPDATA%\VirusEditor\data\virus_library.db`.
 * **`virus-app`:** a native immediate-mode GUI (`egui`/`eframe` 0.27). It renders with OpenGL 2.0+ (`glow`) and, if that fails at start-up, falls back to `wgpu` (Direct3D 12, which includes the WARP software rasteriser for machines without a GPU). `--renderer glow|wgpu` or `VIRUS_RENDERER` forces one. Logic that can be tested without the GUI lives in `session.rs`, `library.rs` and `storage.rs`.
-* **`virus-cli`:** the headless `virus` binary (`clap`) for live sessions: fetch, send, set, get-bank and put-bank, monitor, Q1/Q3 probes and a self-test. Message building, the answer collectors (fed with `MidiEvent`s) and probe planning are pure, and are tested against an in-memory fake Virus. Its README holds the first-cable-session runbook.
+* **`virus-cli`:** the headless `virus` binary (`clap`) for live sessions: fetch, send, set (Pages A, B and C), raw `send-hex`, get-bank and put-bank, monitor, Q1/Q3 probes and a self-test. Message building, the answer collectors (fed with `MidiEvent`s) and probe planning are pure, and are tested against an in-memory fake Virus. Its README holds the live-session runbook. Used with the real synth on 24 Nov (TODO G2).
 
 ---
 
@@ -55,7 +55,7 @@ Page numbers below are the manual's printed page numbers (PDF page − 2).
 VirusEditor\
 ├── Cargo.toml / Cargo.lock     # Workspace definition (lockfile committed)
 ├── .gitattributes              # .syx/.mid/.lib/.bin/.pdf are binary (never line-ending converted)
-├── SPEC.md · TODO.md · README.md
+├── SPEC.md · TODO.md · README.md · AGENTS.md (rules for AI agents) · REVIEW.md (24 Nov code review)
 ├── OSR1_Manual_International.pdf # Virus Rack manual
 ├── VirusOSR200_INT\            # OS 2.00 update: addenda (parameter tables), patch list, factory soundset (damaged .mid, §6)
 ├── testdata\factory\           # Recovered clean factory Banks A/B (.syx) + recover.py + provenance README
@@ -88,12 +88,13 @@ VirusEditor\
     │       ├── theme.rs        # Red & black palette (§5.10)
     │       ├── comforts.rs · history.rs · compare.rs · sections.rs # Undo/redo, Compare, diff, section copy/paste (E1–E5)
     │       ├── renderer.rs     # Renderer choice: OpenGL first, wgpu/WARP fallback (G1)
-    │       ├── views\          # editor.rs (generated from SINGLE_PARAMS), modulation.rs, librarian.rs, multi.rs (Multi tab), midi_bar.rs, controls.rs
+    │       ├── views\          # editor.rs (generated from SINGLE_PARAMS), modulation.rs, librarian.rs (+ librarian\files.rs: file import), multi.rs (Multi tab), comforts.rs, midi_bar.rs, controls.rs
     │       └── widgets\        # knob.rs, curves.rs (filter response, envelopes), piano.rs
     └── virus-cli\              # `virus` CLI + README runbook
         └── src\
             ├── main.rs · cli.rs · commands.rs   # clap definition, I/O shell
-            ├── transport.rs    # Transport trait, collectors (edit buffer, bank, first answer), exchange()
+            ├── settings.rs · address.rs         # device/part/channel/bank parsing; A/B/C parameter addresses and edit guards
+            ├── transport.rs    # Transport trait, collectors (edit buffer, bank, first answer), exchange(), wait_quiet
             ├── ops.rs · messages.rs · files.rs  # fetch/send/set/banks, message building, file picking
             ├── probe.rs · selftest.rs           # Q1/Q3 probes (JSON, restore), G2 checks
             ├── decode.rs · summary.rs           # monitor lines, patch summary
@@ -320,7 +321,7 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 6. **Bulk files:** import must honour `bb`. Multi dumps (`11`) in the same file go to the Multi bank (`bb=01`) or the Multi tab's loose list (`bb=00`); occupied Multi slots are confirmed like single slots.
    * `00` → edit-buffer dump. Never put it into a bank slot by its part number.
    * `01–04` → banks A–D.
-   * Multi dumps (`11`) and unknown messages are preserved or skipped, never misread as singles.
+   * Multi dumps (`11`) go to the Multi bank or the loose list (above). Unknown messages (e.g. the Global dump `12`) are skipped with a count, never misread as singles.
    * A file can hold several banks (`multis.mid` is a Total dump with edit buffers, A, B, multis and globals).
 7. **Sending banks overwrites RAM irrevocably** (manual p. 177). The same applies to the Multi bank: the app confirms, asks for a backup (all 128 multis received and saved to a file), skips flagged multis by default and paces at 300 ms. Confirm before sending A/B bank dumps, and offer a backup first (request A and B).
 8. **Bundled third-party material:** the manual, addenda, OS files and factory sounds are © Access Music. They stay in this repository only because it is **private** (Q4). Don't publish them.
@@ -409,9 +410,9 @@ Required tests: import → export is byte-identical for both banks; names and ca
 
 | # | Question | How to resolve |
 |---|---|---|
-| Q1 | Raw value → name mapping for assign destinations (0–114+) and definable destinations | **Live test** once the MIDI cable arrives: set values on the synth and request a dump |
-| Q2 | How banks E–H (OS 1.5+ ROM) are addressed in dumps and requests (`bb` 05–08?) and whether they can be requested | Live test |
-| Q3 | Full value lists for A49 (up to 30 seen), A112 (up to 29), A102, B39 | Live test |
+| Q1 | Raw value → name mapping for assign destinations (0–114+) and definable destinations | **Live test** (tool ready): `virus probe-destinations --channel 11` (also `--slot lfo1`, `--slot definable1`), then `virus probe-table` to generate the name table. CLI runbook step 10 |
+| Q2 | How banks E–H (OS 1.5+ ROM) are addressed in dumps and requests (`bb` 05–08?) and whether they can be requested | Live test: `virus get-bank E --out-file probe_E.syx --timeout-ms 2000 -v --channel 11`. Runbook step 12 |
+| Q3 | Full value lists for A49 (up to 30 seen), A112 (up to 29), A102, B39 | Live test: `virus probe-values A49 --channel 11` (likewise A112, A102, B39). Runbook step 11 |
 | ~~Q4~~ | ~~Can the Access material stay in git?~~ | **Decided 24 Nov:** the repository is private and will stay private, so the material stays |
 | ~~Q5~~ | ~~Support other Virus models?~~ | **Decided 24 Nov:** Virus Rack (classic) only for now |
 
@@ -427,15 +428,21 @@ Detailed tasks are in [TODO.md](TODO.md).
 | 2. Git setup | ✅ Lockfile committed; binary attributes for MIDI files |
 | 3. MIDI engine (`virus-midi`) | ✅ Reworked 24 Nov as a plain transport; interpretation (§5.5) moved to the app |
 | 4. Librarian DB (`virus-db`) | ✅ Reworked 24 Nov: byte-exact storage, schema v3 + migrations (v1→v2→v3), bank-aware import/export (§5.6), Multi bank storage |
-| 5. GUI (`virus-app`) | ✅ Rebuilt 24 Nov on the new crates (generated editor, Assign panel, 128-slot librarian, synth transfer). Starts and renders on the GPU-less dev VM via the wgpu/WARP fallback (TODO G1); ⚠️ not yet started on a machine with a GPU, not yet tried with the synth (G2) |
-| 6. Done 24 Nov | Note audition (TODO N items); **Multi editor and librarian** (F4/F5, §4.4) with the audition on the part's real channel (N9) |
-| 6b. CLI (`virus-cli`) | ✅ Built 24 Nov: a headless tool for the live session (runbook in `crates/virus-cli/README.md`). Not yet tried with the synth |
-| 7. Needs the synth | Live tests (G2), destination names (Q1), value lists (Q3), banks E–H (Q2). Run them with the `virus` CLI |
-| 8. Later | Synth globals (F3), sending the whole Multi bank, controller-dump sync, arrangement/total dump import |
+| 5. GUI (`virus-app`) | ✅ Rebuilt 24 Nov on the new crates (generated editor, Assign panel, 128-slot librarian, synth transfer, editor comforts). Starts and renders on the GPU-less dev VM via the wgpu/WARP fallback (TODO G1); ⚠️ not yet used with the synth (G2, E7, N8) |
+| 6. Done 24 Nov | Note audition (TODO N items); **Multi editor and librarian** (F4/F5/F9, §4.4) including the Multi bank send, with the audition on the part's real channel (N9) |
+| 6b. CLI (`virus-cli`) | ✅ Built 24 Nov and **used with the synth the same day** (TODO G2 results): fetch, param changes, bank backups, Global request, selftest 5/5. Found the timing rule (§3.7) |
+| 7. Needs the synth | Rest of the CLI runbook: audible checks, destination names (Q1), value lists (Q3), banks E–H (Q2), C32 (F7), Multi addressing, bank send. Then the GUI live checks |
+| 8. Later | Send a patch to a bank slot (F2), synth globals (F3), pass imports through the synth (F6), banks E–H (F8), controller-dump sync, arrangement/total dump import |
 
 ---
 
 ## 9. Changelog
+* **2026-11-24 (late afternoon)**
+  * **First live session** (laptop + mioXC, CLI): Virus on channel 11, Device ID 1; fetch, param changes, bank A/B backups and the Global request (`35` → `12`, §3.6) work; selftest 5/5. Found that the Virus ignores requests that come too soon (§3.7): quiet gaps added to the CLI and the app (G4); bank sends paced at 300 ms.
+  * Follow-ups: Compare/replace fixes (E6), "mark as checked" (R9), multis in the main file import and the Multi bank send (F9), tab LEDs and watermark (V2), CLI stream diagnostics.
+  * CLI: `set` for Page C (with guarded globals) and raw `send-hex`, to test the C32 question (§3.5).
+  * Studio notes (§3.7); bank-send confirmations remind you to stop the sequencer transport.
+  * 308 workspace tests, clippy clean, CI green on Windows and Ubuntu. Added `AGENTS.md` for AI agents picking up the work.
 * **2026-11-24 (evening)**
   * Settings persistence (G3), off-thread file dialogs and import/export (U5) and the optional SysEx "Select on synth" (F7, C32 bank value to be verified on hardware).
 * **2026-11-24 (late morning)**

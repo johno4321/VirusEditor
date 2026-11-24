@@ -1,33 +1,49 @@
 # VirusEditor todo list
 
-**Updated Tue 2026-11-24 11:30 UTC**, after the Multi work (F4/F5, N9) on `rework/multi`; earlier: the code review and a full re-read of the manual, both addenda, the patch list and the OS 2.00 readme. Reference facts are in [SPEC.md](SPEC.md).
+**Updated Tue 2026-11-24 17:00 UTC**, after the first live session, G4 (app quiet gaps), the follow-ups (E6, R9, F9, V2), the CLI Page C `set`/`send-hex` and the studio notes. Reference facts are in [SPEC.md](SPEC.md); rules for AI agents are in [AGENTS.md](AGENTS.md).
 Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ parked
 
-## ☀️ Start here
+## ☀️ Start here (handoff)
 
-**The goal is an editor and librarian that never corrupts a sound (SPEC §1.1).** As of 24 Nov the rework is on branch **`rework/integration`** (not merged to `main`). All 256 factory patches round-trip byte-identically; the editor, Assign panel, librarian and MIDI layer are rebuilt on the verified parameter map. What's left needs the real synth (Q1–Q3, live tests) or is feature work.
+**The goal is an editor and librarian that never corrupts a sound (SPEC §1.1).** Read [AGENTS.md](AGENTS.md) first if you're an AI agent picking this up.
 
-1. ✅ **Baseline (24 Nov):** Rust 1.100.0 + VS 2022 Build Tools. Behind the corporate proxy, cargo needs `[http] check-revoke = false` in `%USERPROFILE%\.cargo\config.toml`.
-2. ✅ **Sources re-read (24 Nov)** and SPEC.md rewritten from them.
-3. ✅ **Data-loss bugs** D1–D8, **patch model** P1–P8, **import rules** L1–L4, **golden tests** T1–T4 (24 Nov, sub-agents + sub-chats).
-4. **Next without hardware:** ✅ G1 (the GUI now starts on this VM via the wgpu/WARP fallback), ✅ the red & black theme (V1), then features F1–F7.
-5. **When the MIDI cable arrives:** use the **`virus` CLI** (`crates/virus-cli`, branch `rework/cli`). Follow the runbook in its README: back up RAM banks A/B first, then `selftest` (G2), then the Q1–Q3 probes.
-6. Review and merge `rework/integration` into `main`.
-7. ✅ **Note audition** (owner request, N1–N9, SPEC §5.9): play notes on the Virus from the editor (piano strip, computer keys, Audition, hold, phrases, panic, no stuck notes). Left: live test N8. N9 (real Multi part channels) done with F4.
-8. ✅ **Multi programs** (F4/F5, 24 Nov, branch `rework/multi`): raw-byte `Multi`, Multi parameter table with live Page C mapping, DB schema v3, Multi tab with 16 parts and a Multi bank librarian. Left: live tests (G2 Multi items).
+**State on 24 Nov, evening:**
+* Everything is on `main` and pushed to GitHub. CI is green on Windows and Ubuntu, 308 tests pass, and clippy is clean with `-D warnings`. There are no other branches, except possibly `rework/studio-robustness` (see "In flight").
+* All 256 factory patches round-trip byte-identically. The editor, Assign panel, librarian, Multi tab, note audition, editor comforts and the `virus` CLI are built.
+* **The CLI has been used with the real synth** (24 Nov; results under G2 below): ports, fetch, param changes, bank backups, Global request and selftest 5/5 all pass. The timing problem it found is fixed in the CLI and the app (SPEC §3.7).
+* **The GUI hasn't been used with the synth yet.** Its live checks are G2, E7 and N8.
+* Owner's setup: the Virus Rack is on **MIDI channel 11**, Device ID 1, through an iConnectivity mioXC on a laptop. Studio routing: SPEC §3.7 "Owner's studio".
+
+**In flight (may land after this handoff):** branch `rework/studio-robustness`. It adds: the app reconnects to renamed ports (Windows' `2- mioXC…` prefix) and auto-picks the only real port; a Panic button in the header plus `virus panic`; and "Fetch from synth first" in the Store dialog. Run `git branch -a` first. If the branch exists, don't redo the work; ask the owner whether to merge it.
+
+**What to do next.** Items marked 🎹 need the owner at the synth: an agent prepares and explains, the owner runs the commands and reports back.
+1. 🎹 **Rest of the CLI runbook** ([crates/virus-cli/README.md](crates/virus-cli/README.md), "First cable session runbook"; always pass `--channel 11`). Steps 1–6 are done. Still to do:
+   * steps 7–9 (audible checks; audio is now wired: Virus Out 1 → mixer);
+   * steps 10–11: Q1/Q3 probes. Afterwards, turn the JSON into name tables with `virus probe-table` and replace the unverified hints (P4/P7 labels).
+   * step 12 (Q2 banks E–H), step 12a (F7 C32), step 13 (Multi);
+   * step 14 (bank send) last, only with the owner's explicit go-ahead and the transport stopped.
+   Record results in the G2 results table.
+2. 🎹 **GUI live checks:** the G2 list, E7 (comforts with the synth), N8 (note audition), and a V1 on-screen check on a real screen.
+3. **Without hardware:**
+   * H11 `cargo fmt` plus a CI check. Do it when no other branch is open; it touches ~4,000 lines.
+   * F2 send a patch to a RAM bank slot.
+   * Then F3/F6/F8, which need some live input.
+4. Fix anything the live checks turn up. If F7's C32 value turns out 1-based, the fix is one line (see F7).
+
+Earlier milestones, all ✅ on 24 Nov: baseline toolchain, sources re-read, SPEC rewritten, data-loss bugs D1–D8, patch model P1–P8, import rules L1–L4, golden tests T1–T4, note audition N1–N9, Multi F4/F5/F9, comforts E1–E6, theme V1/V2, settings G3, CI H7, the review findings RV-*, live timing G4.
 
 ## Where we stand
 
 | Area | State |
 |---|---|
 | **Build** | Builds (debug + release); **308 tests pass**; `clippy --workspace --all-targets -D warnings` clean (24 Nov, after G4, the follow-ups and the CLI Page C merge); CI green on Windows and Ubuntu |
-| **`virus-syx`** | Raw 256-byte `Patch`; parameter table from the addendum; lossless enums; SysEx parse/encode with checksum reporting; `.syx`/SMF reader tolerant of the damaged factory files. **Multi:** raw 256-byte `Multi`, `MULTI_PARAMS` with live Page C mapping, golden test on all 129 multi dumps of `multis.mid`. 42 tests incl. strict factory round trips |
-| **`virus-midi`** | Plain transport: ports by name, channel-tagged input events, robust parser (R3), paced batches, all errors reported. 11 tests |
-| **`virus-db`** | Byte-exact storage, schema v3 with migrations from v1/v2, bank-aware import (one transaction) and export (A–D = 1–4), favourites/tags separate from data. **Schema v3** (v2→v3 in one transaction): `multis` table, multi import (`bb=1` → slot, `bb=0` → loose) and Multi bank export. 29 tests |
-| **`virus-app`** | Rebuilt on the raw-byte crates (24 Nov): generated editor, Assign/LFO-assign panel, librarian with import report and bank transfer, name-based MIDI ports. Note audition strip; **Multi tab** (16 parts, live Page C edits, fetch/send, Multi bank librarian, part → editor). Logic in `session.rs`/`library.rs`/`storage.rs`/`audition.rs`/`multi_session.rs` with unit tests. Not yet tried with real hardware |
-
+| **`virus-syx`** | Raw 256-byte `Patch`; parameter table from the addendum; lossless enums; SysEx parse/encode with checksum reporting; `.syx`/SMF reader tolerant of the damaged factory files. **Multi:** raw 256-byte `Multi`, `MULTI_PARAMS` with live Page C mapping, golden test on all 129 multi dumps of `multis.mid`. 44 tests incl. strict factory round trips |
+| **`virus-midi`** | Plain transport: ports by name, channel-tagged input events, robust parser (R3; ignores real-time bytes), paced batches, note audition builders, all errors reported. 30 tests |
+| **`virus-db`** | Byte-exact storage, schema v3 with migrations from v1/v2, bank-aware import (one transaction) and export (A–D = 1–4), favourites/tags separate from data. **Schema v3** (v2→v3 in one transaction): `multis` table, multi import (`bb=1` → slot, `bb=0` → loose), Multi bank export, `mark_checked`. 37 tests |
+| **`virus-app`** | Rebuilt on the raw-byte crates (24 Nov): generated editor, Assign/LFO-assign panel, librarian with import report and bank transfer, name-based MIDI ports. Note audition strip; **Multi tab** (16 parts, live Page C edits, fetch/send, Multi bank librarian and bank send, part → editor); editor comforts (undo/redo, Compare, diff, sections); requests wait for a quiet line (`PacedSend`). Logic in `session.rs`/`library.rs`/`storage.rs`/`audition.rs`/`multi_session.rs`/`comforts.rs` with unit tests. 147 tests. **Not yet used with the synth** (G2) |
 | **`virus-cli`** | Headless `virus` tool for the live session (24 Nov, `rework/cli`). Commands: `ports`, `monitor`, `fetch`, `send`, `set` (Pages A/B, and Page C with guarded globals), `send-hex` (raw SysEx, needs `--yes`), `get-bank`, `put-bank`, Q1/Q3 probes, `selftest`. Collectors and probes are pure and tested against an in-memory fake Virus. Runbook in its README. 50 tests. Used live on 24 Nov (see G2) |
 | **Studio** | Plan of 24 Nov (outside the repo: `Downloads\studio-midi-routing-plan.md`). The editor still uses mioXC IN/OUT, with the Virus on ch 11 and Device ID 1. A MERGE-4 merges the Maschine+ (the clock master) into Virus IN. Stop the transport before bank sends and dump requests; keep C95 = SysEx. Details in SPEC §3.7. Proposed channels: MC-707 1–8, Hydrasynth 9, TD-3 10, Virus 11, BS II 12 |
+
 ### Evidence from the documents and factory data
 
 - **Parameter map:** the Rack addendum's Single Dump table. Data byte `n` = parameter A`n`, byte `128+n` = B`n`. For example, Cutoff = A40, Filter Routing = A53, name = B112–121, categories = B123–124. The code uses different offsets for almost everything (SPEC §4.1–4.2).
@@ -86,11 +102,11 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 
 | # | Status | Item | Notes |
 |---|---|---|---|
-| F1 | ⬜ | **Request banks** A–D from the synth (`32 bb`) into the library, with progress | Also the backup in L4. The CLI already does this: `virus get-bank A --out-file a.syx --to-library` (progress, checksums, new library bank); the GUI still needs it |
+| F1 | ✅ | **Request banks** A–D from the synth (`32 bb`) into the library, with progress | Also the backup in L4. **GUI:** Librarian "Request bank" (waits 2 s of quiet first, G4); dumps collect under "Received from synth" with a running count, then **Import as a new library bank**. No x/128 bar. **CLI:** `virus get-bank A --out-file a.syx --to-library` (progress, checksums, new library bank; used live) |
 | F2 | ⬜ | **Send a patch to a bank slot** (single dump with `bb=01/02`), with confirmation | RAM banks only |
 | F3 | ⬜ | Read the synth's globals (Global request `35`, or Page C): device ID, global channel, C94/C95 Low/High Page, play mode | Lets the app pick the right channel and part, and warn when PolyPressure or CC is off |
 | F4 | ✅ | Multi mode: choose the part (`00–0F`) for edits and fetches; part list from the Multi edit buffer | Done: Multi tab part grid from the fetched Multi edit buffer (`31 00 00`); "✎ Edit" selects the part, fetches its single (`30 00 pp`) and opens the editor |
-| F5 | ✅ | Multi editor and librarian (dump `11`, layout SPEC §4.4) | Done: `virus-syx` `Multi` + `MULTI_PARAMS` (live C5–14, C22, C32–41, C72–78, A113); `virus-db` schema v3 `multis`; Multi tab (`views/multi.rs`, `multi_session.rs`): edit, send, store, import/export the Multi bank, request it from the synth. Not yet: send the whole Multi bank to the synth; multi import from the main Librarian's file import |
+| F5 | ✅ | Multi editor and librarian (dump `11`, layout SPEC §4.4) | Done: `virus-syx` `Multi` + `MULTI_PARAMS` (live C5–14, C22, C32–41, C72–78, A113); `virus-db` schema v3 `multis`; Multi tab (`views/multi.rs`, `multi_session.rs`): edit, send, store, import/export the Multi bank, request it from the synth. The Multi bank send and multi import from the main Librarian followed in F9 |
 | F6 | ⬜ | "Pass through the synth" step after import (send to edit buffer, request back) so the Virus updates the sound version | SPEC §5.2 |
 | F7 | 🔄 | Bank/program change via SysEx (C31–33) so selecting a library patch can also select it on the synth | SPEC §3.5. Done: opt-in "Select on synth" checkbox in the Librarian sends C32 + C33 to the edited part on **Load** from bank A–D (`synth_select.rs`, tested). Open: the C32 bank value is sent 0-based (A=0…D=3), unverified on hardware. Test with the CLI (`set C32`/`C33`, runbook step 12a, README "Testing C32"); if it's 1-based, change `bank.to_raw() - 1` → `bank.to_raw()` in `synth_select.rs` |
 | F8 | ⬜ | Banks E–H (1,024-sound OS) | Blocked on Q2 |
@@ -135,7 +151,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | N5 | ✅ | Audition state: computer keys `A W S E D F T G Y H U J K` = C..C, `Z`/`X` octave, only without text focus, no key-repeat retrigger; octave shift; hold/latch; Audition button (note/chord, length); test phrases with tempo | `virus-app/src/audition.rs`, tested |
 | N6 | ✅ | Wired into the app: collapsible "🎹 Keyboard" strip above the MIDI bar on every tab; channel = synth channel (Single) or the part's channel from the fetched Multi (N9; part *n* → channel *n* without one), with a manual override; disabled without output | `app.rs`, `audition::auto_channel` / `sync_target` |
 | N7 | ✅ | Safety wiring: note offs before output disconnect/change (also when a port vanishes), on channel and part change, window focus loss, collapsing the strip, and app exit (`on_exit` waits ≤ 300 ms for the worker to send them); Panic button | `app.rs` `release_notes_before`, `on_exit` |
-| N8 | ⬜ | **Live test when the MIDI cable arrives:** notes sound on the Global Channel in Single mode and on the part channel in Multi mode; velocity changes the sound with B60 Velocity→Amp ≠ 0; Hold latches the arp (B1 ≠ Off); Panic silences long releases; no stuck notes after unplugging/alt-tab/quitting; note 60 is C3 on the Virus display; Tx LED flashes; computer keys don't play while typing in the name/search fields | Needs the synth. Also check the UI on a machine with OpenGL 2+ (this dev box can't start the app) |
+| N8 | ⬜ | **Live test when the MIDI cable arrives:** notes sound on the Global Channel in Single mode and on the part channel in Multi mode; velocity changes the sound with B60 Velocity→Amp ≠ 0; Hold latches the arp (B1 ≠ Off); Panic silences long releases; no stuck notes after unplugging/alt-tab/quitting; note 60 is C3 on the Virus display; Tx LED flashes; computer keys don't play while typing in the name/search fields | Needs the synth. The GUI now starts on any machine (G1), so this can be done on the laptop |
 | N9 | ✅ | Multi mode: use the part's real MIDI channel (C34 / multi dump bytes 64–79) instead of assuming part *n* = channel *n* | Done: `audition::auto_channel`/`sync_target` take `MultiSession::edited_part_channel`; falls back to part *n* = channel *n* until a Multi is fetched; follows incoming C34. Tested |
 
 ## 🖥️ Running and live testing
@@ -143,7 +159,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | # | Status | Item | Notes |
 |---|---|---|---|
 | G1 | ✅ | **The GUI can't start on this dev VM** (Hyper-V over RDP, no GPU): `egui_glow requires opengl 2.0+`; wgpu also fails (`NoSuitableAdapterFound`). This happens before any app code runs; the old app had the same backend | Done 24 Nov (`rework/gui-vm`): eframe built wgpu without its DX12 backend, so WARP was never offered. A direct `wgpu` dependency now enables `dx12`; glow stays the default and, if it fails at start-up, the app retries with wgpu, which picks the WARP software rasteriser. Force with `--renderer glow\|wgpu` or `VIRUS_RENDERER`. Verified rendering on this VM (debug and release). Still to check: glow on a machine with a GPU |
-| G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 300 ms gaps (default since the live timing, SPEC §3.7) (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items); **which part byte the Virus puts in its own outgoing SysEx param changes in Single mode (RV-L4)**; **Multi bank send** with 300 ms gaps (no checksum/buffer errors); **Select on synth** only after a confirmed replace; **C32 bank value** 0- or 1-based (CLI `set C32`, runbook step 12a) | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
+| G2 | 🔄 | **Live test checklist** (CLI part partly done 24 Nov, results below; GUI part not started): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 300 ms gaps (default since the live timing, SPEC §3.7) (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items); **which part byte the Virus puts in its own outgoing SysEx param changes in Single mode (RV-L4)**; **Multi bank send** with 300 ms gaps (no checksum/buffer errors); **Select on synth** only after a confirmed replace; **C32 bank value** 0- or 1-based (CLI `set C32`, runbook step 12a) | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
 | G3 | ✅ | Persist settings between runs (ports, channel, device ID, part, window) | Versioned `settings.json` in the data dir (`settings.rs`, tested): ports, channel, device ID, part, audition settings (Hold always starts off), tab, bank, import/export folders, window geometry. Bad fields fall back to defaults, a corrupt file becomes `.bak` with a banner, vanished ports aren't selected. The window position isn't checked against the monitor layout |
 | G4 | ✅ | The app should also wait for a quiet line before requests (SPEC §3.7), like the CLI: e.g. Fetch right after Send, or Request bank right after a fetch | Done 24 Nov: `PacedSend` (`session.rs`) queues requests until 500 ms (bank 2 s) after the last MIDI sent or received; `app.rs` notes every `Sent` and incoming event (incl. audition notes); later messages wait behind a queued request. Tested; live check in G2 |
 
@@ -159,9 +175,10 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | Param change `70` (A40) / `71` (B36) | ✅ exactly one byte changes; round trip back to the original |
 | Send edit buffer `10 00 40` → read back | ✅ byte-identical |
 | Global request `35` | ✅ answered with command **`12`** (SPEC §3.6) |
-| Timing | Requests too soon after an exchange are ignored (SPEC §3.7); fixed in the CLI with quiet gaps |
+| Timing | Requests too soon after an exchange are ignored (SPEC §3.7); fixed in the CLI with quiet gaps (`d64cefa`) and in the app (G4, not yet tried live) |
+| `virus selftest` | ✅ 5/5 PASS after the timing fix |
 | Deferred | Steps 7–9 of the CLI runbook (audible cutoff, full fetch, factory patch send): **deferred by the owner (audio not set up yet)** |
-| Still to do | Steps 10–14 of the CLI runbook: Q1–Q3 probes, banks E–H (Q2), Multi, bank send (last) |
+| Still to do | Steps 10–14 of the CLI runbook: Q1–Q3 probes, banks E–H (Q2), 12a C32 (F7), Multi, bank send (last). Always `--channel 11` |
 
 ## ❓ Open questions (SPEC §7)
 
@@ -201,7 +218,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 
 | # | Status | Item | Notes |
 |---|---|---|---|
-| V1 | ✅ | **Match the Virus Rack's colours: red and black** (owner, 24 Nov). The front panel is signal red with black legends; the chassis, knobs and buttons are black or dark grey; the LEDs are amber; the LCD is dark with light characters | Done 24 Nov in `theme.rs` (red `#E8352F` for contrast, WCAG test). **Needs an on-screen check** on the laptop. Not done: the outlined "VIRUS" watermark and amber section LEDs (V2) |
+| V1 | ✅ | **Match the Virus Rack's colours: red and black** (owner, 24 Nov). The front panel is signal red with black legends; the chassis, knobs and buttons are black or dark grey; the LEDs are amber; the LCD is dark with light characters | Done 24 Nov in `theme.rs` (red `#E8352F` for contrast, WCAG test). **Needs an on-screen check** on the laptop. The watermark and tab LEDs followed in V2 |
 | V2 | ✅ | Optional polish: outlined "VIRUS" wordmark watermark in dark red; amber LED dots on the tabs like the panel's section LEDs | `theme.rs`. **Done 24 Nov:** tab LEDs with a black bezel (amber on red alone is only 2.3:1; covered by the WCAG test) and an outlined "VIRUS" watermark only in empty header space |
 
 ## 🧹 Housekeeping
@@ -217,5 +234,5 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | H7 | ✅ | Add a CI workflow (build, test, clippy) on GitHub Actions | `.github/workflows/ci.yml` (Windows + Ubuntu: clippy `-D warnings`, tests, release build; Windows exe as artifact); toolchain pinned in `rust-toolchain.toml` (1.100.0, keep in sync with ci.yml). Ubuntu job green on GitHub (24 Nov) |
 | H8 | ✅ | **16 `float_literal_f32_fallback` warnings will become hard errors** in a future Rust release: write `1.0_f32` (e.g. in `Stroke::new(1.0, …)`) | Done: app rewritten with typed literals; no warnings or future-incompat notes |
 | H9 | ✅ | Q4 decided: the repo stays private, so the Access material stays | |
-| H10 | ⬜ | README: say "Virus Rack (classic), OS 2.00" as the verified target, and mention open questions Q1/Q5 | |
-| H11 | ⬜ | Run `cargo fmt --all` once the open app branches (comforts, settings, review fixes, multi) are merged, then add `cargo fmt --all -- --check` to CI | ~4,000 lines would change today, so doing it now would conflict with every open branch |
+| H10 | ✅ | README: say "Virus Rack (classic), OS 2.00" as the verified target, and mention open questions Q1/Q5 | Done: the README names the target and links Q1 |
+| H11 | ⬜ | Run `cargo fmt --all`, then add `cargo fmt --all -- --check` to CI (there's a placeholder comment in `ci.yml`) | Unblocked: the earlier app branches are all merged. ~4,000 lines change, so do it when **no other branch is open** (check `git branch -a`; `rework/studio-robustness` may still be open), as its own commit with no other changes |
