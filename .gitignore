@@ -1,9 +1,13 @@
 /target
 **/*.rs.bk
-Cargo.lock
 *.pdb
 *.obj
 *.exe
 .idea/
 .vscode/
 *.syx.tmp
+
+# Local librarian database (created by the app)
+*.db
+*.db-shm
+*.db-wal
