@@ -92,6 +92,22 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | F7 | ⬜ | Bank/program change via SysEx (C31–33) so selecting a library patch can also select it on the synth | SPEC §3.5 |
 | F8 | ⬜ | Banks E–H (1,024-sound OS) | Blocked on Q2 |
 
+## 🔍 Code review findings (REVIEW.md, 24 Nov)
+
+| # | Status | Severity | Item | Where |
+|---|---|---|---|---|
+| RV-H1 | ⬜ | High | Imports ("back into A–D", "into library banks A–D") **overwrite occupied library slots without asking**, and reset tags/favourites. Compute the overwritten slots and confirm; default to "import as a new bank" | `librarian.rs`, `db.rs` `IMPORT_PATCH_SQL` |
+| RV-H2 | ⬜ | High | Bank send/export **re-checksums damaged patches**, so bad-checksum patches can be written permanently into synth RAM without the Virus' error. Skip or warn by default; keep the original checksum on export, or warn | `app.rs` → `db.rs` → `patch_data.rs` |
+| RV-M1 | ⬜ | Medium | 8-bit data bytes (≥ 0x80) in `.mid` SysEx are accepted and later sent (invalid SysEx). Also egui 0.27 DragValue clamps a value just by being drawn, and the controls treat that as an edit, so viewing can rewrite the patch. Reject 8-bit data on import; only edit on `response.changed()` | `file.rs`, `sysex.rs`, `views/controls.rs` |
+| RV-M2 | ⬜ | Medium | Duplicate program numbers in one import overwrite each other silently (damaged Bank A: prog 10 → A013). Count/report duplicates | `ImportReport` |
+| RV-M3 | ⬜ | Medium | The old `./virus_library.db` is never found (the DB moved to `%APPDATA%`), so the v1→v2 migration is never used. Offer to copy and migrate it on first run | `storage.rs` |
+| RV-M4 | ⬜ | Medium | Multi mode: CC/PolyPressure on the channel are applied to the edited part, even though only the lowest part on that channel receives them (SPEC §1.4). Ignore them in Multi mode until F3/F4 | `session.rs` |
+| RV-M5 | ⬜ | Medium | Editor/synth drift: Load (no send), Init and part change leave the editor and synth out of sync; an incoming edit-buffer dump discards unsaved edits. Track "in sync" and "dirty" | Handed to the editor-comforts sub-chat |
+| RV-L1 | ⬜ | Low | v1→v2 migration marks rows `checksum_ok=1` although v1 stored the old lossy bytes; no backup is taken before migrating | `virus-db` migration |
+| RV-L2 | ⬜ | Low | Bank-send button is enabled before the recommended backup has arrived; live edits are interleaved with paced dumps | `librarian.rs`, `app.rs` |
+| RV-L3 | ⬜ | Low | "Import as a new library bank" fails for mixed A+B received dumps; the received list is unbounded and never de-duplicated | `library.rs` |
+| RV-L4 | ⬜ | Low | Unverified which part byte the Virus uses in its own SysEx parameter changes in Single mode | Added to G2 |
+
 ## 🎹 Note audition (SPEC §5.9)
 
 | # | Status | Item | Notes |
@@ -111,7 +127,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | # | Status | Item | Notes |
 |---|---|---|---|
 | G1 | ⬜ | **The GUI can't start on this dev VM** (Hyper-V over RDP, no GPU): `egui_glow requires opengl 2.0+`; wgpu also fails (`NoSuitableAdapterFound`). This happens before any app code runs; the old app had the same backend | Check on a machine with a GPU first. Fallback options: a software OpenGL (Mesa `opengl32.dll` / llvmpipe next to the exe), or the wgpu renderer with a fallback adapter. Not done |
-| G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 150 ms gaps (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items) | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
+| G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 150 ms gaps (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items); **which part byte the Virus puts in its own outgoing SysEx param changes in Single mode (RV-L4)** | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
 | G3 | ⬜ | Persist settings between runs (ports, channel, device ID, part, window) | e.g. eframe `persistence` or a small TOML in the data dir |
 
 ## ❓ Open questions (SPEC §7)
