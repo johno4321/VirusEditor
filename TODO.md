@@ -10,7 +10,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 1. ✅ **Baseline (24 Nov):** Rust 1.100.0 + VS 2022 Build Tools. Behind the corporate proxy, cargo needs `[http] check-revoke = false` in `%USERPROFILE%\.cargo\config.toml`.
 2. ✅ **Sources re-read (24 Nov)** and SPEC.md rewritten from them.
 3. ✅ **Data-loss bugs** D1–D8, **patch model** P1–P8, **import rules** L1–L4, **golden tests** T1–T4 (24 Nov, sub-agents + sub-chats).
-4. **Next without hardware:** G1 (the GUI can't start on this VM), the note audition feature (N items, sub-chat in progress), then features F1–F7 and U5.
+4. **Next without hardware:** ✅ G1 (the GUI now starts on this VM via the wgpu/WARP fallback), the note audition feature (N items, sub-chat in progress), then features F1–F7 and U5.
 5. **When the MIDI cable arrives:** live tests (G2), then Q1–Q3.
 6. Review and merge `rework/integration` into `main`.
 
@@ -95,7 +95,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 
 | # | Status | Item | Notes |
 |---|---|---|---|
-| G1 | ⬜ | **The GUI can't start on this dev VM** (Hyper-V over RDP, no GPU): `egui_glow requires opengl 2.0+`; wgpu also fails (`NoSuitableAdapterFound`). This happens before any app code runs; the old app had the same backend | Check on a machine with a GPU first. Fallback options: a software OpenGL (Mesa `opengl32.dll` / llvmpipe next to the exe), or the wgpu renderer with a fallback adapter. Not done |
+| G1 | ✅ | **The GUI can't start on this dev VM** (Hyper-V over RDP, no GPU): `egui_glow requires opengl 2.0+`; wgpu also fails (`NoSuitableAdapterFound`). This happens before any app code runs; the old app had the same backend | Done 24 Nov (`rework/gui-vm`): eframe built wgpu without its DX12 backend, so WARP was never offered. A direct `wgpu` dependency now enables `dx12`; glow stays the default and, if it fails at start-up, the app retries with wgpu, which picks the WARP software rasteriser. Force with `--renderer glow\|wgpu` or `VIRUS_RENDERER`. Verified rendering on this VM (debug and release). Still to check: glow on a machine with a GPU |
 | G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 150 ms gaps (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items) | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
 | G3 | ⬜ | Persist settings between runs (ports, channel, device ID, part, window) | e.g. eframe `persistence` or a small TOML in the data dir |
 
