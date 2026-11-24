@@ -1,16 +1,16 @@
 //! The eframe application: wires the MIDI worker, the session, the database and the panels.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use eframe::{egui, App, Frame};
 use egui::{CentralPanel, Color32, RichText, TopBottomPanel, Visuals};
-use virus_db::PatchDatabase;
+use virus_db::{BadChecksumPolicy, PatchDatabase};
 use virus_midi::{MidiCommand, MidiEvent, MidiService, ReleaseTrigger};
 use virus_syx::Patch;
 
 use crate::audition::Audition;
-use crate::session::{Activity, Incoming, Ports, Session};
-use crate::storage::{open_library, LibraryLocation};
+use crate::session::{Activity, Incoming, PacedSend, Ports, Session};
+use crate::storage::{adopt_legacy_library, open_library, open_library_at, pending_legacy_library, LibraryLocation};
 use crate::views::librarian::{LibAction, LibrarianView, BANK_SEND_GAP_MS};
 use crate::views::{editor::EditorView, midi_bar, modulation, Edit, Notice, ACCENT, DANGER, DIM};
 
@@ -36,6 +36,9 @@ pub struct VirusApp {
     notice: Notice,
     /// Where the edited patch came from, for the header.
     origin: String,
+    paced: PacedSend,
+    /// An old v1 library found next to the exe / in the working directory (M3).
+    legacy: Option<std::path::PathBuf>,
 }
 
 impl VirusApp {
@@ -67,6 +70,7 @@ impl VirusApp {
             notice = Notice::error(format!("Library is in memory only and will NOT be saved: {reason}"));
         }
 
+        let legacy = pending_legacy_library(&db, &location);
         Self {
             session: Session::default(),
             ports: Ports::default(),
@@ -80,6 +84,8 @@ impl VirusApp {
             audition: Audition::new(),
             notice,
             origin: "init".to_owned(),
+            paced: PacedSend::default(),
+            legacy,
         }
     }
 
@@ -100,7 +106,15 @@ impl VirusApp {
             self.notice = Notice::warning("No MIDI output connected: nothing was sent.");
             return;
         }
+        let Some(message) = self.paced.submit(message, Instant::now()) else { return };
         self.command(MidiCommand::Send(message));
+    }
+
+    /// Sends the live messages that waited for a bank transfer to finish.
+    fn flush_paced(&mut self) {
+        for message in self.paced.drain_ready(Instant::now()) {
+            self.command(MidiCommand::Send(message));
+        }
     }
 
     /// Sends audition notes; silently dropped without an output (the strip is disabled then).
@@ -226,27 +240,84 @@ impl VirusApp {
                     ));
                 }
             }
-            LibAction::SendBank { bank_id } => self.send_bank(bank_id),
+            LibAction::SendBank { bank_id, policy } => self.send_bank(bank_id, policy),
             LibAction::CancelBatch => {
                 self.command(MidiCommand::CancelBatch);
+                self.paced.cancel();
                 self.notice = Notice::info("Pending bank transfer cancelled.");
             }
             LibAction::Notice(notice) => self.notice = notice,
         }
     }
 
-    fn send_bank(&mut self, bank_id: i64) {
+    fn send_bank(&mut self, bank_id: i64, policy: BadChecksumPolicy) {
         if !self.ports.output_connected() {
             self.notice = Notice::warning("No MIDI output connected: the bank was not sent.");
             return;
         }
-        match self.db.export_bank_dumps(bank_id, self.session.settings.device_id, None) {
-            Ok(messages) => {
-                let count = messages.len();
-                self.command(MidiCommand::SendBatch { messages, gap_ms: BANK_SEND_GAP_MS });
-                self.notice = Notice::info(format!("Sending {count} patch(es) to the synth…"));
+        match self.db.export_bank(bank_id, self.session.settings.device_id, None, policy) {
+            Ok(export) => {
+                let count = export.frames.len();
+                if count == 0 {
+                    self.notice = Notice::warning("Nothing to send: every stored patch was left out (flagged ⚠).");
+                    return;
+                }
+                self.paced.start(Instant::now(), count, Duration::from_millis(BANK_SEND_GAP_MS));
+                self.command(MidiCommand::SendBatch { messages: export.frames, gap_ms: BANK_SEND_GAP_MS });
+                let mut text = format!("Sending {count} patch(es) to the synth…");
+                if export.skipped_flagged > 0 {
+                    text.push_str(&format!(" {} flagged ⚠ patch(es) left out.", export.skipped_flagged));
+                }
+                self.notice = Notice::info(text);
             }
             Err(e) => self.notice = Notice::error(format!("Cannot send the bank: {e}")),
+        }
+    }
+
+    /// Offers to copy and migrate a v1 library found next to the exe / in the working directory (M3).
+    fn legacy_prompt(&mut self, ctx: &egui::Context) {
+        let Some(legacy) = self.legacy.clone() else { return };
+        let LibraryLocation::File(target) = self.location.clone() else {
+            self.legacy = None;
+            return;
+        };
+        let mut accept = false;
+        let mut dismiss = false;
+        egui::Window::new("Existing library found").collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label(format!("An older library was found at {}.", legacy.display()));
+            ui.label(format!("The library is now stored at {}, and is empty.", target.display()));
+            ui.label("Copy it there and upgrade it? The original file is left untouched, and a .v1.bak backup is kept.");
+            ui.horizontal(|ui| {
+                accept = ui.button("Copy and upgrade").clicked();
+                dismiss = ui.button("Not now").clicked();
+            });
+        });
+        if dismiss {
+            self.legacy = None;
+        }
+        if !accept {
+            return;
+        }
+        self.legacy = None;
+        // Release the file handle on the target before it is replaced.
+        let old = std::mem::replace(
+            &mut self.db,
+            PatchDatabase::open_in_memory().expect("an in-memory SQLite database can always be opened"),
+        );
+        drop(old);
+        match adopt_legacy_library(&legacy, &target) {
+            Ok(db) => {
+                let backup = db.v1_backup().map(|p| format!(" Backup: {}.", p.display())).unwrap_or_default();
+                self.db = db;
+                self.notice = Notice::info(format!(
+                    "Imported the old library. Its patches are flagged ⚠ until you re-check them.{backup}"
+                ));
+            }
+            Err(e) => {
+                let (db, _) = open_library_at(Ok(target));
+                self.db = db;
+                self.notice = Notice::error(format!("Could not adopt the old library: {e}"));
+            }
         }
     }
 
@@ -342,9 +413,14 @@ impl App for VirusApp {
             Tab::Librarian => self.librarian.show(ui, &self.db, &mut self.session.received, &mut actions),
         });
         self.librarian.show_dialogs(ctx, &self.db, self.session.patch(), &mut actions);
+        self.legacy_prompt(ctx);
         self.apply_edits(edits);
         for action in actions {
             self.handle_library_action(action);
+        }
+        self.flush_paced();
+        if let Some(wait) = self.paced.next_wakeup(Instant::now()) {
+            ctx.request_repaint_after(wait.max(Duration::from_millis(20)));
         }
 
         // Only keep repainting while an activity LED is lit.

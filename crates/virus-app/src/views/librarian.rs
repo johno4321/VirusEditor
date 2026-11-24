@@ -2,13 +2,13 @@
 //! import/export, bank transfer to/from the synth, and storing the edited patch.
 
 use egui::{Align, Button, ComboBox, Context, Layout, RichText, ScrollArea, TextEdit, Ui, Window};
-use virus_db::{ImportTarget, IncomingDump, PatchDatabase, PatchSummary, SoundCategory};
+use virus_db::{BadChecksumPolicy, ImportTarget, IncomingDump, PatchDatabase, PatchSummary, SoundCategory};
 use virus_syx::{Patch, SingleBank};
 
 use super::{Notice, ACCENT, DANGER, DIM, WARN};
 use crate::library::{
-    export_bank_file, first_free_slot, import_as_new_bank, import_dumps, import_file, slot_label, store_patch,
-    ImportOutcome, LibraryCache, LibraryQuery,
+    export_bank_file, first_free_slot, flagged_count, import_as_new_banks, prepare_import_file, sendable_count,
+    slot_label, store_patch, ImportOutcome, LibraryCache, LibraryQuery, PendingImport,
 };
 
 /// Pause between dumps when sending a bank, so the synth can write each program.
@@ -20,7 +20,8 @@ pub enum LibAction {
     Load { patch: Patch, origin: String },
     SendToEditBuffer { patch: Patch, origin: String },
     RequestBank(SingleBank),
-    SendBank { bank_id: i64 },
+    /// `Skip` leaves patches flagged ⚠ out, `KeepInvalid` sends them as stored.
+    SendBank { bank_id: i64, policy: BadChecksumPolicy },
     CancelBatch,
     Notice(Notice),
 }
@@ -54,6 +55,14 @@ pub struct LibrarianView {
     loose: Vec<IncomingDump>,
     store: Option<StoreDialog>,
     confirm_send_bank: Option<i64>,
+    /// An import that would overwrite stored patches, waiting for the user's choice (H1).
+    pending_import: Option<PendingImport>,
+    pending_from_received: bool,
+    /// Bank bytes (`bb`) whose synth dump was imported into the library (L2 backup gate).
+    backed_up: Vec<u8>,
+    send_without_backup: bool,
+    send_flagged: bool,
+    export_policy: BadChecksumPolicy,
 }
 
 impl LibrarianView {
@@ -95,6 +104,7 @@ impl LibrarianView {
         actions: &mut Vec<LibAction>,
     ) {
         self.refresh(db);
+        self.pending_import_dialog(ui.ctx(), db, received, actions);
         egui::SidePanel::left("librarian-banks").resizable(false).exact_width(250.0).show_inside(ui, |ui| {
             ScrollArea::vertical().show(ui, |ui| self.left_panel(ui, db, received, actions));
         });
@@ -155,6 +165,18 @@ impl LibrarianView {
             })
             .response
             .on_hover_text("Bank byte written into the file: the bank's own letter, or A–D (needed for user banks).");
+            let policy_text = match self.export_policy {
+                BadChecksumPolicy::Skip => "⚠ skip",
+                BadChecksumPolicy::KeepInvalid => "⚠ as stored",
+                BadChecksumPolicy::Rechecksum => "⚠ fix",
+            };
+            ComboBox::from_id_source("export-flagged").width(78.0).selected_text(policy_text).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.export_policy, BadChecksumPolicy::Skip, "⚠ skip (default)");
+                ui.selectable_value(&mut self.export_policy, BadChecksumPolicy::KeepInvalid, "⚠ as stored (bad checksum)");
+                ui.selectable_value(&mut self.export_policy, BadChecksumPolicy::Rechecksum, "⚠ fix checksum (alters data)");
+            })
+            .response
+            .on_hover_text("Patches flagged ⚠ (bad checksum, or migrated from an old library) are left out unless you choose otherwise.");
         });
 
         ui.separator();
@@ -180,6 +202,8 @@ impl LibrarianView {
         };
         if send.clicked() {
             self.confirm_send_bank = self.query.bank_id;
+            self.send_without_backup = false;
+            self.send_flagged = false;
         }
         if ui.button("⏹ Cancel sending").clicked() {
             actions.push(LibAction::CancelBatch);
@@ -228,31 +252,148 @@ impl LibrarianView {
             ui.colored_label(WARN, format!("⚠ {bad} with a wrong checksum"));
         }
 
-        let result = if ui.button("Import as a new library bank").on_hover_text("Safe backup: nothing is overwritten.").clicked() {
+        let mut new_banks = false;
+        let mut into_slots = false;
+        ui.horizontal_wrapped(|ui| {
+            new_banks = ui
+                .button("Import as new library bank(s)")
+                .on_hover_text("Safe backup: nothing is overwritten. One new bank per source bank.")
+                .clicked();
+            into_slots = ui
+                .button("Import into library banks A–D")
+                .on_hover_text("Overwrites the library slots they came from (asks first if any are occupied).")
+                .clicked();
+            if ui.button("Discard").clicked() {
+                received.clear();
+            }
+        });
+        if received.is_empty() {
+            return;
+        }
+        if new_banks {
             let name = match banks.as_slice() {
                 [(bank, _)] => format!("From synth: {}", describe(*bank)),
                 _ => "From synth".to_owned(),
             };
-            Some(import_as_new_bank(db, &name, received).map(|r| (r, name)))
-        } else if ui.button("Import into library banks A–D").on_hover_text("Overwrites the library slots they came from.").clicked() {
-            Some(import_dumps(db, received, ImportTarget::OriginalBanks).map(|r| (r, "banks A–D".to_owned())))
-        } else {
-            if ui.button("Discard").clicked() {
-                received.clear();
+            let result = import_as_new_banks(db, &name, received).map(|r| (r, name));
+            self.finish_received(result, received, actions);
+        } else if into_slots {
+            match PendingImport::from_dumps(db, "received from synth", received, ImportTarget::OriginalBanks) {
+                Ok(pending) if pending.needs_confirmation() => {
+                    self.pending_import = Some(pending);
+                    self.pending_from_received = true;
+                }
+                Ok(pending) => {
+                    let result = pending.commit_overwrite(db).map(|o| (o.report, "banks A–D".to_owned()));
+                    self.finish_received(result, received, actions);
+                }
+                Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
             }
-            None
-        };
+        }
+    }
+
+    fn finish_received(
+        &mut self,
+        result: Result<(virus_db::ImportReport, String), String>,
+        received: &mut Vec<IncomingDump>,
+        actions: &mut Vec<LibAction>,
+    ) {
         match result {
-            Some(Ok((report, target))) => {
+            Ok((report, target)) => {
                 actions.push(LibAction::Notice(Notice::info(format!(
                     "Imported {} received patch(es) into {target}.",
                     report.imported
                 ))));
+                for bb in crate::library::complete_banks(received) {
+                    if !self.backed_up.contains(&bb) {
+                        self.backed_up.push(bb);
+                    }
+                }
                 self.loose.extend(report.loose);
                 received.clear();
             }
-            Some(Err(e)) => actions.push(LibAction::Notice(Notice::error(e))),
-            None => {}
+            Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
+        }
+    }
+
+    /// Confirmation before an import overwrites stored patches (H1).
+    fn pending_import_dialog(
+        &mut self,
+        ctx: &Context,
+        db: &PatchDatabase,
+        received: &mut Vec<IncomingDump>,
+        actions: &mut Vec<LibAction>,
+    ) {
+        let Some(pending) = self.pending_import.take() else { return };
+        let mut open = true;
+        let mut choice = None;
+        let mut cancelled = false;
+        Window::new("Import would overwrite patches").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+            let n = pending.plan.overwrites.len();
+            ui.colored_label(DANGER, format!("{}: {n} occupied slot(s) would be overwritten.", pending.label));
+            ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                for o in pending.plan.overwrites.iter().take(40) {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {:03}: '{}' → '{}'",
+                            o.slot.bank_name, o.slot.program, o.old_name, o.new_name
+                        ))
+                        .monospace()
+                        .size(11.0),
+                    );
+                }
+                if n > 40 {
+                    ui.label(format!("… and {} more", n - 40));
+                }
+            });
+            if !pending.plan.duplicates.is_empty() {
+                ui.colored_label(
+                    WARN,
+                    format!("⚠ {} slot(s) are addressed by several dumps; the last one wins.", pending.plan.duplicates.len()),
+                );
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Import as new bank(s)").on_hover_text("Nothing existing is touched.").clicked() {
+                    choice = Some(false);
+                }
+                if ui.add(Button::new(RichText::new(format!("Overwrite {n} slot(s)")).color(DANGER))).clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    cancelled = true;
+                }
+            });
+        });
+        if cancelled || !open {
+            self.pending_from_received = false;
+            return;
+        }
+        let Some(overwrite) = choice else {
+            self.pending_import = Some(pending);
+            return;
+        };
+        let name = if pending.label.is_empty() { "Imported".to_owned() } else { pending.label.clone() };
+        let result = if overwrite {
+            pending.commit_overwrite(db)
+        } else {
+            pending.commit_as_new_banks(db, &name)
+        };
+        if std::mem::take(&mut self.pending_from_received) {
+            self.finish_received(result.map(|o| (o.report, name)), received, actions);
+        } else {
+            self.finish_import(&pending.label, result, actions);
+        }
+    }
+
+    fn finish_import(&mut self, label: &str, result: Result<ImportOutcome, String>, actions: &mut Vec<LibAction>) {
+        match result {
+            Ok(outcome) => {
+                let text = format!("{label}: {}", outcome.summary());
+                actions.push(LibAction::Notice(if outcome.has_warnings() { Notice::warning(text) } else { Notice::info(text) }));
+                self.loose = outcome.report.loose.clone();
+                self.last_import = Some(outcome);
+            }
+            Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
         }
     }
 
@@ -303,13 +444,14 @@ impl LibrarianView {
             (true, Some(id)) => ImportTarget::Bank(id),
             _ => ImportTarget::OriginalBanks,
         };
-        match import_file(db, &path, target) {
-            Ok(outcome) => {
-                let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                let text = format!("{file}: {}", outcome.summary());
-                actions.push(LibAction::Notice(if outcome.has_warnings() { Notice::warning(text) } else { Notice::info(text) }));
-                self.loose = outcome.report.loose.clone();
-                self.last_import = Some(outcome);
+        match prepare_import_file(db, &path, target) {
+            Ok(pending) if pending.needs_confirmation() => {
+                self.pending_import = Some(pending);
+                self.pending_from_received = false;
+            }
+            Ok(pending) => {
+                let label = pending.label.clone();
+                self.finish_import(&label, pending.commit_overwrite(db), actions);
             }
             Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
         }
@@ -328,11 +470,13 @@ impl LibrarianView {
         else {
             return;
         };
-        match export_bank_file(db, bank.id, self.export_as, &path) {
-            Ok(count) => actions.push(LibAction::Notice(Notice::info(format!(
-                "Exported {count} patch(es) of {} to {}.",
+        match export_bank_file(db, bank.id, self.export_as, self.export_policy, &path) {
+            Ok(result) => actions.push(LibAction::Notice(Notice::info(format!(
+                "Exported {} patch(es) of {} to {}{}.",
+                result.written,
                 bank.name,
-                path.display()
+                path.display(),
+                result.notes()
             )))),
             Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
         }
@@ -566,6 +710,7 @@ impl LibrarianView {
         let letter = bank.bank_letter.clone().unwrap_or_default();
         let synth_bank = bank.bank_letter.as_deref().and_then(|l| SingleBank::ALL.into_iter().find(|b| b.letter().to_string() == l));
         let count = if self.query.bank_id == Some(bank_id) { self.cache.slots.iter().flatten().count() } else { 0 };
+        let flagged = if self.query.bank_id == Some(bank_id) { flagged_count(&self.cache.slots) } else { 0 };
         let mut open = true;
         let mut close = false;
         Window::new(format!("Send bank {letter} to the synth")).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
@@ -577,14 +722,30 @@ impl LibrarianView {
                 ),
             );
             ui.label("Back up the synth's bank first: request it, then import it as a new library bank under 'Received from synth'.");
+            let backed_up = synth_bank.is_some_and(|b| self.backed_up.contains(&b.to_raw()));
+            if backed_up {
+                ui.colored_label(ACCENT, format!("✔ Bank {letter} was backed up from the synth in this session."));
+            } else {
+                ui.checkbox(&mut self.send_without_backup, "Send without a backup (the synth's current bank is lost)");
+            }
+            if flagged > 0 {
+                ui.colored_label(
+                    WARN,
+                    format!("⚠ {flagged} of the stored patches are flagged (bad checksum or migrated from an old library)."),
+                );
+                ui.checkbox(&mut self.send_flagged, "Send them anyway (the synth may refuse or mis-load them)");
+            }
+            let n = sendable_count(count, flagged, self.send_flagged);
+            let can_send = n > 0 && (backed_up || self.send_without_backup);
             ui.horizontal(|ui| {
                 if let Some(synth_bank) = synth_bank {
                     if ui.button(format!("📥 Back up synth bank {letter}")).clicked() {
                         actions.push(LibAction::RequestBank(synth_bank));
                     }
                 }
-                if ui.add_enabled(count > 0, Button::new(RichText::new(format!("Send {count} patch(es)")).color(DANGER))).clicked() {
-                    actions.push(LibAction::SendBank { bank_id });
+                if ui.add_enabled(can_send, Button::new(RichText::new(format!("Send {n} patch(es)")).color(DANGER))).clicked() {
+                    let policy = if self.send_flagged { BadChecksumPolicy::KeepInvalid } else { BadChecksumPolicy::Skip };
+                    actions.push(LibAction::SendBank { bank_id, policy });
                     close = true;
                 }
                 if ui.button("Cancel").clicked() {

@@ -145,6 +145,8 @@ pub enum SyxError {
     NotASingleDump { command: u8 },
     /// Single dump bank byte outside `00..=04` (banks E–H addressing is undocumented).
     UnsupportedBank(u8),
+    /// A byte between `F0` and `F7` is 0x80 or higher, which MIDI forbids inside SysEx.
+    InvalidDataByte { offset: usize, value: u8 },
 }
 
 impl fmt::Display for SyxError {
@@ -169,6 +171,9 @@ impl fmt::Display for SyxError {
                 write!(f, "Not a single dump (command 0x{command:02X})")
             }
             Self::UnsupportedBank(bank) => write!(f, "Unsupported single bank number: 0x{bank:02X}"),
+            Self::InvalidDataByte { offset, value } => {
+                write!(f, "Invalid SysEx data byte 0x{value:02X} at offset {offset} (must be below 0x80)")
+            }
         }
     }
 }
@@ -250,6 +255,9 @@ pub fn parse_sysex(msg: &[u8]) -> Result<SysExMessage, SyxError> {
     }
     if msg.len() < HEADER_LEN + 1 {
         return Err(SyxError::MessageTooShort);
+    }
+    if let Some(offset) = msg[1..msg.len() - 1].iter().position(|&b| b >= 0x80) {
+        return Err(SyxError::InvalidDataByte { offset: offset + 1, value: msg[offset + 1] });
     }
     if msg[1..4] != ACCESS_MANUFACTURER_ID {
         return Err(SyxError::NotAccessManufacturer);
@@ -482,6 +490,16 @@ mod tests {
         let mut dump = encode_program_dump(0x10, 1, 0, &[0; 256]);
         dump.remove(100);
         assert!(matches!(parse_sysex(&dump), Err(SyxError::InvalidPayloadLength { .. })));
+    }
+
+    #[test]
+    fn eight_bit_data_is_rejected() {
+        let mut dump = encode_program_dump(0x10, 1, 0, &[0; 256]);
+        dump[100] = 0x85;
+        assert_eq!(parse_sysex(&dump), Err(SyxError::InvalidDataByte { offset: 100, value: 0x85 }));
+        let mut param = encode_param_change(0, Page::PageA, 0x40, 40, 1);
+        param[9] = 0xFF;
+        assert!(matches!(parse_sysex(&param), Err(SyxError::InvalidDataByte { value: 0xFF, .. })));
     }
 
     #[test]

@@ -15,6 +15,8 @@ pub const CATEGORY1_OFFSET: usize = 251;
 pub const CATEGORY2_OFFSET: usize = 252;
 /// Length of an encoded Single Dump frame.
 pub const SINGLE_DUMP_LEN: usize = 267;
+/// Index of the checksum byte in an encoded Single Dump frame.
+pub const SINGLE_DUMP_CHECKSUM_INDEX: usize = 265;
 /// Single dump `bb` value addressing the edit buffer.
 pub const EDIT_BUFFER_BANK: u8 = 0x00;
 
@@ -63,6 +65,11 @@ pub fn letter_for_bank_byte(bank: u8) -> Option<&'static str> {
         4 => Some("D"),
         _ => None,
     }
+}
+
+/// Offset of the first byte ≥ 0x80, which is not valid SysEx data.
+pub fn first_eight_bit_offset(data: &[u8; PATCH_LEN]) -> Option<usize> {
+    data.iter().position(|&b| b >= 0x80)
 }
 
 /// `cs = (dd + 10 + bb + ss + Σdata) & 0x7F` (SPEC §3.2).

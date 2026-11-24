@@ -3,9 +3,11 @@
 //!
 //! Nothing here touches egui or a real MIDI port, so it is unit-tested directly.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use virus_db::IncomingDump;
+use crate::library::queue_received;
 use virus_midi::{find_virus_ports, MidiCommand, MidiEvent};
 use virus_syx::{
     encode_dump_request, encode_param_change, encode_single_bank_request, is_sound_param,
@@ -67,6 +69,57 @@ impl MidiSettings {
     }
 }
 
+/// Keeps live messages (edits, requests) out of a paced bank send (L2): while a batch is
+/// being transmitted they wait, then go out in order.
+#[derive(Debug, Default)]
+pub struct PacedSend {
+    busy_until: Option<Instant>,
+    queue: VecDeque<Vec<u8>>,
+}
+
+impl PacedSend {
+    /// A batch of `count` messages with `gap` between them starts now.
+    pub fn start(&mut self, now: Instant, count: usize, gap: Duration) {
+        self.busy_until = Some(now + gap * count as u32);
+    }
+
+    /// The batch was cancelled; waiting messages may go out.
+    pub fn cancel(&mut self) {
+        self.busy_until = None;
+    }
+
+    fn busy(&self, now: Instant) -> bool {
+        self.busy_until.is_some_and(|t| now < t)
+    }
+
+    /// Returns the message if it can go out immediately, otherwise queues it.
+    pub fn submit(&mut self, message: Vec<u8>, now: Instant) -> Option<Vec<u8>> {
+        if self.busy(now) || !self.queue.is_empty() {
+            self.queue.push_back(message);
+            None
+        } else {
+            Some(message)
+        }
+    }
+
+    /// Queued messages that may be sent now (all of them once the batch is over).
+    pub fn drain_ready(&mut self, now: Instant) -> Vec<Vec<u8>> {
+        if self.busy(now) {
+            return Vec::new();
+        }
+        self.busy_until = None;
+        self.queue.drain(..).collect()
+    }
+
+    /// How long until queued messages can be sent, if any are waiting.
+    pub fn next_wakeup(&self, now: Instant) -> Option<Duration> {
+        if self.queue.is_empty() {
+            return None;
+        }
+        Some(self.busy_until.map_or(Duration::ZERO, |t| t.saturating_duration_since(now)))
+    }
+}
+
 /// What an incoming MIDI event meant for the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
@@ -119,6 +172,11 @@ impl Session {
         if channel != self.settings.channel || !is_sound_param(page, number) {
             return Incoming::Ignored;
         }
+        // In Multi mode CC/PolyPressure address parts by channel (F3/F4 will map them); until then
+        // they must not edit the Single patch.
+        if self.settings.part != EditPart::Single {
+            return Incoming::Ignored;
+        }
         self.patch.set(page, number, value);
         Incoming::ParamChanged { page, number, value: value & 0x7F }
     }
@@ -136,7 +194,7 @@ impl Session {
                     self.patch = Patch::from_bytes(&data);
                     Incoming::PatchLoaded { name: self.patch.name(), checksum_ok }
                 } else {
-                    self.received.push(IncomingDump { bank, program, data: *data, checksum_ok });
+                    queue_received(&mut self.received, IncomingDump { bank, program, data: *data, checksum_ok });
                     Incoming::DumpQueued { bank, program, checksum_ok }
                 }
             }
@@ -506,6 +564,48 @@ mod tests {
             s.handle_midi(&MidiEvent::SysEx(frame)),
             Incoming::PatchLoaded { name: "Broken".into(), checksum_ok: false }
         );
+    }
+
+    #[test]
+    fn paced_send_holds_live_messages_until_the_batch_is_over() {
+        let t0 = Instant::now();
+        let mut p = PacedSend::default();
+        assert_eq!(p.submit(vec![1], t0), Some(vec![1]));
+        p.start(t0, 4, Duration::from_millis(150));
+        assert_eq!(p.submit(vec![2], t0 + Duration::from_millis(100)), None);
+        assert_eq!(p.submit(vec![3], t0 + Duration::from_millis(200)), None);
+        assert!(p.drain_ready(t0 + Duration::from_millis(599)).is_empty());
+        assert_eq!(p.next_wakeup(t0 + Duration::from_millis(500)), Some(Duration::from_millis(100)));
+        assert_eq!(p.drain_ready(t0 + Duration::from_millis(600)), vec![vec![2], vec![3]]);
+        assert_eq!(p.submit(vec![4], t0 + Duration::from_millis(601)), Some(vec![4]));
+
+        p.start(t0, 4, Duration::from_millis(150));
+        assert_eq!(p.submit(vec![5], t0), None);
+        p.cancel();
+        assert_eq!(p.drain_ready(t0), vec![vec![5]]);
+    }
+
+    #[test]
+    fn cc_and_poly_pressure_are_ignored_in_multi_mode() {
+        let mut s = session();
+        s.settings.part = EditPart::Multi(0);
+        let before = s.patch().clone();
+        let cc = MidiEvent::ControlChange { channel: 2, controller: 40, value: 99 };
+        assert_eq!(s.handle_midi(&cc), Incoming::Ignored);
+        let pp = MidiEvent::PolyPressure { channel: 2, note: 40, pressure: 99 };
+        assert_eq!(s.handle_midi(&pp), Incoming::Ignored);
+        assert_eq!(s.patch(), &before);
+        s.settings.part = EditPart::Single;
+        assert!(matches!(s.handle_midi(&cc), Incoming::ParamChanged { .. }));
+    }
+
+    #[test]
+    fn repeated_dumps_for_one_slot_are_replaced_not_stacked() {
+        let mut s = session();
+        s.handle_midi(&dump(0x00, 1, 5, &named("old")));
+        s.handle_midi(&dump(0x00, 1, 5, &named("new")));
+        assert_eq!(s.received.len(), 1);
+        assert_eq!(s.received[0].data, *named("new").as_bytes());
     }
 
     #[test]

@@ -19,6 +19,8 @@ pub enum DbError {
     InvalidTargetBank(u8),
     /// `ImportTarget::Bank` was used with dumps coming from several source banks.
     MixedSourceBanks(Vec<u8>),
+    /// The patch data contains a byte ≥ 0x80 at `offset`, which can't be sent as SysEx.
+    NotSevenBit { offset: usize },
     /// The database was written by a newer version of the application.
     UnsupportedSchemaVersion(i64),
 }
@@ -44,6 +46,10 @@ impl fmt::Display for DbError {
             Self::MixedSourceBanks(banks) => write!(
                 f,
                 "the dumps come from several source banks {banks:?}; import them into their original banks instead"
+            ),
+            Self::NotSevenBit { offset } => write!(
+                f,
+                "patch data has a byte of 0x80 or more at offset {offset}; SysEx data bytes must be below 0x80"
             ),
             Self::UnsupportedSchemaVersion(v) => {
                 write!(f, "database schema version {v} is newer than this application supports")

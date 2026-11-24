@@ -16,3 +16,4 @@ rfd = "0.14"
 directories = "6.0.0"
 
 [dev-dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }

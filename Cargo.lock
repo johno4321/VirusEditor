@@ -2623,6 +2623,7 @@ dependencies = [
  "eframe",
  "egui",
  "rfd",
+ "rusqlite",
  "virus-db",
  "virus-midi",
  "virus-syx",

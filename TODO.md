@@ -96,16 +96,16 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 
 | # | Status | Severity | Item | Where |
 |---|---|---|---|---|
-| RV-H1 | ⬜ | High | Imports ("back into A–D", "into library banks A–D") **overwrite occupied library slots without asking**, and reset tags/favourites. Compute the overwritten slots and confirm; default to "import as a new bank" | `librarian.rs`, `db.rs` `IMPORT_PATCH_SQL` |
-| RV-H2 | ⬜ | High | Bank send/export **re-checksums damaged patches**, so bad-checksum patches can be written permanently into synth RAM without the Virus' error. Skip or warn by default; keep the original checksum on export, or warn | `app.rs` → `db.rs` → `patch_data.rs` |
-| RV-M1 | ⬜ | Medium | 8-bit data bytes (≥ 0x80) in `.mid` SysEx are accepted and later sent (invalid SysEx). Also egui 0.27 DragValue clamps a value just by being drawn, and the controls treat that as an edit, so viewing can rewrite the patch. Reject 8-bit data on import; only edit on `response.changed()` | `file.rs`, `sysex.rs`, `views/controls.rs` |
-| RV-M2 | ⬜ | Medium | Duplicate program numbers in one import overwrite each other silently (damaged Bank A: prog 10 → A013). Count/report duplicates | `ImportReport` |
-| RV-M3 | ⬜ | Medium | The old `./virus_library.db` is never found (the DB moved to `%APPDATA%`), so the v1→v2 migration is never used. Offer to copy and migrate it on first run | `storage.rs` |
-| RV-M4 | ⬜ | Medium | Multi mode: CC/PolyPressure on the channel are applied to the edited part, even though only the lowest part on that channel receives them (SPEC §1.4). Ignore them in Multi mode until F3/F4 | `session.rs` |
+| RV-H1 | ✅ | High | Imports ("back into A–D", "into library banks A–D") **overwrite occupied library slots without asking**, and reset tags/favourites. Compute the overwritten slots and confirm; default to "import as a new bank" | `librarian.rs`, `db.rs` `IMPORT_PATCH_SQL`; fixed: `plan_import` + confirm dialog |
+| RV-H2 | ✅ | High | Bank send/export **re-checksums damaged patches**, so bad-checksum patches can be written permanently into synth RAM without the Virus' error. Skip or warn by default; keep the original checksum on export, or warn | `app.rs` → `db.rs` → `patch_data.rs`; fixed: `BadChecksumPolicy` (skip by default) |
+| RV-M1 | ✅ | Medium | 8-bit data bytes (≥ 0x80) in `.mid` SysEx are accepted and later sent (invalid SysEx). Also egui 0.27 DragValue clamps a value just by being drawn, and the controls treat that as an edit, so viewing can rewrite the patch. Reject 8-bit data on import; only edit on `response.changed()` | `file.rs`, `sysex.rs`, `views/controls.rs`; fixed: `InvalidDataByte`, edits gated on user change |
+| RV-M2 | ✅ | Medium | Duplicate program numbers in one import overwrite each other silently (damaged Bank A: prog 10 → A013). Count/report duplicates | `ImportReport`; fixed: `duplicates` reported |
+| RV-M3 | ✅ | Medium | The old `./virus_library.db` is never found (the DB moved to `%APPDATA%`), so the v1→v2 migration is never used. Offer to copy and migrate it on first run | `storage.rs`; fixed: prompt in `app.rs` |
+| RV-M4 | ✅ | Medium | Multi mode: CC/PolyPressure on the channel are applied to the edited part, even though only the lowest part on that channel receives them (SPEC §1.4). Ignore them in Multi mode until F3/F4 | `session.rs`; fixed |
 | RV-M5 | ⬜ | Medium | Editor/synth drift: Load (no send), Init and part change leave the editor and synth out of sync; an incoming edit-buffer dump discards unsaved edits. Track "in sync" and "dirty" | Handed to the editor-comforts sub-chat |
-| RV-L1 | ⬜ | Low | v1→v2 migration marks rows `checksum_ok=1` although v1 stored the old lossy bytes; no backup is taken before migrating | `virus-db` migration |
-| RV-L2 | ⬜ | Low | Bank-send button is enabled before the recommended backup has arrived; live edits are interleaved with paced dumps | `librarian.rs`, `app.rs` |
-| RV-L3 | ⬜ | Low | "Import as a new library bank" fails for mixed A+B received dumps; the received list is unbounded and never de-duplicated | `library.rs` |
+| RV-L1 | ✅ | Low | v1→v2 migration marks rows `checksum_ok=1` although v1 stored the old lossy bytes; no backup is taken before migrating | `virus-db` migration; fixed: `.v1.bak` + rows flagged ⚠ |
+| RV-L2 | ✅ | Low | Bank-send button is enabled before the recommended backup has arrived; live edits are interleaved with paced dumps | `librarian.rs`, `app.rs`; fixed: backup gate + `PacedSend` |
+| RV-L3 | ✅ | Low | "Import as a new library bank" fails for mixed A+B received dumps; the received list is unbounded and never de-duplicated | `library.rs`; fixed: one bank per source, `queue_received` |
 | RV-L4 | ⬜ | Low | Unverified which part byte the Virus uses in its own SysEx parameter changes in Single mode | Added to G2 |
 
 ## 🎹 Note audition (SPEC §5.9)

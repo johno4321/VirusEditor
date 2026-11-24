@@ -287,6 +287,23 @@ mod tests {
     }
 
     #[test]
+    fn smf_event_with_eight_bit_data_does_not_parse_as_a_dump() {
+        // The SMF reader hands the frame over; parse_sysex must then refuse it, so importers
+        // report it as an invalid frame instead of storing a status byte inside the data.
+        let mut frame = crate::domain::sysex::encode_program_dump(0x10, 1, 0, &[0; 256]);
+        frame[50] = 0x85;
+        let mut track = vec![0x00, 0xF0, 0x82, 0x0A]; // varlen 266 = 0x82 0x0A
+        track.extend_from_slice(&frame[1..]);
+        track.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+        let frames = extract_sysex_frames(&smf(&track));
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(
+            crate::domain::sysex::parse_sysex(&frames[0]),
+            Err(crate::domain::sysex::SyxError::InvalidDataByte { value: 0x85, .. })
+        ));
+    }
+
+    #[test]
     fn raw_stream_drops_interrupted_frames_and_noise() {
         let stream = [
             0x12, 0xF0, 0x01, 0x02, // interrupted by a new F0
