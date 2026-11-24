@@ -145,7 +145,7 @@ Page C parameter changes, independent of MIDI channel and of the program-change 
 * `72 pp 21 vv`: C33 Part Program Change
 * `72 00 69 vv`: C105 Multi Program Change
 
-**Implementation (F7):** the optional "Select on synth" setting sends C32 then C33 to the edited part (Single `40` or the Multi part) when a library patch from bank A–D is loaded (`synth_select.rs`). The C32 value is sent **0-based** (A=0 … D=3), unlike the dump byte `bb` (A=1 … D=4). **Unverified on hardware** (TODO G2). It only makes sense when the library bank mirrors the synth's bank, so the label says so. User banks send nothing.
+**Implementation (F7):** the optional "Select on synth" setting sends C32 then C33 to the edited part (Single `40` or the Multi part) when a library patch from bank A–D is loaded (`synth_select.rs`). The C32 value is sent **0-based** (A=0 … D=3), unlike the dump byte `bb` (A=1 … D=4). **Unverified on hardware** (TODO G2). The CLI can test it: `virus set C32 <v>` and `set C33 <p>` send Page C to the part, and `send-hex` sends any raw message (see the CLI README, "Testing C32"). It only makes sense when the library bank mirrors the synth's bank, so the label says so. User banks send nothing.
 
 ### 3.6 Observed but undocumented
 * **Global dump = command `12`.** Confirmed live (24 Nov): Global request `35` is answered with `F0 00 20 33 01 dd 12 01 …` (267 bytes). The same `12` message is the one in `multis.mid`. Its layout isn't documented; keep it raw.

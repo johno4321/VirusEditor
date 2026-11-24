@@ -137,6 +137,7 @@ Record the result in TODO F7/G2. If it's 1-based, change `virus-app/src/synth_se
 | 10 | **Q1:** `virus probe-destinations` | Show Assign 1 destination on the Virus display (Mod Matrix / Assign 1). Type the name it shows for each value. Then `--slot lfo1 --out-file q1_lfo1.json` and `--slot definable1 --out-file q1_definable1.json` |
 | 11 | **Q3:** `virus probe-values A49`, `A112`, `A102`, `B39` | Show that parameter on the display and type each value's name. Watch for values that read back differently: that's where the range ends |
 | 12 | **Q2:** `virus get-bank E --out-file probe_E.syx --timeout-ms 2000` | Do dumps arrive for `bb=05`? With which bank byte? Use `-v` to see the raw answers. Repeat for F–H |
+| 12a | **F7 C32:** `virus set C32 1`, `virus set C33 5`, `virus fetch --brief` (and the cross-check with `C32 0`) | Which bank's program 5 loaded? See "Testing C32" above. Needs the bank backups from step 4, because selecting a program replaces the edit buffer |
 | 13 | `virus monitor` with the Virus set to Multi mode, then `virus fetch --part 1 --brief` | Multi part addressing |
 | 14 | **Bank send last** (G2): `virus put-bank A backup_A.syx --yes --verify` | This sends your own backup back, so the content doesn't change. It takes a fresh automatic backup first. Watch the Virus display for a checksum or buffer error during the 128 dumps (with 300 ms gaps it takes about 50 s). Verify should say "all 128 program(s) read back byte-identical". If you see errors, retry with `--gap-ms 500`. If Memory Protect is on, the Virus may ignore the bank |
 
