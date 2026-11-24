@@ -79,6 +79,27 @@ impl<T: Transport> Synth<T> {
         Ok(())
     }
 
+    /// Sends a raw message (`send-hex`) once the line is quiet, like a request.
+    pub fn send_raw(&mut self, message: &[u8]) -> Result<(), String> {
+        self.quiet_line(self.quiet);
+        self.transport.send(message)
+    }
+
+    /// Passes every event that arrives within `window` to `on_event`; returns how many arrived.
+    pub fn listen(&mut self, window: Duration, on_event: &mut dyn FnMut(&virus_midi::MidiEvent)) -> usize {
+        let deadline = std::time::Instant::now() + window;
+        let mut count = 0;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return count;
+            }
+            let Some(event) = self.transport.recv(left) else { return count };
+            on_event(&event);
+            count += 1;
+        }
+    }
+
     /// Requests a bank (`32 bb`). Returns the collector even when incomplete, with the error.
     pub fn get_bank(
         &mut self,
@@ -220,6 +241,33 @@ mod tests {
     fn global_request_returns_raw_answer() {
         let mut s = synth(FakeVirus::new(0));
         assert_eq!(s.global().unwrap()[6], 0x12);
+    }
+
+    #[test]
+    fn page_c_set_goes_to_the_target_part() {
+        let mut s = synth(FakeVirus::new(0));
+        s.set_param(ParamAddress::c(32), 1).unwrap();
+        s.target = Target { part: Part::Multi(4), ..s.target };
+        s.set_param(ParamAddress::c(33), 17).unwrap();
+        let sent: Vec<&[u8]> = s.transport.received.iter().map(|m| &m[6..10]).collect();
+        assert_eq!(sent, [&[0x72, 0x40, 32, 1][..], &[0x72, 0x04, 33, 17][..]]);
+    }
+
+    #[test]
+    fn raw_send_waits_for_quiet_and_answers_can_be_listened_to() {
+        let mut s = synth(FakeVirus::new(0));
+        let stale = virus_midi::MidiEvent::SysEx(virus_syx::encode_program_dump(0, 1, 9, &pattern(9)));
+        s.transport.push_stale(stale);
+        let request = crate::messages::parse_hex_sysex("F0 00 20 33 01 00 30 00 40 F7").unwrap();
+        s.send_raw(&request).unwrap();
+        assert_eq!(s.transport.received, vec![request]);
+        let mut answers = Vec::new();
+        let n = s.listen(Duration::from_millis(20), &mut |e| answers.push(e.clone()));
+        assert_eq!(n, 1, "only the answer, not the stale dump");
+        match &answers[0] {
+            virus_midi::MidiEvent::SysEx(frame) => assert_eq!(frame[6..9], [0x10, 0x00, 0x40]),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

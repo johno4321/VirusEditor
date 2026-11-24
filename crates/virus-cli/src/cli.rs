@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::address::{parse_address, parse_value, ParamAddress};
+use crate::address::{parse_address, parse_set_address, parse_value, ParamAddress};
 use crate::probe::DestinationSlot;
 use crate::settings::{parse_bank_letter, parse_channel, parse_device, parse_part, DeviceId, Part, Target};
 
@@ -180,19 +180,33 @@ pub enum Command {
         #[arg(long)]
         verify: bool,
     },
-    /// Send one parameter change (70/71) to the edit buffer, e.g. `set A40 64` or `set A10 -5`.
+    /// Send one parameter change (70/71/72) to --part, e.g. `set A40 64`, `set A10 -5` or
+    /// `set C32 1` (Page C: part, multi and global settings, SysEx only).
     Set {
-        #[arg(value_parser = parse_address)]
+        #[arg(value_parser = parse_set_address)]
         param: ParamAddress,
         /// 0-127, or a signed bipolar value like -5 / +10 (64 = 0).
         #[arg(value_parser = parse_value, allow_hyphen_values = true)]
         value: u8,
-        /// Allow performance controllers and undocumented bytes (never A0).
+        /// Allow performance controllers, undocumented bytes and session-breaking globals
+        /// (C93 Device ID, C122 Play Mode, C123 Part Number, C124 Global Channel, …). Never A0.
         #[arg(long)]
         force: bool,
-        /// Fetch the edit buffer afterwards and check the value.
+        /// Fetch the edit buffer afterwards and check the value (Page A/B only).
         #[arg(long)]
         verify: bool,
+    },
+    /// Send one raw SysEx message for experiments, e.g. `send-hex "F0 00 20 33 01 00 72 40 20 01 F7"`.
+    SendHex {
+        /// The bytes in hex (two digits each; spaces optional). Must be F0 … F7 with 7-bit data.
+        #[arg(required = true, num_args = 1..)]
+        hex: Vec<String>,
+        /// Really send it (without: only show what would be sent).
+        #[arg(long)]
+        yes: bool,
+        /// Print whatever arrives for this long afterwards, in ms.
+        #[arg(long, value_name = "MS", default_value_t = 1000)]
+        listen_ms: u64,
     },
     /// Q1: step a destination through raw values and record what the display shows.
     ProbeDestinations {
@@ -264,6 +278,22 @@ mod tests {
         assert_eq!(cli.conn.timeout_ms, 3000);
         assert!(Cli::try_parse_from(["virus", "get-bank", "A"]).is_err(), "--out-file is required");
         assert!(Cli::try_parse_from(["virus", "--device", "0", "ports"]).is_err());
+    }
+
+    #[test]
+    fn set_takes_page_c_and_send_hex_takes_split_or_quoted_bytes() {
+        let cli = Cli::try_parse_from(["virus", "set", "C32", "1"]).unwrap();
+        assert!(matches!(cli.command, Command::Set { param, value: 1, .. } if param == ParamAddress::c(32)));
+        assert!(Cli::try_parse_from(["virus", "probe-values", "C32"]).is_err());
+
+        let cli = Cli::try_parse_from(["virus", "send-hex", "F0 00", "20", "F7", "--yes"]).unwrap();
+        match cli.command {
+            Command::SendHex { hex, yes, listen_ms } => {
+                assert_eq!((hex.join(" "), yes, listen_ms), ("F0 00 20 F7".to_owned(), true, 1000));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["virus", "send-hex"]).is_err());
     }
 
     #[test]

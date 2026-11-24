@@ -49,6 +49,7 @@ pub fn run(cli: Cli) -> Outcome {
             )
         }
         Command::Set { param, value, force, verify } => set(conn, param, value, force, verify),
+        Command::SendHex { hex, yes, listen_ms } => send_hex(conn, &hex.join(" "), yes, listen_ms),
         Command::ProbeDestinations { slot, from, to, out_file, probe } => {
             let plan = destination_plan(slot, range(from, to)?);
             probe_command(conn, &plan, &out_file, &probe)
@@ -344,6 +345,12 @@ fn set(conn: &ConnArgs, param: ParamAddress, value: u8, force: bool, verify: boo
     if param == ParamAddress::a(0) {
         return Err("A0 is the Sound Version; the editor never changes it (SPEC §5.2)".to_owned());
     }
+    if verify && !param.in_single_dump() {
+        return Err(format!(
+            "{param} is a Page C parameter and isn't part of the single dump, so --verify can't read it back \
+             (for C32/C33 check the selected sound with `fetch --brief`)"
+        ));
+    }
     if let Some(reason) = param.edit_warning() {
         if !force {
             return Err(format!("{param} is {reason}; use --force to send it anyway"));
@@ -359,6 +366,30 @@ fn set(conn: &ConnArgs, param: ParamAddress, value: u8, force: bool, verify: boo
         println!("Verify: edit buffer holds {param} = {}", param.describe_value(read));
         return Ok(read == value);
     }
+    Ok(true)
+}
+
+/// Sends one raw SysEx message (experiments), then prints what arrives for `listen_ms`.
+fn send_hex(conn: &ConnArgs, text: &str, yes: bool, listen_ms: u64) -> Outcome {
+    let message = crate::messages::parse_hex_sysex(text)?;
+    let target = conn.target();
+    let meaning = describe(&virus_midi::MidiEvent::SysEx(message.clone()), &target)
+        .unwrap_or_else(|| "not a Virus message this tool can decode".to_owned());
+    println!("Message ({} bytes): {}\n  = {meaning}", message.len(), crate::messages::hex(&message));
+    if !yes {
+        println!("Nothing sent. Raw messages bypass every safety check of this tool; re-run with --yes to send it.");
+        return Ok(false);
+    }
+    let mut synth = open(conn)?;
+    synth.send_raw(&message)?;
+    println!("Sent. Listening for {listen_ms} ms…");
+    let start = Instant::now();
+    let arrived = synth.listen(Duration::from_millis(listen_ms), &mut |event| {
+        if let Some(line) = describe(event, &target) {
+            println!("{:>9.3}s  {line}", start.elapsed().as_secs_f64());
+        }
+    });
+    println!("{arrived} message(s) arrived.");
     Ok(true)
 }
 

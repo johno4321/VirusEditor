@@ -47,6 +47,30 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
 }
 
+/// Parses one SysEx message typed as hex for `send-hex`: bytes as two-digit pairs, spaces and
+/// commas optional (`F0 00 20 33 …` or `F0002033…`). It must start with `F0`, end with `F7`
+/// and carry only 7-bit data bytes in between.
+pub fn parse_hex_sysex(text: &str) -> Result<Vec<u8>, String> {
+    let digits: String = text.chars().filter(|c| !c.is_whitespace() && *c != ',').collect();
+    if digits.is_empty() {
+        return Err("no bytes given".to_owned());
+    }
+    if !digits.len().is_multiple_of(2) {
+        return Err(format!("odd number of hex digits ({}); write every byte as two digits, e.g. 0A", digits.len()));
+    }
+    let bytes = (0..digits.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&digits[i..i + 2], 16).map_err(|_| format!("'{}' is not a hex byte", &digits[i..i + 2])))
+        .collect::<Result<Vec<u8>, String>>()?;
+    if bytes.len() < 3 || bytes[0] != 0xF0 || bytes[bytes.len() - 1] != 0xF7 {
+        return Err("a SysEx message must start with F0, end with F7 and hold at least one data byte".to_owned());
+    }
+    if let Some(i) = bytes[1..bytes.len() - 1].iter().position(|&b| b > 0x7F) {
+        return Err(format!("byte {} is {:02X}: data bytes must be 00-7F", i + 2, bytes[i + 1]));
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +79,27 @@ mod tests {
 
     fn target() -> Target {
         Target { device: DeviceId(0x00), channel: 0, part: Part::Single }
+    }
+
+    #[test]
+    fn hex_sysex_parses_spaced_and_packed_forms() {
+        let expected = vec![0xF0, 0x00, 0x20, 0x33, 0x01, 0x00, 0x72, 0x40, 0x20, 0x01, 0xF7];
+        assert_eq!(parse_hex_sysex("F0 00 20 33 01 00 72 40 20 01 F7"), Ok(expected.clone()));
+        assert_eq!(parse_hex_sysex("f0002033010072402001f7"), Ok(expected.clone()));
+        assert_eq!(parse_hex_sysex(" F0,00,20,33,01,00,72,40,20,01,F7 "), Ok(expected));
+    }
+
+    #[test]
+    fn hex_sysex_rejects_bad_framing_and_8_bit_data() {
+        assert!(parse_hex_sysex("").unwrap_err().contains("no bytes"));
+        assert!(parse_hex_sysex("F0 0 F7").unwrap_err().contains("odd number"));
+        assert!(parse_hex_sysex("F0 GG F7").unwrap_err().contains("not a hex byte"));
+        assert!(parse_hex_sysex("00 20 33 F7").unwrap_err().contains("start with F0"));
+        assert!(parse_hex_sysex("F0 00 20 33").unwrap_err().contains("end with F7"));
+        assert!(parse_hex_sysex("F0 F7").is_err(), "no data byte");
+        let err = parse_hex_sysex("F0 00 80 F7").unwrap_err();
+        assert!(err.contains("byte 3 is 80"), "{err}");
+        assert!(parse_hex_sysex("F0 00 F7 01 F7").unwrap_err().contains("byte 3 is F7"));
     }
 
     #[test]
