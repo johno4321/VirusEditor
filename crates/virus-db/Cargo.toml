@@ -7,7 +7,6 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-virus-syx = { path = "../virus-syx" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 [dev-dependencies]
