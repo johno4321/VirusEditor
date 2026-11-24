@@ -1,5 +1,7 @@
 //! Librarian file import/export on top of [`FileJobs`]: dialogs and file I/O run on a worker
-//! thread, while the database (`import_bytes`, `export_bank_bytes`) stays on the UI thread.
+//! thread, while the database (`prepare_import_bytes`, `export_bank_bytes`) stays on the UI thread.
+//! Imports that would overwrite stored patches wait for the user's choice (review H1); exports
+//! apply the selected bad-checksum policy (review H2).
 
 use std::path::{Path, PathBuf};
 
@@ -8,13 +10,13 @@ use virus_db::{ImportTarget, PatchDatabase};
 
 use super::{LibAction, LibrarianView};
 use crate::dialogs::{Outcome, Task};
-use crate::library::{export_bank_bytes, import_bytes};
+use crate::library::{export_bank_bytes, prepare_import_bytes, ExportResult};
 use crate::views::Notice;
 
 /// What the running file task is for, captured when the user clicked.
 pub(super) enum PendingFile {
     Import { target: ImportTarget },
-    Export { bank_id: i64, bank_name: String, export_as: Option<u8>, count: usize },
+    Export { bank_id: i64, bank_name: String, export_as: Option<u8>, result: ExportResult },
 }
 
 impl LibrarianView {
@@ -37,7 +39,7 @@ impl LibrarianView {
         let task = Task::PickExport { dir: self.files.export_dir.clone(), file_name: format!("{file_name}.syx") };
         if self.start_task(ctx, task, actions) {
             self.pending_file =
-                Some(PendingFile::Export { bank_id: bank.id, bank_name: bank.name, export_as: self.export_as, count: 0 });
+                Some(PendingFile::Export { bank_id: bank.id, bank_name: bank.name, export_as: self.export_as, result: ExportResult::default() });
         }
     }
 
@@ -66,31 +68,38 @@ impl LibrarianView {
                 }
             }
             (PendingFile::Import { target }, Outcome::Read { path, result }) => {
-                match result.and_then(|bytes| import_bytes(db, &bytes, target)) {
-                    Ok(outcome) => {
-                        let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                        let text = format!("{file}: {}", outcome.summary());
-                        actions.push(LibAction::Notice(if outcome.has_warnings() { Notice::warning(text) } else { Notice::info(text) }));
-                        self.loose = outcome.report.loose.clone();
-                        self.last_import = Some(outcome);
+                let label = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                match result.and_then(|bytes| prepare_import_bytes(db, &label, &bytes, target)) {
+                    Ok(pending) if pending.needs_confirmation() => {
+                        self.pending_import = Some(pending);
+                        self.pending_from_received = false;
+                    }
+                    Ok(pending) => {
+                        let label = pending.label.clone();
+                        self.finish_import(&label, pending.commit_overwrite(db), actions);
                     }
                     Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
                 }
             }
             (PendingFile::Export { bank_id, bank_name, export_as, .. }, Outcome::ExportPicked(Some(path))) => {
                 self.files.export_dir = parent_of(&path);
-                match export_bank_bytes(db, bank_id, export_as) {
-                    Ok((bytes, count)) => {
+                match export_bank_bytes(db, bank_id, export_as, self.export_policy) {
+                    Ok((bytes, result)) => {
                         if self.start_task(ctx, Task::WriteFile { path, bytes }, actions) {
-                            self.pending_file = Some(PendingFile::Export { bank_id, bank_name, export_as, count });
+                            self.pending_file = Some(PendingFile::Export { bank_id, bank_name, export_as, result });
                         }
                     }
                     Err(e) => actions.push(LibAction::Notice(Notice::error(e))),
                 }
             }
-            (PendingFile::Export { bank_name, count, .. }, Outcome::Written { path, result }) => {
-                actions.push(LibAction::Notice(match result {
-                    Ok(()) => Notice::info(format!("Exported {count} patch(es) of {bank_name} to {}.", path.display())),
+            (PendingFile::Export { bank_name, result, .. }, Outcome::Written { path, result: written }) => {
+                actions.push(LibAction::Notice(match written {
+                    Ok(()) => Notice::info(format!(
+                        "Exported {} patch(es) of {bank_name} to {}{}.",
+                        result.written,
+                        path.display(),
+                        result.notes()
+                    )),
                     Err(e) => Notice::error(e),
                 }));
             }

@@ -187,6 +187,63 @@ pub struct ImportReport {
     pub loose: Vec<IncomingDump>,
     /// Dumps with a wrong checksum (they are still imported/returned, and flagged).
     pub bad_checksum: usize,
-    /// Dumps that could not be placed (unknown `bb`, or program > 127).
+    /// Dumps that could not be placed (unknown `bb`, program > 127, or data bytes ≥ 0x80).
     pub skipped: usize,
+    /// Slots that received more than one dump in this import. The later dump wins; the
+    /// earlier ones are not counted in `imported`/`per_bank`.
+    pub duplicates: Vec<SlotRef>,
+}
+
+/// A library slot: bank name and program number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotRef {
+    pub bank_id: i64,
+    pub bank_name: String,
+    pub program: u8,
+}
+
+/// An occupied slot an import would replace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotOverwrite {
+    pub slot: SlotRef,
+    pub old_name: String,
+    pub new_name: String,
+}
+
+/// What [`crate::PatchDatabase::plan_import`] predicts for an import, without writing anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportPlan {
+    /// Occupied slots that would be replaced (the last dump for each slot).
+    pub overwrites: Vec<SlotOverwrite>,
+    /// Slots addressed by more than one dump in the input.
+    pub duplicates: Vec<SlotRef>,
+    /// Dumps that would be written (distinct slots).
+    pub slots: usize,
+    /// Dumps that would be skipped (unknown `bb`, program > 127, 8-bit data).
+    pub skipped: usize,
+}
+
+/// What to do with patches flagged `checksum_ok = false` when exporting or sending a bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BadChecksumPolicy {
+    /// Leave them out (default): their data is known or suspected to be damaged.
+    #[default]
+    Skip,
+    /// Include them with a deliberately wrong checksum, so the damage stays detectable.
+    KeepInvalid,
+    /// Include them with a freshly computed, valid checksum. This hides the damage: only
+    /// use it with the user's explicit consent.
+    Rechecksum,
+}
+
+/// Frames of a bank export plus what was left out or altered.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BankExport {
+    pub frames: Vec<Vec<u8>>,
+    /// Flagged patches left out under [`BadChecksumPolicy::Skip`].
+    pub skipped_flagged: usize,
+    /// Flagged patches included (with an invalid or a recomputed checksum).
+    pub included_flagged: usize,
+    /// Patches left out because their data contains bytes ≥ 0x80.
+    pub skipped_invalid: usize,
 }

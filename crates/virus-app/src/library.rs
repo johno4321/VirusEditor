@@ -5,10 +5,10 @@
 use std::path::Path;
 
 use virus_db::{
-    BankRecord, DbError, ImportReport, ImportTarget, IncomingDump, PatchDatabase, PatchFilter,
-    PatchMeta, PatchSummary, SoundCategory,
+    BadChecksumPolicy, BankRecord, DbError, ImportPlan, ImportReport, ImportTarget, IncomingDump, PatchDatabase,
+    PatchFilter, PatchMeta, PatchSummary, SoundCategory,
 };
-use virus_syx::{extract_sysex_frames, parse_sysex, Patch, SysExMessage};
+use virus_syx::{extract_sysex_frames, parse_sysex, Patch, SingleBank, SysExMessage};
 
 /// What a set of SysEx frames contained.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -65,6 +65,16 @@ impl ImportOutcome {
         if r.skipped > 0 {
             parts.push(format!("{} dump(s) skipped (unsupported bank or program)", r.skipped));
         }
+        if !r.duplicates.is_empty() {
+            let slots: Vec<String> =
+                r.duplicates.iter().take(6).map(|s| format!("{} {:03}", s.bank_name, s.program)).collect();
+            let more = if r.duplicates.len() > 6 { ", …" } else { "" };
+            parts.push(format!(
+                "⚠ {} slot(s) were addressed by more than one dump, the later one was kept ({}{more})",
+                r.duplicates.len(),
+                slots.join(", ")
+            ));
+        }
         if self.parsed_multi_dumps > 0 {
             parts.push(format!("{} multi dump(s) skipped", self.parsed_multi_dumps));
         }
@@ -79,12 +89,72 @@ impl ImportOutcome {
 
     pub fn has_warnings(&self) -> bool {
         let r = &self.report;
-        r.bad_checksum > 0 || r.skipped > 0 || self.parsed_invalid_frames > 0
+        r.bad_checksum > 0 || r.skipped > 0 || !r.duplicates.is_empty() || self.parsed_invalid_frames > 0
     }
 }
 
-/// Imports single dumps into the library (L1–L3): `.syx`, `.bin` (raw SysEx streams) and `.mid`.
-pub fn import_bytes(db: &PatchDatabase, bytes: &[u8], target: ImportTarget) -> Result<ImportOutcome, String> {
+/// A parsed import waiting for the user's decision (H1): what it would overwrite is known
+/// before anything is written.
+#[derive(Debug, Clone)]
+pub struct PendingImport {
+    /// File name or "received from synth", for messages.
+    pub label: String,
+    pub dumps: Vec<IncomingDump>,
+    pub target: ImportTarget,
+    pub plan: ImportPlan,
+    pub parsed_multi_dumps: usize,
+    pub parsed_other_messages: usize,
+    pub parsed_invalid_frames: usize,
+}
+
+impl PendingImport {
+    /// Dumps received from the synth (no file-level counters).
+    pub fn from_dumps(db: &PatchDatabase, label: &str, dumps: &[IncomingDump], target: ImportTarget) -> Result<Self, String> {
+        let plan = db.plan_import(dumps, target).map_err(|e| format!("Import failed: {e}"))?;
+        Ok(Self {
+            label: label.to_owned(),
+            dumps: dumps.to_vec(),
+            target,
+            plan,
+            parsed_multi_dumps: 0,
+            parsed_other_messages: 0,
+            parsed_invalid_frames: 0,
+        })
+    }
+
+    /// Whether importing as planned would replace stored patches.
+    pub fn needs_confirmation(&self) -> bool {
+        !self.plan.overwrites.is_empty()
+    }
+
+    fn outcome(&self, report: ImportReport) -> ImportOutcome {
+        ImportOutcome {
+            parsed_multi_dumps: self.parsed_multi_dumps,
+            parsed_other_messages: self.parsed_other_messages,
+            parsed_invalid_frames: self.parsed_invalid_frames,
+            report,
+        }
+    }
+
+    /// Writes into the planned target, replacing occupied slots.
+    pub fn commit_overwrite(&self, db: &PatchDatabase) -> Result<ImportOutcome, String> {
+        import_dumps(db, &self.dumps, self.target).map(|r| self.outcome(r))
+    }
+
+    /// Writes into fresh library banks named after `name`, one per source bank (nothing is
+    /// overwritten).
+    pub fn commit_as_new_banks(&self, db: &PatchDatabase, name: &str) -> Result<ImportOutcome, String> {
+        import_as_new_banks(db, name, &self.dumps).map(|r| self.outcome(r))
+    }
+}
+
+/// Parses `bytes` and plans the import without writing (H1).
+pub fn prepare_import_bytes(
+    db: &PatchDatabase,
+    label: &str,
+    bytes: &[u8],
+    target: ImportTarget,
+) -> Result<PendingImport, String> {
     let frames = extract_sysex_frames(bytes);
     if frames.is_empty() {
         return Err("No SysEx messages found in the file.".to_owned());
@@ -99,55 +169,187 @@ pub fn import_bytes(db: &PatchDatabase, bytes: &[u8], target: ImportTarget) -> R
             parsed.invalid_frames
         ));
     }
-    import_dumps(db, &parsed.dumps, target).map(|report| ImportOutcome {
-        parsed_multi_dumps: parsed.multi_dumps,
-        parsed_other_messages: parsed.other_messages,
-        parsed_invalid_frames: parsed.invalid_frames,
-        report,
-    })
+    let mut pending = PendingImport::from_dumps(db, label, &parsed.dumps, target)?;
+    pending.parsed_multi_dumps = parsed.multi_dumps;
+    pending.parsed_other_messages = parsed.other_messages;
+    pending.parsed_invalid_frames = parsed.invalid_frames;
+    Ok(pending)
+}
+
+/// Imports single dumps, overwriting occupied slots (tests; the UI goes through
+/// [`prepare_import_bytes`] and asks first).
+#[cfg(test)]
+pub fn import_bytes(db: &PatchDatabase, bytes: &[u8], target: ImportTarget) -> Result<ImportOutcome, String> {
+    prepare_import_bytes(db, "", bytes, target)?.commit_overwrite(db)
 }
 
 pub fn import_dumps(db: &PatchDatabase, dumps: &[IncomingDump], target: ImportTarget) -> Result<ImportReport, String> {
     db.import_single_dumps(dumps, target).map_err(|e| format!("Import failed: {e}"))
 }
 
-/// Imports dumps received from the synth into a new user bank (e.g. a backup before sending a bank).
-pub fn import_as_new_bank(db: &PatchDatabase, name: &str, dumps: &[IncomingDump]) -> Result<ImportReport, String> {
-    let bank_id = db.create_bank(name).map_err(|e| format!("Cannot create bank: {e}"))?;
-    match import_dumps(db, dumps, ImportTarget::Bank(bank_id)) {
-        Ok(report) => Ok(report),
-        Err(e) => {
-            // Don't leave an empty bank behind.
-            let _ = db.delete_bank(bank_id);
-            Err(e)
+/// Imports dumps (e.g. received from the synth) into new user banks, one per source bank, so
+/// nothing existing is overwritten. A single source bank gets `name`; several get
+/// `name (A)`, `name (B)`, …
+pub fn import_as_new_banks(db: &PatchDatabase, name: &str, dumps: &[IncomingDump]) -> Result<ImportReport, String> {
+    let mut sources: Vec<u8> = dumps.iter().map(|d| d.bank).filter(|&b| b != 0).collect();
+    sources.sort_unstable();
+    sources.dedup();
+    if sources.is_empty() {
+        // Only edit-buffer dumps: nothing is written, they are returned as `loose`.
+        return import_dumps(db, dumps, ImportTarget::OriginalBanks);
+    }
+
+    let mut total = ImportReport::default();
+    let mut created = Vec::new();
+    for (index, &bb) in sources.iter().enumerate() {
+        let bank_name = match (sources.len(), SingleBank::from_raw(bb)) {
+            (1, _) => name.to_owned(),
+            (_, Some(bank)) => format!("{name} ({})", bank.letter()),
+            (_, None) => format!("{name} (bb {bb})"),
+        };
+        let bank_id = match db.create_bank(&bank_name) {
+            Ok(id) => id,
+            Err(e) => {
+                delete_banks(db, &created);
+                return Err(format!("Cannot create bank: {e}"));
+            }
+        };
+        created.push(bank_id);
+        // Edit-buffer dumps ride along with the first group so they end up in `loose` once.
+        let group: Vec<IncomingDump> =
+            dumps.iter().filter(|d| d.bank == bb || (index == 0 && d.bank == 0)).cloned().collect();
+        match import_dumps(db, &group, ImportTarget::Bank(bank_id)) {
+            Ok(report) => {
+                if report.imported == 0 {
+                    delete_banks(db, &[bank_id]);
+                }
+                total.imported += report.imported;
+                total.per_bank.extend(report.per_bank);
+                total.loose.extend(report.loose);
+                total.bad_checksum += report.bad_checksum;
+                total.skipped += report.skipped;
+                total.duplicates.extend(report.duplicates);
+            }
+            Err(e) => {
+                delete_banks(db, &created);
+                return Err(e);
+            }
         }
+    }
+    Ok(total)
+}
+
+fn delete_banks(db: &PatchDatabase, ids: &[i64]) {
+    for &id in ids {
+        let _ = db.delete_bank(id);
+    }
+}
+
+/// What a bank export wrote and what it left out or altered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExportResult {
+    pub written: usize,
+    pub skipped_flagged: usize,
+    pub included_flagged: usize,
+    pub skipped_invalid: usize,
+}
+
+impl ExportResult {
+    /// Suffix for the status line, e.g. "; 3 flagged ⚠ patch(es) left out".
+    pub fn notes(&self) -> String {
+        let mut s = String::new();
+        if self.skipped_flagged > 0 {
+            s.push_str(&format!("; {} flagged ⚠ patch(es) left out", self.skipped_flagged));
+        }
+        if self.included_flagged > 0 {
+            s.push_str(&format!("; {} flagged ⚠ patch(es) included", self.included_flagged));
+        }
+        if self.skipped_invalid > 0 {
+            s.push_str(&format!("; {} patch(es) with invalid data left out", self.skipped_invalid));
+        }
+        s
     }
 }
 
 /// Writes a bank as a `.syx` file (one single dump per stored slot, device ID Omni so any
 /// Virus accepts it). `target_bank` is the SysEx `bb` (1..=4); `None` = the bank's own letter.
+/// Flagged (⚠) patches are handled according to `policy` (H2).
 #[allow(dead_code)] // the app writes the bytes on a worker thread (dialogs.rs); this is the synchronous form
 pub fn export_bank_file(
     db: &PatchDatabase,
     bank_id: i64,
     target_bank: Option<u8>,
+    policy: BadChecksumPolicy,
     path: &Path,
-) -> Result<usize, String> {
-    let (bytes, count) = export_bank_bytes(db, bank_id, target_bank)?;
+) -> Result<ExportResult, String> {
+    let (bytes, result) = export_bank_bytes(db, bank_id, target_bank, policy)?;
     std::fs::write(path, bytes).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
-    Ok(count)
+    Ok(result)
 }
 
-/// The `.syx` content of [`export_bank_file`] and the number of patches, so the file can be
-/// written off the UI thread while the database is read on it.
-pub fn export_bank_bytes(db: &PatchDatabase, bank_id: i64, target_bank: Option<u8>) -> Result<(Vec<u8>, usize), String> {
-    let frames = db
-        .export_bank_dumps(bank_id, virus_syx::DEVICE_ID_OMNI, target_bank)
+/// The `.syx` content of [`export_bank_file`] and what was written or left out, so the file can
+/// be written off the UI thread while the database is read on it.
+pub fn export_bank_bytes(
+    db: &PatchDatabase,
+    bank_id: i64,
+    target_bank: Option<u8>,
+    policy: BadChecksumPolicy,
+) -> Result<(Vec<u8>, ExportResult), String> {
+    let export = db
+        .export_bank(bank_id, virus_syx::DEVICE_ID_OMNI, target_bank, policy)
         .map_err(|e| format!("Export failed: {e}"))?;
-    if frames.is_empty() {
-        return Err("Export failed: the bank is empty.".to_owned());
+    let result = ExportResult {
+        written: export.frames.len(),
+        skipped_flagged: export.skipped_flagged,
+        included_flagged: export.included_flagged,
+        skipped_invalid: export.skipped_invalid,
+    };
+    if export.frames.is_empty() {
+        let why = if result.skipped_flagged > 0 { " (all patches are flagged ⚠)" } else { "" };
+        return Err(format!("Export failed: the bank is empty{why}."));
     }
-    Ok((frames.concat(), frames.len()))
+    Ok((export.frames.concat(), result))
+}
+
+/// Number of stored patches flagged ⚠ (wrong checksum, or migrated from v1).
+pub fn flagged_count(slots: &[Option<PatchSummary>]) -> usize {
+    slots.iter().flatten().filter(|s| !s.checksum_ok).count()
+}
+
+/// How many of `count` stored patches a bank send would transmit.
+pub fn sendable_count(count: usize, flagged: usize, include_flagged: bool) -> usize {
+    if include_flagged {
+        count
+    } else {
+        count.saturating_sub(flagged)
+    }
+}
+
+/// Bank bytes for which `dumps` hold all 128 programs, i.e. a full backup of that bank.
+pub fn complete_banks(dumps: &[IncomingDump]) -> Vec<u8> {
+    let mut banks: Vec<u8> = dumps.iter().map(|d| d.bank).filter(|&b| b != 0).collect();
+    banks.sort_unstable();
+    banks.dedup();
+    banks.retain(|&bb| {
+        let mut programs: Vec<u8> = dumps.iter().filter(|d| d.bank == bb).map(|d| d.program).collect();
+        programs.sort_unstable();
+        programs.dedup();
+        programs.len() >= 128
+    });
+    banks
+}
+
+/// Most dumps kept in the "received from synth" list.
+pub const MAX_RECEIVED: usize = 1024;
+
+/// Queues a received dump: a newer dump for the same (bank, program) replaces the older one
+/// (edit-buffer dumps are keyed by their part too), and the list is capped (L3).
+pub fn queue_received(list: &mut Vec<IncomingDump>, dump: IncomingDump) {
+    if let Some(existing) = list.iter_mut().find(|d| d.bank == dump.bank && d.program == dump.program) {
+        *existing = dump;
+    } else if list.len() < MAX_RECEIVED {
+        list.push(dump);
+    }
 }
 
 /// Stores `patch` byte-exact in a slot. The slot's tags and favourite flag are kept when the
@@ -324,13 +526,108 @@ mod tests {
     }
 
     #[test]
-    fn import_as_new_bank_creates_backup_bank() {
+    fn import_as_new_banks_creates_backup_bank() {
         let db = PatchDatabase::open_in_memory().unwrap();
         let dumps = vec![IncomingDump { bank: 1, program: 3, data: *named("Backup").as_bytes(), checksum_ok: true }];
-        let report = import_as_new_bank(&db, "Backup A", &dumps).unwrap();
+        let report = import_as_new_banks(&db, "Backup A", &dumps).unwrap();
         assert_eq!(report.imported, 1);
         let bank = db.get_banks().unwrap().into_iter().find(|b| b.name == "Backup A").unwrap();
         assert!(db.get_bank_slots(bank.id).unwrap()[3].is_some());
+    }
+
+    fn dump(bank: u8, program: u8, name: &str) -> IncomingDump {
+        IncomingDump { bank, program, data: *named(name).as_bytes(), checksum_ok: true }
+    }
+
+    #[test]
+    fn mixed_banks_become_one_new_bank_each_without_touching_existing() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let a = bank_id(&db, "A");
+        db.save_patch(a, 0, named("Mine").as_bytes(), &PatchMeta::default()).unwrap();
+        let dumps = vec![dump(1, 0, "Rx A0"), dump(2, 5, "Rx B5"), dump(1, 1, "Rx A1")];
+
+        let pending = PendingImport::from_dumps(&db, "received", &dumps, ImportTarget::OriginalBanks).unwrap();
+        assert!(pending.needs_confirmation());
+        assert_eq!(pending.plan.overwrites.len(), 1);
+
+        let out = pending.commit_as_new_banks(&db, "Backup").unwrap();
+        assert_eq!(out.report.imported, 3);
+        let names: Vec<String> = db.get_banks().unwrap().into_iter().map(|b| b.name).collect();
+        assert!(names.contains(&"Backup (A)".to_owned()) && names.contains(&"Backup (B)".to_owned()), "{names:?}");
+        assert_eq!(db.get_patch_by_slot(a, 0).unwrap().unwrap().name, "Mine");
+    }
+
+    #[test]
+    fn overwrite_is_planned_before_it_is_written() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let a = bank_id(&db, "A");
+        db.save_patch(a, 0, named("Mine").as_bytes(), &PatchMeta::default()).unwrap();
+        let pending = prepare_import_bytes(&db, "f", &mixed_file(), ImportTarget::OriginalBanks).unwrap();
+        assert_eq!(pending.plan.overwrites[0].old_name, "Mine");
+        assert_eq!(db.get_patch_by_slot(a, 0).unwrap().unwrap().name, "Mine", "planning must not write");
+        pending.commit_overwrite(&db).unwrap();
+        assert_eq!(db.get_patch_by_slot(a, 0).unwrap().unwrap().name, "A zero");
+    }
+
+    /// The damaged `multis.mid` total dump end to end (REVIEW T4): singles go to A and B, the
+    /// 33 edit-buffer dumps stay loose, multis and the undocumented message are only counted.
+    #[test]
+    fn multis_mid_total_dump_imports_end_to_end() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../VirusOSR200_INT/OSR200_INT/Goodies/Factory soundset/multis.mid"
+        );
+        let bytes = std::fs::read(path).unwrap();
+        let db = PatchDatabase::open_in_memory().unwrap();
+        let pending = prepare_import_bytes(&db, "multis.mid", &bytes, ImportTarget::OriginalBanks).unwrap();
+        assert!(!pending.needs_confirmation(), "factory banks are empty on a fresh library");
+        let outcome = pending.commit_overwrite(&db).unwrap();
+        let r = &outcome.report;
+        assert_eq!(r.loose.len(), 33);
+        assert_eq!(outcome.parsed_multi_dumps, 129);
+        assert_eq!(outcome.parsed_other_messages, 1);
+        // The damaged file has one slot addressed twice per bank.
+        assert_eq!((r.imported, r.duplicates.len()), (254, 2));
+        assert!(outcome.has_warnings());
+    }
+
+    #[test]
+    fn received_list_dedups_and_caps() {
+        let mut list = Vec::new();
+        queue_received(&mut list, dump(1, 0, "first"));
+        queue_received(&mut list, dump(1, 0, "second"));
+        queue_received(&mut list, dump(2, 0, "other bank"));
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].data, *named("second").as_bytes());
+        for i in 0..2000u32 {
+            queue_received(&mut list, dump(1 + (i / 128) as u8, (i % 128) as u8, "x"));
+        }
+        assert_eq!(list.len(), MAX_RECEIVED);
+    }
+
+    #[test]
+    fn complete_banks_needs_all_128_and_send_count_follows_policy() {
+        let mut dumps: Vec<IncomingDump> = (0..128).map(|p| dump(1, p, "x")).collect();
+        dumps.extend((0..127).map(|p| dump(2, p, "y")));
+        assert_eq!(complete_banks(&dumps), vec![1]);
+        assert_eq!(sendable_count(10, 3, false), 7);
+        assert_eq!(sendable_count(10, 3, true), 10);
+    }
+
+    #[test]
+    fn export_policy_skips_flagged_by_default() {
+        let db = PatchDatabase::open_in_memory().unwrap();
+        import_bytes(&db, &mixed_file(), ImportTarget::OriginalBanks).unwrap();
+        let dir = std::env::temp_dir().join(format!("virus-app-flag-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("b.syx");
+        let b = bank_id(&db, "B");
+        let err = export_bank_file(&db, b, None, BadChecksumPolicy::Skip, &path).unwrap_err();
+        assert!(err.contains("flagged"), "{err}");
+        let res = export_bank_file(&db, b, None, BadChecksumPolicy::Rechecksum, &path).unwrap();
+        assert_eq!((res.written, res.included_flagged), (1, 1));
+        assert_eq!(flagged_count(&db.get_bank_slots(b).unwrap()), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -340,14 +637,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("virus-app-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("bank_a.syx");
+        let skip = BadChecksumPolicy::Skip;
 
-        assert_eq!(export_bank_file(&db, bank_id(&db, "A"), None, &path), Ok(1));
+        assert_eq!(export_bank_file(&db, bank_id(&db, "A"), None, skip, &path).unwrap().written, 1);
         let written = std::fs::read(&path).unwrap();
         assert_eq!(written, encode_program_dump(DEVICE_ID_OMNI, 1, 0, named("A zero").as_bytes()));
 
-        assert!(export_bank_file(&db, bank_id(&db, "D"), None, &path).unwrap_err().contains("empty"));
+        assert!(export_bank_file(&db, bank_id(&db, "D"), None, skip, &path).unwrap_err().contains("empty"));
         let bad_path = dir.join("missing-dir").join("x.syx");
-        assert!(export_bank_file(&db, bank_id(&db, "A"), None, &bad_path).unwrap_err().contains("Cannot write"));
+        assert!(export_bank_file(&db, bank_id(&db, "A"), None, skip, &bad_path).unwrap_err().contains("Cannot write"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

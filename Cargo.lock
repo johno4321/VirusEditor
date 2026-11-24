@@ -2992,6 +2992,7 @@ dependencies = [
  "eframe",
  "egui",
  "rfd",
+ "rusqlite",
  "serde",
  "serde_json",
  "virus-db",

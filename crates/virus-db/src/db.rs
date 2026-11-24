@@ -1,19 +1,20 @@
 //! SQLite operations for the Access Virus patch librarian.
 
 use std::cell::Cell;
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension, Row, ToSql};
 
 use crate::error::{DbError, Result};
 use crate::models::{
-    BankRecord, ImportReport, ImportTarget, IncomingDump, PatchFilter, PatchMeta, PatchRecord,
-    PatchSummary, SoundCategory,
+    BadChecksumPolicy, BankExport, BankRecord, ImportPlan, ImportReport, ImportTarget,
+    IncomingDump, PatchFilter, PatchMeta, PatchRecord, PatchSummary, SlotOverwrite, SlotRef,
+    SoundCategory,
 };
 use crate::patch_data::{
-    bank_byte_for_letter, encode_single_dump, letter_for_bank_byte, patch_categories, patch_name,
-    EDIT_BUFFER_BANK, PATCH_LEN,
+    bank_byte_for_letter, encode_single_dump, first_eight_bit_offset, letter_for_bank_byte,
+    patch_categories, patch_name, EDIT_BUFFER_BANK, PATCH_LEN, SINGLE_DUMP_CHECKSUM_INDEX,
 };
 use crate::schema::{CREATE_TABLES_SQL, MIGRATE_V1_TO_V2_SQL, SCHEMA_VERSION};
 
@@ -62,26 +63,57 @@ pub struct PatchDatabase {
     conn: Connection,
     /// Incremented on every successful write through this handle (see [`Self::data_version`]).
     writes: Cell<u64>,
+    /// Where the pre-migration copy of a v1 database file was written, if one was migrated.
+    v1_backup: Option<PathBuf>,
 }
 
 impl PatchDatabase {
-    /// Opens or creates a database file, migrating older schemas.
+    /// Opens or creates a database file, migrating older schemas. A v1 file is first copied
+    /// to `<name>.v1.bak` next to it (see [`Self::v1_backup`]).
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::with_connection(Connection::open(path)?)
+        let path = path.as_ref();
+        Self::with_connection(Connection::open(path)?, Some(path))
     }
 
     /// Creates an in-memory database (tests, ephemeral sessions).
     pub fn open_in_memory() -> Result<Self> {
-        Self::with_connection(Connection::open_in_memory()?)
+        Self::with_connection(Connection::open_in_memory()?, None)
     }
 
-    fn with_connection(conn: Connection) -> Result<Self> {
+    /// The backup written when this database was migrated from v1 by [`Self::open`].
+    pub fn v1_backup(&self) -> Option<&Path> {
+        self.v1_backup.as_deref()
+    }
+
+    /// Writes a consistent copy of the database file `src` (including changes still in its
+    /// WAL) to `dest`, which must not exist. `src` is opened but not migrated or modified.
+    pub fn copy_file(src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()> {
+        let conn = Connection::open_with_flags(
+            src,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )?;
+        conn.execute(
+            "VACUUM INTO ?1",
+            params![dest.as_ref().to_string_lossy()],
+        )?;
+        Ok(())
+    }
+
+    /// Number of stored patches in all banks.
+    pub fn patch_count(&self) -> Result<usize> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM patches", [], |r| r.get::<_, i64>(0))? as usize)
+    }
+
+    fn with_connection(conn: Connection, file: Option<&Path>) -> Result<Self> {
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
-        let db = Self {
+        let mut db = Self {
             conn,
             writes: Cell::new(0),
+            v1_backup: None,
         };
-        db.migrate()?;
+        db.migrate(file)?;
         db.seed_default_banks()?;
         Ok(db)
     }
@@ -93,7 +125,7 @@ impl PatchDatabase {
             .query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
 
-    fn migrate(&self) -> Result<()> {
+    fn migrate(&mut self, file: Option<&Path>) -> Result<()> {
         match self.schema_version()? {
             0 if !self.table_exists("patches")? => {
                 let tx = self.conn.unchecked_transaction()?;
@@ -102,10 +134,26 @@ impl PatchDatabase {
                 tx.commit()?;
             }
             // Pre-versioning databases (user_version 0 with tables) are v1.
-            0 | 1 => self.migrate_v1_to_v2()?,
+            0 | 1 => {
+                // The migration is one-way (the v1 binary can't open a v2 file).
+                if let Some(file) = file {
+                    let backup = free_backup_path(file);
+                    self.copy_to(&backup)?;
+                    self.v1_backup = Some(backup);
+                }
+                self.migrate_v1_to_v2()?;
+            }
             SCHEMA_VERSION => {}
             v => return Err(DbError::UnsupportedSchemaVersion(v)),
         }
+        Ok(())
+    }
+
+    /// Writes a consistent copy of the database (including changes still in the WAL) to
+    /// `dest`, which must not exist.
+    fn copy_to(&self, dest: &Path) -> Result<()> {
+        self.conn
+            .execute("VACUUM INTO ?1", params![dest.to_string_lossy()])?;
         Ok(())
     }
 
@@ -120,6 +168,10 @@ impl PatchDatabase {
 
     /// v1 → v2 in one transaction: integer categories re-derived from the patch bytes,
     /// `is_rom` replaces `is_factory`. Blobs that aren't 256 bytes are copied untouched.
+    ///
+    /// v1 stored bytes from a lossy patch model and placed imports in whatever bank was
+    /// selected, so migrated rows are flagged `checksum_ok = 0`: the librarian shows ⚠ and
+    /// bank send/export skip them by default. Re-import from the original files to clear it.
     fn migrate_v1_to_v2(&self) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute_batch(MIGRATE_V1_TO_V2_SQL)?;
@@ -127,7 +179,7 @@ impl PatchDatabase {
         tx.execute(
             "INSERT INTO patches (id, bank_id, program_number, name, category1, category2, raw_data,
                                   checksum_ok, tags, favorite, created_at, updated_at)
-             SELECT id, bank_id, program_number, name, 0, 0, raw_data, 1, tags, favorite,
+             SELECT id, bank_id, program_number, name, 0, 0, raw_data, 0, tags, favorite,
                     created_at, updated_at
              FROM patches_v1",
             [],
@@ -235,6 +287,7 @@ impl PatchDatabase {
         meta: &PatchMeta,
     ) -> Result<i64> {
         check_program(program)?;
+        check_seven_bit(data)?;
         self.require_bank(bank_id)?;
         let (c1, c2) = patch_categories(data);
         let id = self.conn.query_row(
@@ -368,9 +421,13 @@ impl PatchDatabase {
     ///   other `bb` values are counted as `skipped`.
     /// * `Bank(id)`: all non-edit-buffer dumps go into that bank by program number. If they
     ///   come from more than one `bb`, nothing is written and `MixedSourceBanks` is returned.
-    /// * Dumps with bad checksums are still imported (the Virus accepts them), flagged with
+    /// * Dumps with a wrong checksum are still imported (the Virus accepts them), flagged with
     ///   `checksum_ok = false` and counted in `bad_checksum`.
+    /// * Dumps with data bytes ≥ 0x80 (not valid SysEx) or program > 127 are `skipped`.
+    /// * If several dumps address the same slot, the later one wins and the slot is listed in
+    ///   `duplicates` (counted once in `imported`).
     /// * An overwritten slot keeps its tags/favourite only if the patch name is unchanged.
+    ///   Use [`Self::plan_import`] first to find out which slots that affects.
     pub fn import_single_dumps(
         &self,
         dumps: &[IncomingDump],
@@ -390,11 +447,9 @@ impl PatchDatabase {
         }
 
         let tx = self.conn.unchecked_transaction()?;
-        let forced = match target {
-            ImportTarget::Bank(id) => Some(bank_by_id(&tx, id)?.ok_or(DbError::BankNotFound(id))?),
-            ImportTarget::OriginalBanks => None,
-        };
+        let forced = forced_bank(&tx, target)?;
         let mut bank_cache: HashMap<u8, (i64, String)> = HashMap::new();
+        let mut written: HashSet<(i64, u8)> = HashSet::new();
         let mut report = ImportReport::default();
         let mut insert = tx.prepare(IMPORT_PATCH_SQL)?;
 
@@ -406,30 +461,14 @@ impl PatchDatabase {
                 report.loose.push(dump.clone());
                 continue;
             }
-            if dump.program as usize >= BANK_SLOTS {
+            if dump.program as usize >= BANK_SLOTS || first_eight_bit_offset(&dump.data).is_some() {
                 report.skipped += 1;
                 continue;
             }
-            let (bank_id, bank_name) = match &forced {
-                Some(bank) => (bank.id, bank.name.clone()),
-                None => match bank_cache.get(&dump.bank) {
-                    Some(entry) => entry.clone(),
-                    None => {
-                        let Some(letter) = letter_for_bank_byte(dump.bank) else {
-                            report.skipped += 1;
-                            continue;
-                        };
-                        let bank = match bank_by_letter(&tx, letter)? {
-                            Some(bank) => bank,
-                            None => {
-                                let id = insert_letter_bank(&tx, letter)?;
-                                bank_by_id(&tx, id)?.ok_or(DbError::BankNotFound(id))?
-                            }
-                        };
-                        bank_cache.insert(dump.bank, (bank.id, bank.name.clone()));
-                        (bank.id, bank.name)
-                    }
-                },
+            let Some((bank_id, bank_name)) = place(&tx, &forced, &mut bank_cache, dump.bank, true)?
+            else {
+                report.skipped += 1;
+                continue;
             };
 
             let (c1, c2) = patch_categories(&dump.data);
@@ -442,6 +481,14 @@ impl PatchDatabase {
                 &dump.data[..],
                 dump.checksum_ok,
             ])?;
+            if !written.insert((bank_id, dump.program)) {
+                report.duplicates.push(SlotRef {
+                    bank_id,
+                    bank_name,
+                    program: dump.program,
+                });
+                continue;
+            }
             report.imported += 1;
             match report
                 .per_bank
@@ -461,15 +508,100 @@ impl PatchDatabase {
         Ok(report)
     }
 
-    /// One 267-byte Single Dump frame per stored program, in program order. Data bytes are
-    /// sent exactly as stored. `target_bank` is the SysEx `bb` (1..=4 = A..D); `None` uses the
-    /// bank's letter and fails with `NoBankLetter` for user banks.
+    /// Predicts [`Self::import_single_dumps`] without writing anything: which occupied slots
+    /// would be replaced (and by what), which slots several dumps address, and how many dumps
+    /// would be skipped. Use it to ask for confirmation before overwriting library data.
+    pub fn plan_import(&self, dumps: &[IncomingDump], target: ImportTarget) -> Result<ImportPlan> {
+        let forced = forced_bank(&self.conn, target)?;
+        let mut bank_cache: HashMap<u8, (i64, String)> = HashMap::new();
+        // Later dumps win, so keep the last new name per slot.
+        let mut last: Vec<((i64, u8), SlotRef, String, bool)> = Vec::new();
+        let mut plan = ImportPlan::default();
+        for dump in dumps {
+            if dump.bank == EDIT_BUFFER_BANK {
+                continue;
+            }
+            if dump.program as usize >= BANK_SLOTS || first_eight_bit_offset(&dump.data).is_some() {
+                plan.skipped += 1;
+                continue;
+            }
+            // A bank that doesn't exist yet gets a negative key: nothing there to overwrite.
+            let (key, bank_name, exists) =
+                match place(&self.conn, &forced, &mut bank_cache, dump.bank, false)? {
+                    Some((id, name)) => (id, name, true),
+                    None if letter_for_bank_byte(dump.bank).is_some() => {
+                        (-i64::from(dump.bank), format!("Bank {}", letter_for_bank_byte(dump.bank).unwrap_or("?")), false)
+                    }
+                    None => {
+                        plan.skipped += 1;
+                        continue;
+                    }
+                };
+            let slot = SlotRef {
+                bank_id: key,
+                bank_name,
+                program: dump.program,
+            };
+            let new_name = patch_name(&dump.data);
+            match last.iter_mut().find(|(k, ..)| *k == (key, dump.program)) {
+                Some(entry) => {
+                    plan.duplicates.push(slot.clone());
+                    entry.2 = new_name;
+                }
+                None => last.push(((key, dump.program), slot, new_name, exists)),
+            }
+        }
+        plan.slots = last.len();
+        for (_, slot, new_name, exists) in last {
+            if !exists {
+                continue;
+            }
+            if let Some(old) = self.slot_name(slot.bank_id, slot.program)? {
+                plan.overwrites.push(SlotOverwrite {
+                    slot,
+                    old_name: old,
+                    new_name,
+                });
+            }
+        }
+        Ok(plan)
+    }
+
+    fn slot_name(&self, bank_id: i64, program: u8) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT name FROM patches WHERE bank_id = ?1 AND program_number = ?2",
+                params![bank_id, program],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// One 267-byte Single Dump frame per stored program, in program order, with flagged
+    /// (`checksum_ok = false`) patches left out. See [`Self::export_bank`] to choose otherwise.
     pub fn export_bank_dumps(
         &self,
         bank_id: i64,
         device_id: u8,
         target_bank: Option<u8>,
     ) -> Result<Vec<Vec<u8>>> {
+        Ok(self
+            .export_bank(bank_id, device_id, target_bank, BadChecksumPolicy::Skip)?
+            .frames)
+    }
+
+    /// Single Dump frames of a bank in program order; data bytes are sent exactly as stored.
+    /// `target_bank` is the SysEx `bb` (1..=4 = A..D); `None` uses the bank's letter and fails
+    /// with `NoBankLetter` for user banks. Patches flagged `checksum_ok = false` are handled
+    /// according to `policy`; patches with bytes ≥ 0x80 are always left out.
+    pub fn export_bank(
+        &self,
+        bank_id: i64,
+        device_id: u8,
+        target_bank: Option<u8>,
+        policy: BadChecksumPolicy,
+    ) -> Result<BankExport> {
         let bank = self.require_bank(bank_id)?;
         let bb = match target_bank {
             Some(bb @ 1..=4) => bb,
@@ -482,7 +614,7 @@ impl PatchDatabase {
         };
 
         let mut stmt = self.conn.prepare(
-            "SELECT id, program_number, raw_data FROM patches
+            "SELECT id, program_number, raw_data, checksum_ok FROM patches
              WHERE bank_id = ?1 AND program_number < 128 ORDER BY program_number ASC",
         )?;
         let rows = stmt.query_map(params![bank_id], |r| {
@@ -490,15 +622,35 @@ impl PatchDatabase {
                 r.get::<_, i64>(0)?,
                 r.get::<_, u8>(1)?,
                 r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, bool>(3)?,
             ))
         })?;
-        let mut frames = Vec::new();
+        let mut export = BankExport::default();
         for row in rows {
-            let (id, program, raw) = row?;
+            let (id, program, raw, checksum_ok) = row?;
             let data = to_patch_bytes(id, &raw)?;
-            frames.push(encode_single_dump(device_id, bb, program, &data));
+            if first_eight_bit_offset(&data).is_some() {
+                export.skipped_invalid += 1;
+                continue;
+            }
+            let mut frame = encode_single_dump(device_id, bb, program, &data);
+            if !checksum_ok {
+                match policy {
+                    BadChecksumPolicy::Skip => {
+                        export.skipped_flagged += 1;
+                        continue;
+                    }
+                    BadChecksumPolicy::KeepInvalid => {
+                        let checksum = &mut frame[SINGLE_DUMP_CHECKSUM_INDEX];
+                        *checksum = (*checksum + 1) & 0x7F;
+                    }
+                    BadChecksumPolicy::Rechecksum => {}
+                }
+                export.included_flagged += 1;
+            }
+            export.frames.push(frame);
         }
-        Ok(frames)
+        Ok(export)
     }
 
     /// Concatenation of [`Self::export_bank_dumps`], suitable for a `.syx` file.
@@ -518,12 +670,73 @@ impl PatchDatabase {
     }
 }
 
+fn forced_bank(conn: &Connection, target: ImportTarget) -> Result<Option<BankRecord>> {
+    match target {
+        ImportTarget::Bank(id) => Ok(Some(
+            bank_by_id(conn, id)?.ok_or(DbError::BankNotFound(id))?,
+        )),
+        ImportTarget::OriginalBanks => Ok(None),
+    }
+}
+
+/// Resolves the library bank a dump with SysEx bank byte `bb` goes to. `None` means the
+/// dump can't be placed: unknown `bb`, or (with `create == false`) the letter bank is missing.
+fn place(
+    conn: &Connection,
+    forced: &Option<BankRecord>,
+    cache: &mut HashMap<u8, (i64, String)>,
+    bb: u8,
+    create: bool,
+) -> Result<Option<(i64, String)>> {
+    if let Some(bank) = forced {
+        return Ok(Some((bank.id, bank.name.clone())));
+    }
+    if let Some(entry) = cache.get(&bb) {
+        return Ok(Some(entry.clone()));
+    }
+    let Some(letter) = letter_for_bank_byte(bb) else {
+        return Ok(None);
+    };
+    let bank = match bank_by_letter(conn, letter)? {
+        Some(bank) => bank,
+        None if create => {
+            let id = insert_letter_bank(conn, letter)?;
+            bank_by_id(conn, id)?.ok_or(DbError::BankNotFound(id))?
+        }
+        None => return Ok(None),
+    };
+    let entry = (bank.id, bank.name);
+    cache.insert(bb, entry.clone());
+    Ok(Some(entry))
+}
+
 fn check_program(program: u8) -> Result<()> {
     if (program as usize) < BANK_SLOTS {
         Ok(())
     } else {
         Err(DbError::InvalidProgram(program))
     }
+}
+
+fn check_seven_bit(data: &[u8; PATCH_LEN]) -> Result<()> {
+    match first_eight_bit_offset(data) {
+        Some(offset) => Err(DbError::NotSevenBit { offset }),
+        None => Ok(()),
+    }
+}
+
+/// `<file>.v1.bak`, or `<file>.v1.bak.2`, `.3`… if earlier backups exist.
+fn free_backup_path(file: &Path) -> PathBuf {
+    let base = file.with_extension("v1.bak");
+    let mut candidate = base.clone();
+    let mut n = 1;
+    while candidate.exists() {
+        n += 1;
+        let mut name = base.clone().into_os_string();
+        name.push(format!(".{n}"));
+        candidate = PathBuf::from(name);
+    }
+    candidate
 }
 
 fn escape_like(s: &str) -> String {

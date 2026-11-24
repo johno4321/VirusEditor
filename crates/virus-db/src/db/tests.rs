@@ -446,7 +446,7 @@ fn migrates_v1_database() {
     )
     .unwrap();
 
-    let db = PatchDatabase::with_connection(conn).unwrap();
+    let db = PatchDatabase::with_connection(conn, None).unwrap();
     assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
 
     let banks = db.get_banks().unwrap();
@@ -469,6 +469,7 @@ fn migrates_v1_database() {
         (SoundCategory::Arpeggiator, SoundCategory::Unknown(127))
     );
     assert_eq!((rec.tags.as_str(), rec.favorite), ("arp", true));
+    assert!(!rec.checksum_ok, "migrated v1 rows must not look byte-exact");
     assert!(matches!(
         db.get_patch_by_slot(2, 0),
         Err(DbError::CorruptPatch { len: 10, .. })
@@ -536,12 +537,20 @@ fn factory_bank_a_round_trip() {
     let report = db
         .import_single_dumps(&dumps, ImportTarget::OriginalBanks)
         .unwrap();
-    assert_eq!(report.imported, 128);
-    assert_eq!(report.per_bank, [("Bank A".to_string(), 128)]);
+    // Program 10 is stored as 13 in this damaged file, so 127 distinct slots are written.
+    assert_eq!(report.imported, 127);
+    assert_eq!(report.per_bank, [("Bank A".to_string(), 127)]);
+    assert_eq!(report.duplicates.len(), 1);
+    assert_eq!(report.duplicates[0].program, 13);
     assert_eq!(
         (report.bad_checksum, report.skipped, report.loose.len()),
         (bad, 0, 0)
     );
+    let plan = PatchDatabase::open_in_memory()
+        .unwrap()
+        .plan_import(&dumps, ImportTarget::OriginalBanks)
+        .unwrap();
+    assert_eq!((plan.slots, plan.duplicates.len(), plan.overwrites.len()), (127, 1, 0));
 
     let a = bank_id(&db, "A");
     let slots = db.get_bank_slots(a).unwrap();
@@ -553,7 +562,16 @@ fn factory_bank_a_round_trip() {
     assert_eq!(slots[1].as_ref().unwrap().category1, SoundCategory::Bass);
 
     let device_id = scanned[0].0[5];
-    let frames = db.export_bank_dumps(a, device_id, None).unwrap();
+    // By default flagged patches are not exported at all.
+    let default_frames = db.export_bank_dumps(a, device_id, None).unwrap();
+    assert!(default_frames.iter().all(|f| f[265] == single_dump_checksum(device_id, 1, f[8], f[9..265].try_into().unwrap())));
+    let export = db.export_bank(a, device_id, None, BadChecksumPolicy::Skip).unwrap();
+    assert!(export.skipped_flagged > 0);
+    assert_eq!(export.frames.len() + export.skipped_flagged, 127);
+    let frames = db
+        .export_bank(a, device_id, None, BadChecksumPolicy::Rechecksum)
+        .unwrap()
+        .frames;
     // The file holds two dumps with ss = 13 (none with ss = 10); the later one wins.
     let mut expected: Vec<Option<&(Vec<u8>, IncomingDump)>> = vec![None; BANK_SLOTS];
     for entry in &scanned {
@@ -571,4 +589,127 @@ fn factory_bank_a_round_trip() {
             assert_ne!(exported[265], original[265]);
         }
     }
+}
+
+#[test]
+fn plan_import_lists_overwrites_without_writing() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    let a = bank_id(&db, "A");
+    db.save_patch(a, 5, &synthetic_patch("Mine", 1, 0), &PatchMeta::default())
+        .unwrap();
+    let dumps = [dump(1, 5, "Incoming"), dump(1, 6, "Fresh"), dump(0, 0, "Loose")];
+    let before = db.data_version();
+
+    let plan = db.plan_import(&dumps, ImportTarget::OriginalBanks).unwrap();
+    assert_eq!(plan.slots, 2);
+    assert_eq!(plan.overwrites.len(), 1);
+    let o = &plan.overwrites[0];
+    assert_eq!((o.slot.program, o.old_name.as_str(), o.new_name.as_str()), (5, "Mine", "Incoming"));
+    assert_eq!(db.data_version(), before);
+    assert_eq!(db.get_patch_by_slot(a, 5).unwrap().unwrap().name, "Mine");
+
+    // A new bank has nothing to overwrite; a forced bank reports its own occupants.
+    let user = db.create_bank("User").unwrap();
+    db.plan_import(&dumps, ImportTarget::Bank(user)).unwrap();
+    assert!(db.plan_import(&[dump(1, 5, "X")], ImportTarget::Bank(user)).unwrap().overwrites.is_empty());
+    assert_eq!(db.plan_import(&[dump(1, 5, "X")], ImportTarget::Bank(a)).unwrap().overwrites.len(), 1);
+
+    let report = db.import_single_dumps(&dumps, ImportTarget::OriginalBanks).unwrap();
+    assert_eq!(report.imported, plan.slots);
+}
+
+#[test]
+fn duplicate_slots_in_one_import_are_reported() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    let dumps = [dump(1, 13, "First"), dump(1, 13, "Second"), dump(1, 14, "Other")];
+    let plan = db.plan_import(&dumps, ImportTarget::OriginalBanks).unwrap();
+    assert_eq!((plan.slots, plan.duplicates.len()), (2, 1));
+    let report = db.import_single_dumps(&dumps, ImportTarget::OriginalBanks).unwrap();
+    assert_eq!((report.imported, report.duplicates.len()), (2, 1));
+    assert_eq!(report.duplicates[0].program, 13);
+    let a = bank_id(&db, "A");
+    assert_eq!(db.get_patch_by_slot(a, 13).unwrap().unwrap().name, "Second");
+}
+
+#[test]
+fn eight_bit_data_is_rejected_on_import_and_save() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    let mut bad = dump(1, 0, "Bad");
+    bad.data[100] = 0x85;
+    let report = db
+        .import_single_dumps(&[bad.clone(), dump(1, 1, "Good")], ImportTarget::OriginalBanks)
+        .unwrap();
+    assert_eq!((report.imported, report.skipped), (1, 1));
+    let a = bank_id(&db, "A");
+    assert!(matches!(
+        db.save_patch(a, 2, &bad.data, &PatchMeta::default()),
+        Err(DbError::NotSevenBit { offset: 100 })
+    ));
+}
+
+#[test]
+fn flagged_patches_follow_the_export_policy() {
+    let db = PatchDatabase::open_in_memory().unwrap();
+    let mut flagged = dump(1, 1, "Damaged");
+    flagged.checksum_ok = false;
+    db.import_single_dumps(&[dump(1, 0, "Fine"), flagged], ImportTarget::OriginalBanks)
+        .unwrap();
+    let a = bank_id(&db, "A");
+
+    let skip = db.export_bank(a, 0x10, None, BadChecksumPolicy::Skip).unwrap();
+    assert_eq!((skip.frames.len(), skip.skipped_flagged, skip.included_flagged), (1, 1, 0));
+    assert_eq!(db.export_bank_dumps(a, 0x10, None).unwrap().len(), 1);
+
+    let correct = single_dump_checksum(0x10, 1, 1, &synthetic_patch("Damaged", 1, 0));
+    let keep = db.export_bank(a, 0x10, None, BadChecksumPolicy::KeepInvalid).unwrap();
+    assert_eq!((keep.frames.len(), keep.included_flagged), (2, 1));
+    assert_ne!(keep.frames[1][265], correct);
+    assert!(keep.frames[1][265] < 0x80);
+
+    let fix = db.export_bank(a, 0x10, None, BadChecksumPolicy::Rechecksum).unwrap();
+    assert_eq!(fix.frames[1][265], correct);
+}
+
+#[test]
+fn on_disk_v1_database_is_backed_up_including_wal() {
+    let dir = std::env::temp_dir().join(format!("virus-db-v1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("virus_library.db");
+
+    // Keep this connection open so its changes stay in the -wal file.
+    let v1 = Connection::open(&path).unwrap();
+    v1.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+    v1.execute_batch(crate::schema::SCHEMA_V1_SQL).unwrap();
+    v1.execute(
+        "INSERT INTO banks (name, bank_letter, is_factory) VALUES ('Bank A', 'A', 1)",
+        [],
+    )
+    .unwrap();
+    let data = synthetic_patch("Walled", 1, 0);
+    v1.execute(
+        "INSERT INTO patches (bank_id, program_number, name, raw_data, checksum)
+         VALUES (1, 0, 'Walled', ?1, 0)",
+        params![&data[..]],
+    )
+    .unwrap();
+
+    let db = PatchDatabase::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+    let backup = db.v1_backup().expect("a backup was made").to_path_buf();
+    assert_eq!(backup, dir.join("virus_library.v1.bak"));
+    drop(db);
+    drop(v1);
+
+    let old = Connection::open(&backup).unwrap();
+    let (version, name): (i64, String) = old
+        .query_row(
+            "SELECT (SELECT user_version FROM pragma_user_version), name FROM patches",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((version, name.as_str()), (0, "Walled"));
+    drop(old);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
