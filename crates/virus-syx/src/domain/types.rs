@@ -1,4 +1,7 @@
-//! Value types and domain enums for Access Virus synthesizer parameters.
+//! Value types and lossless value enums for Access Virus parameters.
+//!
+//! Every enum here keeps an `Unknown(u8)` variant so that any raw byte read from a
+//! dump can be written back unchanged (SPEC §5.1).
 
 use std::fmt;
 
@@ -35,10 +38,7 @@ impl fmt::Display for Unipolar7 {
 
 /// Signed bipolar 7-bit parameter value stored with a center offset of 64 (`-64..=+63`).
 ///
-/// In Virus SysEx:
-/// * Raw value `0`   -> `-64`
-/// * Raw value `64`  -> `0`
-/// * Raw value `127` -> `+63`
+/// Raw `0` → `-64`, raw `64` → `0`, raw `127` → `+63`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Bipolar7(pub i8);
 
@@ -49,8 +49,7 @@ impl Bipolar7 {
 
     #[inline]
     pub fn from_raw(raw: u8) -> Self {
-        let clamped = raw.min(127);
-        Self((clamped as i8) - 64)
+        Self((raw.min(127) as i8) - 64)
     }
 
     #[inline]
@@ -83,307 +82,144 @@ impl fmt::Display for Bipolar7 {
     }
 }
 
-/// Primary oscillator waveforms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum OscShape {
-    Off = 0,
-    #[default]
-    Saw = 1,
-    Pulse = 2,
-    Sine = 3,
-    Triangle = 4,
-    Wave = 5,
-}
-
-impl OscShape {
-    pub fn from_raw(raw: u8) -> Self {
-        match raw {
-            0 => Self::Off,
-            1 => Self::Saw,
-            2 => Self::Pulse,
-            3 => Self::Sine,
-            4 => Self::Triangle,
-            _ => Self::Wave,
+/// Defines a lossless raw-value enum: documented values get named variants, anything
+/// else is kept as `Unknown(raw)`.
+macro_rules! lossless_enum {
+    (
+        $(#[$meta:meta])*
+        $name:ident, $names:ident, $count:literal {
+            $($raw:literal => $variant:ident = $text:literal),+ $(,)?
         }
-    }
-
-    pub fn to_raw(self) -> u8 {
-        self as u8
-    }
-}
-
-/// Filter mode configurations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum FilterMode {
-    #[default]
-    Lowpass = 0,
-    Highpass = 1,
-    Bandpass = 2,
-    Notch = 3,
-}
-
-impl FilterMode {
-    pub fn from_raw(raw: u8) -> Self {
-        match raw & 0x03 {
-            0 => Self::Lowpass,
-            1 => Self::Highpass,
-            2 => Self::Bandpass,
-            _ => Self::Notch,
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum $name {
+            $($variant,)+
+            /// A value outside the documented list, preserved as-is.
+            Unknown(u8),
         }
-    }
 
-    pub fn to_raw(self) -> u8 {
-        self as u8
-    }
-}
+        /// Display names indexed by raw value.
+        pub const $names: [&str; $count] = [$($text),+];
 
-/// Dual filter routing architectures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum FilterRouting {
-    #[default]
-    Serial4 = 0,
-    Serial6 = 1,
-    Parallel = 2,
-    Split = 3,
-}
+        impl $name {
+            /// All documented values, in raw-value order.
+            pub const ALL: [Self; $count] = [$(Self::$variant),+];
 
-impl FilterRouting {
-    pub fn from_raw(raw: u8) -> Self {
-        match raw & 0x03 {
-            0 => Self::Serial4,
-            1 => Self::Serial6,
-            2 => Self::Parallel,
-            _ => Self::Split,
+            pub fn from_raw(raw: u8) -> Self {
+                match raw {
+                    $($raw => Self::$variant,)+
+                    other => Self::Unknown(other),
+                }
+            }
+
+            pub fn to_raw(self) -> u8 {
+                match self {
+                    $(Self::$variant => $raw,)+
+                    Self::Unknown(raw) => raw,
+                }
+            }
+
+            /// Display name; `"Unknown"` for undocumented values (`Display` shows `#raw`).
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $text,)+
+                    Self::Unknown(_) => "Unknown",
+                }
+            }
+
+            pub fn is_known(self) -> bool {
+                !matches!(self, Self::Unknown(_))
+            }
         }
-    }
 
-    pub fn to_raw(self) -> u8 {
-        self as u8
-    }
-}
-
-/// Low Frequency Oscillator shapes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum LfoShape {
-    #[default]
-    Sine = 0,
-    Triangle = 1,
-    Saw = 2,
-    Square = 3,
-    SampleAndHold = 4,
-    SampleAndGlide = 5,
-}
-
-impl LfoShape {
-    pub fn from_raw(raw: u8) -> Self {
-        match raw % 6 {
-            0 => Self::Sine,
-            1 => Self::Triangle,
-            2 => Self::Saw,
-            3 => Self::Square,
-            4 => Self::SampleAndHold,
-            _ => Self::SampleAndGlide,
+        impl Default for $name {
+            fn default() -> Self {
+                Self::from_raw(0)
+            }
         }
-    }
 
-    pub fn to_raw(self) -> u8 {
-        self as u8
-    }
-}
-
-/// LFO voice assignment trigger modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum LfoTriggerMode {
-    #[default]
-    Poly = 0,
-    Mono = 1,
-}
-
-impl LfoTriggerMode {
-    pub fn from_raw(raw: u8) -> Self {
-        if (raw & 1) == 0 {
-            Self::Poly
-        } else {
-            Self::Mono
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                if self.is_known() {
+                    f.write_str(self.name())
+                } else {
+                    write!(f, "#{}", self.to_raw())
+                }
+            }
         }
-    }
+    };
+}
 
-    pub fn to_raw(self) -> u8 {
-        self as u8
+lossless_enum! {
+    /// Sound category stored in B123 / B124 (manual p. 84, 0-based).
+    Category, CATEGORY_NAMES, 17 {
+        0 => Off = "Off",
+        1 => Lead = "Lead",
+        2 => Bass = "Bass",
+        3 => Pad = "Pad",
+        4 => Decay = "Decay",
+        5 => Pluck = "Pluck",
+        6 => Acid = "Acid",
+        7 => Classic = "Classic",
+        8 => Arpeggiator = "Arpeggiator",
+        9 => Effects = "Effects",
+        10 => Drums = "Drums",
+        11 => Percussion = "Percussion",
+        12 => Input = "Input",
+        13 => Vocoder = "Vocoder",
+        14 => Favourite1 = "Favourite 1",
+        15 => Favourite2 = "Favourite 2",
+        16 => Favourite3 = "Favourite 3",
     }
 }
 
-/// Modulation Matrix Sources.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum ModSource {
-    #[default]
-    Off = 0,
-    Lfo1 = 1,
-    Lfo2 = 2,
-    FilterEnv = 3,
-    AmpEnv = 4,
-    Velocity = 5,
-    Aftertouch = 6,
-    ModWheel = 7,
-    Breath = 8,
-    Foot = 9,
-    PitchBend = 10,
-    MidiVolume = 11,
-    Pan = 12,
-    Expression = 13,
-    Assign1 = 14,
-    Assign2 = 15,
+lossless_enum! {
+    /// Assign 1/2/3 modulation source (B64 / B67 / B72), OSR15 addendum list.
+    AssignSource, ASSIGN_SOURCE_NAMES, 28 {
+        0 => Off = "Off",
+        1 => PitchBnd = "PitchBnd",
+        2 => ChanPres = "ChanPres",
+        3 => ModWheel = "ModWheel",
+        4 => Breath = "Breath",
+        5 => Contr3 = "Contr3",
+        6 => Foot = "Foot",
+        7 => Data = "Data",
+        8 => Balance = "Balance",
+        9 => Contr9 = "Contr9",
+        10 => Express = "Express",
+        11 => Contr12 = "Contr12",
+        12 => Contr13 = "Contr13",
+        13 => Contr14 = "Contr14",
+        14 => Contr15 = "Contr15",
+        15 => Contr16 = "Contr16",
+        16 => HoldPed = "HoldPed",
+        17 => PortaSw = "PortaSw",
+        18 => SostPed = "SostPed",
+        19 => AmpEnv = "AmpEnv",
+        20 => FiltEnv = "FiltEnv",
+        21 => Lfo1 = "Lfo1",
+        22 => Lfo2 = "Lfo2",
+        23 => Lfo3 = "Lfo3",
+        24 => VeloOn = "VeloOn",
+        25 => VeloOff = "VeloOff",
+        26 => KeyFlw = "KeyFlw",
+        27 => Random = "Random",
+    }
 }
 
-impl ModSource {
-    pub fn from_raw(raw: u8) -> Self {
-        match raw {
-            1 => Self::Lfo1,
-            2 => Self::Lfo2,
-            3 => Self::FilterEnv,
-            4 => Self::AmpEnv,
-            5 => Self::Velocity,
-            6 => Self::Aftertouch,
-            7 => Self::ModWheel,
-            8 => Self::Breath,
-            9 => Self::Foot,
-            10 => Self::PitchBend,
-            11 => Self::MidiVolume,
-            12 => Self::Pan,
-            13 => Self::Expression,
-            14 => Self::Assign1,
-            15 => Self::Assign2,
-            _ => Self::Off,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_values_round_trip() {
+        for raw in 0..=127u8 {
+            assert_eq!(Category::from_raw(raw).to_raw(), raw);
+            assert_eq!(AssignSource::from_raw(raw).to_raw(), raw);
         }
-    }
-
-    pub fn to_raw(self) -> u8 {
-        self as u8
-    }
-}
-
-/// Modulation Matrix Destinations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum ModDestination {
-    #[default]
-    Off = 0,
-    Pitch1 = 1,
-    Pitch2 = 2,
-    Pitch1And2 = 3,
-    PulseWidth1 = 4,
-    PulseWidth2 = 5,
-    Osc2Detune = 6,
-    FmAmount = 7,
-    Cutoff1 = 8,
-    Cutoff2 = 9,
-    Cutoff1And2 = 10,
-    Resonance1 = 11,
-    Resonance2 = 12,
-    FilterBalance = 13,
-    Pan = 14,
-    Lfo1Rate = 15,
-    Lfo2Rate = 16,
-}
-
-impl ModDestination {
-    pub fn from_raw(raw: u8) -> Self {
-        match raw {
-            1 => Self::Pitch1,
-            2 => Self::Pitch2,
-            3 => Self::Pitch1And2,
-            4 => Self::PulseWidth1,
-            5 => Self::PulseWidth2,
-            6 => Self::Osc2Detune,
-            7 => Self::FmAmount,
-            8 => Self::Cutoff1,
-            9 => Self::Cutoff2,
-            10 => Self::Cutoff1And2,
-            11 => Self::Resonance1,
-            12 => Self::Resonance2,
-            13 => Self::FilterBalance,
-            14 => Self::Pan,
-            15 => Self::Lfo1Rate,
-            16 => Self::Lfo2Rate,
-            _ => Self::Off,
-        }
-    }
-
-    pub fn to_raw(self) -> u8 {
-        self as u8
-    }
-}
-
-/// Arpeggiator playback modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum ArpMode {
-    #[default]
-    Off = 0,
-    Up = 1,
-    Down = 2,
-    UpDown = 3,
-    AsPlayed = 4,
-    Random = 5,
-    Chord = 6,
-}
-
-impl ArpMode {
-    pub fn from_raw(raw: u8) -> Self {
-        match raw {
-            1 => Self::Up,
-            2 => Self::Down,
-            3 => Self::UpDown,
-            4 => Self::AsPlayed,
-            5 => Self::Random,
-            6 => Self::Chord,
-            _ => Self::Off,
-        }
-    }
-
-    pub fn to_raw(self) -> u8 {
-        self as u8
-    }
-}
-
-/// Saturation and distortion curve modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum DistortionType {
-    #[default]
-    Off = 0,
-    Light = 1,
-    Soft = 2,
-    Medium = 3,
-    Hard = 4,
-    Digital = 5,
-    WaveShaper = 6,
-    Rectifier = 7,
-    RateReducer = 8,
-}
-
-impl DistortionType {
-    pub fn from_raw(raw: u8) -> Self {
-        match raw {
-            1 => Self::Light,
-            2 => Self::Soft,
-            3 => Self::Medium,
-            4 => Self::Hard,
-            5 => Self::Digital,
-            6 => Self::WaveShaper,
-            7 => Self::Rectifier,
-            8 => Self::RateReducer,
-            _ => Self::Off,
-        }
-    }
-
-    pub fn to_raw(self) -> u8 {
-        self as u8
+        assert_eq!(Category::from_raw(127), Category::Unknown(127));
+        assert_eq!(Category::from_raw(127).to_string(), "#127");
+        assert_eq!(Category::from_raw(5), Category::Pluck);
     }
 }

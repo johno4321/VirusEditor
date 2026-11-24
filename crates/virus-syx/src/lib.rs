@@ -1,4 +1,4 @@
-//! Access Virus B / Rack SysEx & Domain library.
+//! Access Virus Rack SysEx & domain library.
 
 #![forbid(unsafe_code)]
 
