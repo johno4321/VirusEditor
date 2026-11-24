@@ -1,8 +1,11 @@
-//! Desktop entry point for the Access Virus Synthesizer Editor & Patch Librarian.
+//! Desktop entry point for the Access Virus Rack editor & librarian.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod library;
+mod session;
+mod storage;
 mod views;
 mod widgets;
 
@@ -12,9 +15,9 @@ use eframe::egui;
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Access Virus Rack / B / Classic Editor & Librarian")
-            .with_inner_size([1240.0, 840.0])
-            .with_min_inner_size([980.0, 680.0]),
+            .with_title("Access Virus Rack Editor & Librarian")
+            .with_inner_size([1280.0, 860.0])
+            .with_min_inner_size([1000.0, 680.0]),
         ..Default::default()
     };
 

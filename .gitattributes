@@ -1,0 +1,7 @@
+# Binary MIDI/SysEx data must never go through line-ending conversion
+# (the factory .mid files were damaged by an LF->CR conversion long ago; see SPEC §6).
+*.syx binary
+*.mid binary
+*.lib binary
+*.bin binary
+*.pdf binary

@@ -341,7 +341,7 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 > * Bank A's program 10 appears as 13;
 > * checksums fail on 20 dumps in Bank A, 32 in Bank B and 170 of 418 in `multis.mid`.
 >
-> Parsers must resynchronise on `F7`. Golden tests must expect these counts, or use the recovered banks in `testdata/factory/` (being recovered from the SoundDiver `.lib`, which still contains `0x0A` bytes).
+> Parsers must resynchronise on `F7`. **Clean copies of Banks A and B** (256/256 recovered with certainty from the undamaged SoundDiver `.lib`, cross-checked against the `.mid` dumps) are in `testdata/factory/Bank_A.syx` and `Bank_B.syx`; see `testdata/factory/README.md`. Strict golden tests (`crates/virus-syx/tests/clean_factory.rs`) require byte-identical round trips on them. `multis.mid` is a different soundset, so it isn't a source for the Rack banks.
 
 | File | Contents |
 |---|---|
