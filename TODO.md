@@ -93,6 +93,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | F6 | ⬜ | "Pass through the synth" step after import (send to edit buffer, request back) so the Virus updates the sound version | SPEC §5.2 |
 | F7 | 🔄 | Bank/program change via SysEx (C31–33) so selecting a library patch can also select it on the synth | SPEC §3.5. Done: opt-in "Select on synth" checkbox in the Librarian sends C32 + C33 to the edited part on **Load** from bank A–D (`synth_select.rs`, tested). Open: the C32 bank value is sent 0-based (A=0…D=3), unverified on hardware (G2) |
 | F8 | ⬜ | Banks E–H (1,024-sound OS) | Blocked on Q2 |
+| F9 | ⬜ | Multi follow-ups: send the whole Multi bank to the synth; import multis through the main Librarian's file import too (today only the Multi tab imports them) | From the Multi sub-chat's handoff (24 Nov) |
 
 ## 🔍 Code review findings (REVIEW.md, 24 Nov)
 
@@ -104,11 +105,23 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | RV-M2 | ✅ | Medium | Duplicate program numbers in one import overwrite each other silently (damaged Bank A: prog 10 → A013). Count/report duplicates | `ImportReport`; fixed: `duplicates` reported |
 | RV-M3 | ✅ | Medium | The old `./virus_library.db` is never found (the DB moved to `%APPDATA%`), so the v1→v2 migration is never used. Offer to copy and migrate it on first run | `storage.rs`; fixed: prompt in `app.rs` |
 | RV-M4 | ✅ | Medium | Multi mode: CC/PolyPressure on the channel are applied to the edited part, even though only the lowest part on that channel receives them (SPEC §1.4). Ignore them in Multi mode until F3/F4 | `session.rs`; fixed |
-| RV-M5 | ⬜ | Medium | Editor/synth drift: Load (no send), Init and part change leave the editor and synth out of sync; an incoming edit-buffer dump discards unsaved edits. Track "in sync" and "dirty" | Handed to the editor-comforts sub-chat |
+| RV-M5 | ✅ | Medium | Editor/synth drift: Load (no send), Init and part change leave the editor and synth out of sync; an incoming edit-buffer dump discards unsaved edits. Track "in sync" and "dirty" | Done in the editor comforts (E5): "✔ on synth" / "⚠ not on synth" badge with **Send now**; an incoming dump over a dirty patch becomes one undo step. Tested headlessly only |
 | RV-L1 | ✅ | Low | v1→v2 migration marks rows `checksum_ok=1` although v1 stored the old lossy bytes; no backup is taken before migrating | `virus-db` migration; fixed: `.v1.bak` + rows flagged ⚠ |
 | RV-L2 | ✅ | Low | Bank-send button is enabled before the recommended backup has arrived; live edits are interleaved with paced dumps | `librarian.rs`, `app.rs`; fixed: backup gate + `PacedSend` |
 | RV-L3 | ✅ | Low | "Import as a new library bank" fails for mixed A+B received dumps; the received list is unbounded and never de-duplicated | `library.rs`; fixed: one bank per source, `queue_received` |
 | RV-L4 | ⬜ | Low | Unverified which part byte the Virus uses in its own SysEx parameter changes in Single mode | Added to G2 |
+
+## ✨ Editor comforts (SPEC §5.11)
+
+| # | Status | Item | Notes |
+|---|---|---|---|
+| E1 | ✅ | **Undo/redo** (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z, toolbar) of byte-level changes; a knob drag is one step (until release or a 1 s pause); 200 steps; Load/Init start a new history | `history.rs`, `comforts.rs`. Undo/redo are sent to the synth as `7x` param changes; A0 never recorded |
+| E2 | ✅ | **Compare** with the original (like the Virus' Compare): sends the byte differences, amber banner; editing, undo/redo, paste and header Store are disabled meanwhile; leaving restores the exact edited bytes | `compare.rs`; round trip tested on factory Bank A |
+| E3 | ✅ | **Patch diff**: edited patch vs its original or any library slot; named parameters with formatted values, undocumented bytes as raw offsets | `views/comforts.rs` |
+| E4 | ✅ | **Section copy/paste/init** by `ParamDef.section`, from the edited patch or a library slot; one undo step; never touches A0, the name, categories, performance controllers or undocumented bytes | `sections.rs`, tested on factory data |
+| E5 | ✅ | **Edited indicator** ("● edited" / "unchanged") and a Replace / Store first… / Cancel dialog before Load, Send to edit buffer, Init or Fetch replace an edited patch; storing makes the patch the new original | Also covers RV-M5 |
+| E6 | ⬜ | Follow-ups: block the Librarian's own "Store editor patch here…" buttons while comparing (they'd store the original); the replace dialog says the undo history is discarded, which isn't true for Fetch; **Select on synth** still switches the synth when the replace dialog is cancelled | Found while merging (24 Nov) |
+| E7 | ⬜ | On-screen check of E1–E5 on a real screen, and with the synth (E2 Compare should be audible) | Add to G2 |
 
 ## 🎹 Note audition (SPEC §5.9)
 
@@ -154,6 +167,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | R6 | ✅ | Show an error, not a zeroed patch, when a stored blob isn't 256 bytes | `DbError::CorruptPatch`; test `corrupt_blob_is_an_error` |
 | R7 | ✅ | Escape `%` and `_` in librarian search (`LIKE … ESCAPE`) | `escape_like`; test `query_filters_and_like_escaping` |
 | R8 | ✅ | Show export write failures in the status bar | Done: `library::export_bank_file` errors (empty bank, write failure) shown (tested) |
+| R9 | ⬜ | Patches migrated from an old v1 library are flagged `checksum_ok = 0` (RV-L1), so bank send/export skip them by default, and there's no UI to clear the flag. Add "mark as checked" per patch/bank, ideally after passing them through the synth (F6) | From the review-fixes handoff (24 Nov) |
 
 ## ⚪ Performance and UX
 

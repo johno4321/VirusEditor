@@ -296,7 +296,7 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 2. **Sound Version (A0)** must never be changed by the editor. The Virus updates old sounds itself, so an imported sound should ideally be passed through the synth (send, then request back) before editing.
 3. **Name and categories live in the patch** (B112–121, B123–124). The librarian should read them from the patch and write them back to the patch, not keep separate copies in the database that can drift.
 4. **Names:** exactly 10 characters, ASCII 32–127, padded with spaces. Never write a byte above 127.
-5. **Live editing:** send SysEx parameter change `70`/`71` to part `40` (Single mode) or the selected part. Don't use CC/PolyPressure for output; PolyPressure is off by default.
+5. **Live editing:** send SysEx parameter change `70`/`71` to part `40` (Single mode) or the selected part. Don't use CC/PolyPressure for output; PolyPressure is off by default. Undo, redo, Compare and section paste (§5.11) go out the same way, and A0 is never written.
    * **Incoming CC/PolyPressure:** accept only on the synth's channel, and only for sound parameters (class `a`/`b`), never performance controllers.
    * **Incoming SysEx parameter changes:** apply them to the part they address.
 6. **Bulk files:** import must honour `bb`.
@@ -353,6 +353,16 @@ The UI should look like the Virus Rack's front panel: **red and black**. Startin
 | LCD | dark slate `#1C2A33` with light text `#CFE3EA` | Patch name / value readouts |
 
 Keep all colours in one theme module so they can be adjusted in one place. **Implemented** in `crates/virus-app/src/theme.rs`; a unit test checks WCAG AA contrast (≥ 4.5:1 for text, ≥ 3:1 for graphics) for every colour pair, so retuning can't silently break readability.
+
+### 5.11 Editor comforts (24 Nov)
+* **Undo/redo:** a history of byte-level changes (offset, before, after) to the edited patch, at most 200 steps. A continuous knob drag is one step (ended by pointer release or a 1 s pause). Load and Init start a new history.
+* **Compare:** switches the synth and the editor between the edited patch and its **original**, which is where it was loaded from (library slot, file or synth fetch). Only the differing bytes are sent. Editing is disabled while comparing, and leaving Compare restores the exact edited bytes.
+* **Diff:** lists the differences between the edited patch and its original or any library patch. Named parameters show formatted values; undocumented bytes show as raw offsets.
+* **Sections:** copy, paste or init all documented sound parameters of one `ParamDef.section`. Never touches A0, the name, the categories, performance controllers or undocumented bytes (§5.1).
+* **Two states are always visible:**
+  * **edited:** differs from the original;
+  * **on synth:** the synth's edit buffer is believed to hold the editor's bytes. It becomes false after Load, Init, or a part/device change, until Send or Fetch.
+* Replacing an edited patch asks first: Replace, Store first, or Cancel. An incoming edit-buffer dump over an edited patch is kept as one undo step.
 
 ---
 
