@@ -352,7 +352,7 @@ pub fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
 }
 
 /// Remembers what is on disk and writes changes, rate limited.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SettingsStore {
     path: Option<PathBuf>,
     saved: Settings,

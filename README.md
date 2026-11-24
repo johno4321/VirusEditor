@@ -56,7 +56,7 @@ cargo run -p virus-app --example virus_probe --release -- [ports|fetch|backup|mo
 
 The library is stored in your user data folder (on Windows `%APPDATA%\VirusEditor\data\virus_library.db`); the path is shown in the bottom bar. If it can't be opened, the app runs with an in-memory library and shows a red warning that nothing will be saved. Your settings are in `settings.json` in the same folder; if that file is corrupt it is renamed to `settings.json.bak` and the app starts with defaults.
 
-The app needs OpenGL 2.0 or later (it won't start in a remote desktop session on a VM without a GPU).
+The app draws with OpenGL 2.0 or later. Where that isn't available (for example a VM over remote desktop with no GPU), it automatically switches to Direct3D 12, which falls back to Windows' WARP software renderer; this uses more CPU but works. To pick a renderer yourself, pass `--renderer glow` or `--renderer wgpu` (e.g. `cargo run -p virus-app --release -- --renderer wgpu`), or set the `VIRUS_RENDERER` environment variable to `glow` or `wgpu`.
 
 ## Using it
 

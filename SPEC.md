@@ -44,7 +44,7 @@ Page numbers below are the manual's printed page numbers (PDF page − 2).
 * **`virus-syx`:** pure domain crate. A raw 256-byte `Patch` is the single source of truth (§5.1), described by one parameter table (§4).
 * **`virus-midi`:** a plain transport on its own thread (`midir` + channels). It doesn't interpret Virus messages.
 * **`virus-db`:** a byte-exact SQLite librarian (`rusqlite`, bundled). The library lives at `%APPDATA%\VirusEditor\data\virus_library.db`.
-* **`virus-app`:** a native immediate-mode GUI (`egui`/`eframe` 0.27, OpenGL 2.0+). Logic that can be tested without the GUI lives in `session.rs`, `library.rs` and `storage.rs`.
+* **`virus-app`:** a native immediate-mode GUI (`egui`/`eframe` 0.27). It renders with OpenGL 2.0+ (`glow`) and, if that fails at start-up, falls back to `wgpu` (Direct3D 12, which includes the WARP software rasteriser for machines without a GPU). `--renderer glow|wgpu` or `VIRUS_RENDERER` forces one. Logic that can be tested without the GUI lives in `session.rs`, `library.rs` and `storage.rs`.
 
 ---
 
@@ -381,7 +381,7 @@ Detailed tasks are in [TODO.md](TODO.md).
 | 2. Git setup | ✅ Lockfile committed; binary attributes for MIDI files |
 | 3. MIDI engine (`virus-midi`) | ✅ Reworked 24 Nov as a plain transport; interpretation (§5.5) moved to the app |
 | 4. Librarian DB (`virus-db`) | ✅ Reworked 24 Nov: byte-exact storage, schema v2 + migration, bank-aware import/export (§5.6) |
-| 5. GUI (`virus-app`) | ✅ Rebuilt 24 Nov on the new crates (generated editor, Assign panel, 128-slot librarian, synth transfer). ⚠️ Not yet started on a machine with a GPU (TODO G1), not yet tried with the synth (G2) |
+| 5. GUI (`virus-app`) | ✅ Rebuilt 24 Nov on the new crates (generated editor, Assign panel, 128-slot librarian, synth transfer). Starts and renders on the GPU-less dev VM via the wgpu/WARP fallback (TODO G1); ⚠️ not yet started on a machine with a GPU, not yet tried with the synth (G2) |
 | 6. In progress | Note audition (keyboard, audition, panic; TODO N items) |
 | 7. Needs the synth | Live tests (G2), destination names (Q1), value lists (Q3), banks E–H (Q2) |
 | 8. Later | Synth globals (F3), Multi part selection and Multi editing (§4.4), controller-dump sync, arrangement/total dump import |
@@ -391,6 +391,8 @@ Detailed tasks are in [TODO.md](TODO.md).
 ## 9. Changelog
 * **2026-11-24 (evening)**
   * Settings persistence (G3), off-thread file dialogs and import/export (U5) and the optional SysEx "Select on synth" (F7, C32 bank value to be verified on hardware).
+* **2026-11-24 (late morning)**
+  * The GUI now starts on the dev VM: if OpenGL 2.0+ is missing, it falls back to wgpu on Direct3D 12 WARP (TODO G1, §1.5).
 * **2026-11-24 (afternoon)**
   * Library crates reworked in parallel (`virus-syx`, `virus-midi`, `virus-db`) and merged into `rework/integration`.
   * Factory `.mid` files found to be LF→CR damaged; clean Banks A/B recovered from the SoundDiver `.lib` into `testdata/factory`.

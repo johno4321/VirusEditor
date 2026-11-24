@@ -6,6 +6,7 @@ mod app;
 mod audition;
 mod dialogs;
 mod library;
+mod renderer;
 mod session;
 mod settings;
 mod storage;
@@ -15,10 +16,37 @@ mod views;
 mod widgets;
 
 use app::VirusApp;
-use eframe::egui;
+use eframe::{egui, Renderer};
+use settings::{Loaded, SettingsStore};
 
 fn main() -> eframe::Result<()> {
-    let (store, loaded) = settings::SettingsStore::load();
+    let requested = renderer::requested(
+        std::env::args().skip(1),
+        std::env::var(renderer::RENDERER_ENV).ok(),
+    )
+    .unwrap_or_else(|err| {
+        eprintln!("{err}");
+        std::process::exit(2);
+    });
+
+    // Load once: a corrupt file is set aside on the first load, so a second load would lose the
+    // warning. Each start attempt gets its own copy.
+    let (store, loaded) = SettingsStore::load();
+
+    match requested {
+        Some(renderer) => run(renderer, store, loaded),
+        // No GPU / OpenGL < 2.0 (e.g. a VM over RDP): fall back to wgpu, which can use WARP.
+        None => run(Renderer::Glow, store.clone(), loaded.clone()).or_else(|err| {
+            if !renderer::is_glow_init_error(&err) {
+                return Err(err);
+            }
+            eprintln!("OpenGL renderer unavailable ({err}); falling back to wgpu");
+            run(Renderer::Wgpu, store, loaded)
+        }),
+    }
+}
+
+fn run(renderer: Renderer, store: SettingsStore, loaded: Loaded) -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Access Virus Rack Editor & Librarian")
         .with_inner_size([1280.0, 860.0])
@@ -26,7 +54,8 @@ fn main() -> eframe::Result<()> {
     if let Some(window) = &loaded.settings.window {
         viewport = window.apply(viewport);
     }
-    let native_options = eframe::NativeOptions { viewport, ..Default::default() };
+    let mut native_options = eframe::NativeOptions { viewport, ..Default::default() };
+    renderer::configure(&mut native_options, renderer);
 
     eframe::run_native(
         "Access Virus Editor",
