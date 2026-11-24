@@ -27,7 +27,7 @@ cargo build --release -p virus-cli          # → target\release\virus.exe
 | `--settle-ms <ms>` | `60` | Pause after a parameter change or dump before reading it back |
 | `--quiet-ms <ms>` | `500` | Silence required on the input before each request. The Virus ignores requests that arrive too soon after it has sent or applied something (SPEC §3.7). Anything that arrives meanwhile, such as the rest of an interrupted bank stream, is dropped |
 | `--bank-quiet-ms <ms>` | `2000` | The same before a bank request, which needs longer |
-| `-v`, `--verbose` | off | Log every sent (`TX`) and received (`RX`) message as hex to stderr, with a millisecond timestamp |
+| `-v`, `--verbose` | off | Log every sent (`TX`) and received (`RX`) message as hex to stderr, with a millisecond timestamp, and reports stale messages dropped before a request |
 
 Exit codes: `0` = OK; `1` = the command ran but a check failed, or it needs `--yes`; `2` = error.
 

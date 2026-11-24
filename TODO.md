@@ -20,7 +20,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 
 | Area | State |
 |---|---|
-| **Build** | Builds (debug + release); **274 tests pass**; `clippy --workspace --all-targets -D warnings` clean (24 Nov, after merging every sub-chat branch into `main`) |
+| **Build** | Builds (debug + release); **301 tests pass**; `clippy --workspace --all-targets -D warnings` clean (24 Nov, after G4 and the follow-ups merge); CI green on Windows and Ubuntu |
 | **`virus-syx`** | Raw 256-byte `Patch`; parameter table from the addendum; lossless enums; SysEx parse/encode with checksum reporting; `.syx`/SMF reader tolerant of the damaged factory files. **Multi:** raw 256-byte `Multi`, `MULTI_PARAMS` with live Page C mapping, golden test on all 129 multi dumps of `multis.mid`. 42 tests incl. strict factory round trips |
 | **`virus-midi`** | Plain transport: ports by name, channel-tagged input events, robust parser (R3), paced batches, all errors reported. 11 tests |
 | **`virus-db`** | Byte-exact storage, schema v3 with migrations from v1/v2, bank-aware import (one transaction) and export (A–D = 1–4), favourites/tags separate from data. **Schema v3** (v2→v3 in one transaction): `multis` table, multi import (`bb=1` → slot, `bb=0` → loose) and Multi bank export. 29 tests |
@@ -69,7 +69,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | T1 | ✅ | **Golden tests:** `crates/virus-syx/tests/factory.rs` (damaged `.mid` originals; exact bad-checksum counts) and `tests/clean_factory.rs` (recovered `testdata/factory/Bank_A/B.syx`): all 256 patches parse with valid checksums and round-trip **byte-identically**; names and categories decode; editing one parameter changes exactly one byte | Recovered banks from the SoundDiver `.lib` (sub-chat, 24 Nov) |
 | T2 | ✅ | DB tests: the favourite toggle and slot store don't touch patch data | `favourite_and_tags_do_not_touch_data`, `save_and_load_is_byte_exact` |
 | T3 | ✅ | Incoming param doesn't revert other edits; performance CCs and other channels are ignored | Covers D5–D6. `virus-app/src/session.rs` tests |
-| T4 | ✅ | Import `multis.mid`: banks A and B land in A and B; edit-buffer and multi dumps aren't put in bank slots | Routing unit-tested (`import_original_banks_routes_by_bank_byte`); `multis.mid` checked end-to-end by hand (A 128, B 128, 33 loose, 129 multi + 1 other skipped). Not a committed test |
+| T4 | ✅ | Import `multis.mid`: banks A and B land in A and B; edit-buffer and multi dumps aren't put in bank slots | Routing unit-tested (`import_original_banks_routes_by_bank_byte`); `multis.mid` checked end-to-end by hand (A 128, B 128, 33 loose, 129 multi + 1 other skipped). Not a committed test. Since F9 the multis in a file are imported too (tested) |
 
 ## 📚 Librarian import and export (SPEC §5.6)
 
@@ -93,7 +93,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | F6 | ⬜ | "Pass through the synth" step after import (send to edit buffer, request back) so the Virus updates the sound version | SPEC §5.2 |
 | F7 | 🔄 | Bank/program change via SysEx (C31–33) so selecting a library patch can also select it on the synth | SPEC §3.5. Done: opt-in "Select on synth" checkbox in the Librarian sends C32 + C33 to the edited part on **Load** from bank A–D (`synth_select.rs`, tested). Open: the C32 bank value is sent 0-based (A=0…D=3), unverified on hardware (G2) |
 | F8 | ⬜ | Banks E–H (1,024-sound OS) | Blocked on Q2 |
-| F9 | ⬜ | Multi follow-ups: send the whole Multi bank to the synth; import multis through the main Librarian's file import too (today only the Multi tab imports them) | From the Multi sub-chat's handoff (24 Nov) |
+| F9 | ✅ | Multi follow-ups: send the whole Multi bank to the synth; import multis through the main Librarian's file import too (today only the Multi tab imports them) | From the Multi sub-chat's handoff (24 Nov). **Done 24 Nov:** the main file import also imports multis (occupied Multi slots join the overwrite confirmation); Multi tab "Send Multi bank to synth…" with a backup gate, skip-flagged default and 300 ms gaps |
 
 ## 🔍 Code review findings (REVIEW.md, 24 Nov)
 
@@ -120,7 +120,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | E3 | ✅ | **Patch diff**: edited patch vs its original or any library slot; named parameters with formatted values, undocumented bytes as raw offsets | `views/comforts.rs` |
 | E4 | ✅ | **Section copy/paste/init** by `ParamDef.section`, from the edited patch or a library slot; one undo step; never touches A0, the name, categories, performance controllers or undocumented bytes | `sections.rs`, tested on factory data |
 | E5 | ✅ | **Edited indicator** ("● edited" / "unchanged") and a Replace / Store first… / Cancel dialog before Load, Send to edit buffer, Init or Fetch replace an edited patch; storing makes the patch the new original | Also covers RV-M5 |
-| E6 | ⬜ | Follow-ups: block the Librarian's own "Store editor patch here…" buttons while comparing (they'd store the original); the replace dialog says the undo history is discarded, which isn't true for Fetch; **Select on synth** still switches the synth when the replace dialog is cancelled | Found while merging (24 Nov) |
+| E6 | ✅ | Follow-ups: block the Librarian's own "Store editor patch here…" buttons while comparing (they'd store the original); the replace dialog says the undo history is discarded, which isn't true for Fetch; **Select on synth** still switches the synth when the replace dialog is cancelled | Found while merging (24 Nov). **Done 24 Nov** (`rework/followups`): Store buttons disabled while comparing; replace wording per action (Fetch stays undoable); Select on synth travels inside the replace, so a cancelled replace never switches the synth |
 | E7 | ⬜ | On-screen check of E1–E5 on a real screen, and with the synth (E2 Compare should be audible) | Add to G2 |
 
 ## 🎹 Note audition (SPEC §5.9)
@@ -142,7 +142,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | # | Status | Item | Notes |
 |---|---|---|---|
 | G1 | ✅ | **The GUI can't start on this dev VM** (Hyper-V over RDP, no GPU): `egui_glow requires opengl 2.0+`; wgpu also fails (`NoSuitableAdapterFound`). This happens before any app code runs; the old app had the same backend | Done 24 Nov (`rework/gui-vm`): eframe built wgpu without its DX12 backend, so WARP was never offered. A direct `wgpu` dependency now enables `dx12`; glow stays the default and, if it fails at start-up, the app retries with wgpu, which picks the WARP software rasteriser. Force with `--renderer glow\|wgpu` or `VIRUS_RENDERER`. Verified rendering on this VM (debug and release). Still to check: glow on a machine with a GPU |
-| G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 300 ms gaps (default since the live timing, SPEC §3.7) (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items); **which part byte the Virus puts in its own outgoing SysEx param changes in Single mode (RV-L4)** | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
+| G2 | ⬜ | **Live test checklist** (when the MIDI cable arrives): ports auto-detect; device ID/channel; fetch edit buffer (`30 00 40`) loads the sound; knob → SysEx `70/71` audible; incoming knob moves update the editor; send to edit buffer; request bank A (`32 01`) lands in "Received from synth"; back up then send bank A with 300 ms gaps (default since the live timing, SPEC §3.7) (no buffer overflow, display shows no checksum error); Multi part addressing; note audition (N items); **which part byte the Virus puts in its own outgoing SysEx param changes in Single mode (RV-L4)**; **Multi bank send** with 300 ms gaps (no checksum/buffer errors); **Select on synth** only after a confirmed replace; **C32 bank value** 0- or 1-based (needs the CLI Page C `set`, in progress) | Record results here; adjust `BANK_SEND_GAP_MS` if needed |
 | G3 | ✅ | Persist settings between runs (ports, channel, device ID, part, window) | Versioned `settings.json` in the data dir (`settings.rs`, tested): ports, channel, device ID, part, audition settings (Hold always starts off), tab, bank, import/export folders, window geometry. Bad fields fall back to defaults, a corrupt file becomes `.bak` with a banner, vanished ports aren't selected. The window position isn't checked against the monitor layout |
 | G4 | ✅ | The app should also wait for a quiet line before requests (SPEC §3.7), like the CLI: e.g. Fetch right after Send, or Request bank right after a fetch | Done 24 Nov: `PacedSend` (`session.rs`) queues requests until 500 ms (bank 2 s) after the last MIDI sent or received; `app.rs` notes every `Sent` and incoming event (incl. audition notes); later messages wait behind a queued request. Tested; live check in G2 |
 
@@ -184,7 +184,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | R6 | ✅ | Show an error, not a zeroed patch, when a stored blob isn't 256 bytes | `DbError::CorruptPatch`; test `corrupt_blob_is_an_error` |
 | R7 | ✅ | Escape `%` and `_` in librarian search (`LIKE … ESCAPE`) | `escape_like`; test `query_filters_and_like_escaping` |
 | R8 | ✅ | Show export write failures in the status bar | Done: `library::export_bank_file` errors (empty bank, write failure) shown (tested) |
-| R9 | ⬜ | Patches migrated from an old v1 library are flagged `checksum_ok = 0` (RV-L1), so bank send/export skip them by default, and there's no UI to clear the flag. Add "mark as checked" per patch/bank, ideally after passing them through the synth (F6) | From the review-fixes handoff (24 Nov) |
+| R9 | ✅ | Patches migrated from an old v1 library are flagged `checksum_ok = 0` (RV-L1), so bank send/export skip them by default, and there's no UI to clear the flag. Add "mark as checked" per patch/bank, ideally after passing them through the synth (F6) | From the review-fixes handoff (24 Nov). **Done 24 Nov:** `mark_checked` / `mark_bank_checked` in virus-db; "✔ Mark as checked…" per patch and per bank with an explanation. Passing patches through the synth (F6) is still the better check |
 
 ## ⚪ Performance and UX
 
@@ -201,7 +201,7 @@ Status: ⬜ pending · 🔄 in progress · 🟡 PR open · ✅ done · ⏸️ pa
 | # | Status | Item | Notes |
 |---|---|---|---|
 | V1 | ✅ | **Match the Virus Rack's colours: red and black** (owner, 24 Nov). The front panel is signal red with black legends; the chassis, knobs and buttons are black or dark grey; the LEDs are amber; the LCD is dark with light characters | Done 24 Nov in `theme.rs` (red `#E8352F` for contrast, WCAG test). **Needs an on-screen check** on the laptop. Not done: the outlined "VIRUS" watermark and amber section LEDs (V2) |
-| V2 | ⬜ | Optional polish: outlined "VIRUS" wordmark watermark in dark red; amber LED dots on the tabs like the panel's section LEDs | `theme.rs` |
+| V2 | ✅ | Optional polish: outlined "VIRUS" wordmark watermark in dark red; amber LED dots on the tabs like the panel's section LEDs | `theme.rs`. **Done 24 Nov:** tab LEDs with a black bezel (amber on red alone is only 2.3:1; covered by the WCAG test) and an outlined "VIRUS" watermark only in empty header space |
 
 ## 🧹 Housekeeping
 

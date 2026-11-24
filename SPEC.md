@@ -154,6 +154,7 @@ Page C parameter changes, independent of MIDI channel and of the program-change 
 * **The Virus answers one request at a time and ignores requests while busy:**
   * During a bank stream it ignores everything; cancelling the client doesn't stop the stream.
   * Shortly after it has sent an answer or applied a change, it also ignores requests. Measured: a bank request right after an edit-buffer answer got no reply; 2 s later it did. An edit-buffer request 60 ms after a param change was lost; after 500 ms it worked.
+* **CLI diagnostics:** with `-v` it reports how many stale messages it dropped; a bank answer that starts mid-stream (not at program 0) is reported as the rest of an interrupted stream.
 * **Rule for clients:** wait for the MIDI input to be silent before every request, about 500 ms for normal requests and 2 s for bank requests. Drain and report anything that arrives meanwhile. The CLI does this (`--quiet-ms`, `--bank-quiet-ms`). The app does the same: `PacedSend` (`session.rs`) holds requests (`30`–`37`) until nothing has been sent or received for 500 ms (2 s before `32/33/34/36`); later live messages queue behind them so the order is kept.
 * **Bank transfers are reliable:** two bank A requests 27 minutes apart were byte-identical.
 * **Measured latencies** (selftest log, `-v` timestamps):
@@ -311,12 +312,12 @@ These follow from the addendum's "Remarks for editor/librarian programs" (p. 12)
 5. **Live editing:** send SysEx parameter change `70`/`71` to part `40` (Single mode) or the selected part. Don't use CC/PolyPressure for output; PolyPressure is off by default. Undo, redo, Compare and section paste (§5.11) go out the same way, and A0 is never written.
    * **Incoming CC/PolyPressure:** accept only on the synth's channel, and only for sound parameters (class `a`/`b`), never performance controllers.
    * **Incoming SysEx parameter changes:** apply them to the part they address.
-6. **Bulk files:** import must honour `bb`.
+6. **Bulk files:** import must honour `bb`. Multi dumps (`11`) in the same file go to the Multi bank (`bb=01`) or the Multi tab's loose list (`bb=00`); occupied Multi slots are confirmed like single slots.
    * `00` → edit-buffer dump. Never put it into a bank slot by its part number.
    * `01–04` → banks A–D.
    * Multi dumps (`11`) and unknown messages are preserved or skipped, never misread as singles.
    * A file can hold several banks (`multis.mid` is a Total dump with edit buffers, A, B, multis and globals).
-7. **Sending banks overwrites RAM irrevocably** (manual p. 177). Confirm before sending A/B bank dumps, and offer a backup first (request A and B).
+7. **Sending banks overwrites RAM irrevocably** (manual p. 177). The same applies to the Multi bank: the app confirms, asks for a backup (all 128 multis received and saved to a file), skips flagged multis by default and paces at 300 ms. Confirm before sending A/B bank dumps, and offer a backup first (request A and B).
 8. **Bundled third-party material:** the manual, addenda, OS files and factory sounds are © Access Music. They stay in this repository only because it is **private** (Q4). Don't publish them.
 9. **Note audition** (owner request, 24 Nov): the editor can play notes on the connected Virus to test patch changes without a keyboard. Details in §5.9.
 
@@ -364,7 +365,7 @@ The UI should look like the Virus Rack's front panel: **red and black**. Startin
 | LED amber | `#FFB000` | Rx/Tx and section LEDs, knob pointer |
 | LCD | dark slate `#1C2A33` with light text `#CFE3EA` | Patch name / value readouts |
 
-Keep all colours in one theme module so they can be adjusted in one place. **Implemented** in `crates/virus-app/src/theme.rs`; a unit test checks WCAG AA contrast (≥ 4.5:1 for text, ≥ 3:1 for graphics) for every colour pair, so retuning can't silently break readability.
+Keep all colours in one theme module so they can be adjusted in one place. **Implemented** in `crates/virus-app/src/theme.rs`; a unit test checks WCAG AA contrast (≥ 4.5:1 for text, ≥ 3:1 for graphics) for every colour pair, so retuning can't silently break readability. Tabs carry amber LEDs in a black bezel (amber directly on red is only 2.3:1), and an outlined "VIRUS" wordmark is drawn in dark red only in empty header space.
 
 ### 5.11 Editor comforts (24 Nov)
 * **Undo/redo:** a history of byte-level changes (offset, before, after) to the edited patch, at most 200 steps. A continuous knob drag is one step (ended by pointer release or a 1 s pause). Load and Init start a new history.
@@ -374,7 +375,7 @@ Keep all colours in one theme module so they can be adjusted in one place. **Imp
 * **Two states are always visible:**
   * **edited:** differs from the original;
   * **on synth:** the synth's edit buffer is believed to hold the editor's bytes. It becomes false after Load, Init, or a part/device change, until Send or Fetch.
-* Replacing an edited patch asks first: Replace, Store first, or Cancel. An incoming edit-buffer dump over an edited patch is kept as one undo step.
+* Replacing an edited patch asks first: Replace, Store first, or Cancel. The wording depends on the action (after Fetch the edits stay undoable). "Select on synth" is sent only once the replace has actually happened. An incoming edit-buffer dump over an edited patch is kept as one undo step.
 
 ---
 
