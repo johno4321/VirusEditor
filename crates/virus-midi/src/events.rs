@@ -1,94 +1,62 @@
-//! Asynchronous MIDI commands and event types for thread-safe UI communication.
+//! Commands sent to the MIDI worker and events it emits.
 
-use virus_syx::domain::{Page, Patch};
-
-/// High-level commands sent from the UI thread to the background MIDI service.
-#[derive(Debug, Clone)]
+/// Commands sent from the UI thread to the background MIDI worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MidiCommand {
-    /// Connects to the MIDI Input port at the specified index.
-    ConnectInput(usize),
-    /// Connects to the MIDI Output port at the specified index.
-    ConnectOutput(usize),
-    /// Refreshes the list of available MIDI input and output ports.
+    /// Re-enumerates ports and emits [`MidiEvent::PortListUpdated`].
     RefreshPorts,
-    /// Disconnects active input and output ports.
+    /// Connects the input port with this exact name, replacing any current input.
+    ConnectInput(String),
+    /// Connects the output port with this exact name, replacing any current output.
+    ConnectOutput(String),
+    DisconnectInput,
+    DisconnectOutput,
+    /// Disconnects both input and output.
     Disconnect,
-    /// Live sound/global parameter tweak.
-    SendParam {
-        device_id: u8,
-        page: Page,
-        part: u8,
-        param: u8,
-        value: u8,
+    /// Sends one complete MIDI message (channel message or SysEx frame) immediately.
+    Send(Vec<u8>),
+    /// Queues messages to be sent one by one with `gap_ms` between them.
+    /// A batch sent while another is pending is appended to it.
+    SendBatch {
+        messages: Vec<Vec<u8>>,
+        gap_ms: u64,
     },
-    /// Sends a complete Single Program patch dump (256 bytes) to the synth.
-    SendPatchDump {
-        device_id: u8,
-        bank: u8,
-        prog: u8,
-        patch: Box<Patch>,
-    },
-    /// Requests the synth to send a Single Program dump.
-    RequestPatchDump {
-        device_id: u8,
-        bank: u8,
-        prog: u8,
-    },
-    /// Requests a Single Bank dump (Banks A..D).
-    RequestBankDump {
-        device_id: u8,
-        bank: u8,
-    },
-    /// Requests a Total RAM dump from the synth.
-    RequestTotalDump {
-        device_id: u8,
-    },
-    /// Standard MIDI Control Change (for Page A parameters).
-    SendControlChange {
-        channel: u8,
-        controller: u8,
-        value: u8,
-    },
-    /// Standard MIDI Polyphonic Pressure (for Page B parameters).
-    SendPolyPressure {
-        channel: u8,
-        note: u8,
-        pressure: u8,
-    },
-    /// Sends a raw arbitrary SysEx frame.
-    SendRawSysEx(Vec<u8>),
+    /// Drops all messages of pending batches that have not been sent yet.
+    CancelBatch,
 }
 
-/// Events emitted by the background MIDI thread to the UI thread.
-#[derive(Debug, Clone)]
+/// Events emitted by the MIDI worker and input callback.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MidiEvent {
-    /// List of available input and output port names.
     PortListUpdated {
         inputs: Vec<String>,
         outputs: Vec<String>,
     },
-    /// Connection state changed.
+    /// Names of the currently connected ports (`None` = not connected).
     ConnectionStatus {
-        input_connected: bool,
-        input_name: Option<String>,
-        output_connected: bool,
-        output_name: Option<String>,
+        input: Option<String>,
+        output: Option<String>,
     },
-    /// Received a parameter change from the synth.
-    ParamReceived {
-        page: Page,
-        part: u8,
-        param: u8,
+    /// `channel` is 0..=15.
+    ControlChange {
+        channel: u8,
+        controller: u8,
         value: u8,
     },
-    /// Received a full Single Program patch dump from the synth.
-    PatchReceived {
-        bank: u8,
-        prog: u8,
-        patch: Box<Patch>,
+    PolyPressure {
+        channel: u8,
+        note: u8,
+        pressure: u8,
     },
-    /// Raw SysEx message received (unrecognized or non-standard).
-    RawSysExReceived(Vec<u8>),
-    /// Informational warning or error from the MIDI subsystem.
+    ProgramChange {
+        channel: u8,
+        program: u8,
+    },
+    /// A complete `F0 .. F7` frame, real-time bytes removed, otherwise unparsed.
+    SysEx(Vec<u8>),
+    /// A message of `bytes` length was handed to the output port successfully.
+    Sent {
+        bytes: usize,
+    },
     Error(String),
 }

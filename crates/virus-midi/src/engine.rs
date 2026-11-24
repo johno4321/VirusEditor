@@ -1,277 +1,261 @@
-//! Background MIDI worker engine running isolated from the UI thread.
+//! Background MIDI worker thread. The midir-specific code is kept here and kept thin.
 
+use crate::batch::BatchQueue;
 use crate::events::{MidiCommand, MidiEvent};
+use crate::parser::MidiInputParser;
 use crate::ports::{list_input_ports, list_output_ports};
-use crate::stream::SysExStreamAssembler;
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
-use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
-use std::sync::{Arc, Mutex};
+use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
+use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
+use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Duration;
-use virus_syx::domain::{
-    encode_dump_request, encode_param_change, encode_program_dump, encode_single_bank_request,
-    encode_total_request, parse_sysex, Patch, SysExMessage,
-};
+use std::time::{Duration, Instant};
 
-/// High-level MIDI management service providing thread-safe channels for UI communication.
+type Notifier = Box<dyn Fn() + Send + Sync>;
+
+/// Delivers events to the UI channel and wakes the UI via the optional notifier.
+#[derive(Clone)]
+struct EventSink {
+    tx: Sender<MidiEvent>,
+    notifier: Arc<RwLock<Option<Notifier>>>,
+}
+
+impl EventSink {
+    fn emit(&self, event: MidiEvent) {
+        if self.tx.send(event).is_err() {
+            return;
+        }
+        if let Ok(guard) = self.notifier.read() {
+            if let Some(notify) = guard.as_ref() {
+                notify();
+            }
+        }
+    }
+
+    fn error(&self, message: impl Into<String>) {
+        self.emit(MidiEvent::Error(message.into()));
+    }
+}
+
+/// Handle to the background MIDI worker. Dropping it stops the worker.
 pub struct MidiService {
     tx_cmd: Sender<MidiCommand>,
     rx_evt: Receiver<MidiEvent>,
+    notifier: Arc<RwLock<Option<Notifier>>>,
 }
 
 impl MidiService {
-    /// Spawns the background MIDI engine thread and returns the active service handle.
+    /// Spawns the worker thread. It immediately emits a `PortListUpdated` event.
     pub fn spawn() -> Result<Self, String> {
-        let (tx_cmd, rx_cmd) = unbounded::<MidiCommand>();
-        let (tx_evt, rx_evt) = unbounded::<MidiEvent>();
+        let (tx_cmd, rx_cmd) = unbounded();
+        let (tx_evt, rx_evt) = unbounded();
+        let notifier = Arc::new(RwLock::new(None));
+        let sink = EventSink {
+            tx: tx_evt,
+            notifier: Arc::clone(&notifier),
+        };
 
         thread::Builder::new()
             .name("virus-midi-worker".into())
-            .spawn(move || {
-                run_midi_worker(rx_cmd, tx_evt);
-            })
-            .map_err(|e| format!("Failed to spawn MIDI thread: {}", e))?;
+            .spawn(move || Worker::new(sink).run(&rx_cmd))
+            .map_err(|e| format!("Failed to spawn MIDI thread: {e}"))?;
 
-        Ok(Self { tx_cmd, rx_evt })
+        Ok(Self {
+            tx_cmd,
+            rx_evt,
+            notifier,
+        })
     }
 
-    /// Sends a command to the background MIDI thread.
     pub fn send_command(&self, cmd: MidiCommand) -> Result<(), String> {
         self.tx_cmd.send(cmd).map_err(|e| e.to_string())
     }
 
-    /// Non-blocking check for incoming events from the MIDI subsystem.
+    /// Non-blocking poll for the next event.
     pub fn try_recv_event(&self) -> Option<MidiEvent> {
         self.rx_evt.try_recv().ok()
     }
 
-    /// Returns a reference to the event receiver (for use with event-driven loops).
     pub fn event_receiver(&self) -> &Receiver<MidiEvent> {
         &self.rx_evt
     }
+
+    /// Registers a callback invoked (on the MIDI threads) after every emitted event,
+    /// e.g. to call `egui::Context::request_repaint`. Replaces any previous notifier.
+    /// The callback must not call back into `set_event_notifier`.
+    pub fn set_event_notifier(&self, notifier: Box<dyn Fn() + Send + Sync>) {
+        if let Ok(mut guard) = self.notifier.write() {
+            *guard = Some(notifier);
+        }
+    }
 }
 
-fn run_midi_worker(rx_cmd: Receiver<MidiCommand>, tx_evt: Sender<MidiEvent>) {
-    let mut in_conn: Option<MidiInputConnection<()>> = None;
-    let mut out_conn: Option<MidiOutputConnection> = None;
-    let mut cur_in_name: Option<String> = None;
-    let mut cur_out_name: Option<String> = None;
+struct Worker {
+    sink: EventSink,
+    input: Option<(MidiInputConnection<MidiInputParser>, String)>,
+    output: Option<(MidiOutputConnection, String)>,
+    batch: BatchQueue,
+}
 
-    // Send initial port list
-    notify_port_list(&tx_evt);
+impl Worker {
+    fn new(sink: EventSink) -> Self {
+        Self {
+            sink,
+            input: None,
+            output: None,
+            batch: BatchQueue::new(),
+        }
+    }
 
-    while let Ok(cmd) = rx_cmd.recv() {
+    fn run(mut self, rx_cmd: &Receiver<MidiCommand>) {
+        self.refresh_ports();
+        loop {
+            let cmd = match self.batch.time_until_next(Instant::now()) {
+                Some(wait) => match rx_cmd.recv_timeout(wait) {
+                    Ok(cmd) => Some(cmd),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                },
+                None => match rx_cmd.recv() {
+                    Ok(cmd) => Some(cmd),
+                    Err(_) => break,
+                },
+            };
+            if let Some(cmd) = cmd {
+                self.handle(cmd);
+            }
+            if let Some(message) = self.batch.pop_due(Instant::now()) {
+                if !self.send(&message) {
+                    let dropped = self.batch.clear();
+                    if dropped > 0 {
+                        self.sink
+                            .error(format!("Batch aborted: {dropped} message(s) not sent"));
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle(&mut self, cmd: MidiCommand) {
         match cmd {
-            MidiCommand::RefreshPorts => {
-                notify_port_list(&tx_evt);
-            }
-            MidiCommand::ConnectInput(idx) => {
-                // Drop existing connection
-                in_conn = None;
-                cur_in_name = None;
-
-                match MidiInput::new("virus-midi-in") {
-                    Ok(midi_in) => {
-                        let ports = midi_in.ports();
-                        if let Some(port) = ports.get(idx) {
-                            let port_name = midi_in.port_name(port).unwrap_or_else(|_| "Unknown Input".into());
-                            let tx_cb = tx_evt.clone();
-                            let assembler = Arc::new(Mutex::new(SysExStreamAssembler::new()));
-
-                            let conn_res = midi_in.connect(
-                                port,
-                                "virus-input-callback",
-                                move |_timestamp, data, _state| {
-                                    handle_incoming_midi_bytes(data, &assembler, &tx_cb);
-                                },
-                                (),
-                            );
-
-                            match conn_res {
-                                Ok(conn) => {
-                                    in_conn = Some(conn);
-                                    cur_in_name = Some(port_name);
-                                }
-                                Err(e) => {
-                                    let _ = tx_evt.send(MidiEvent::Error(format!("Input connect error: {}", e)));
-                                }
-                            }
-                        } else {
-                            let _ = tx_evt.send(MidiEvent::Error("Invalid input port index".into()));
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx_evt.send(MidiEvent::Error(format!("MidiInput init error: {}", e)));
-                    }
+            MidiCommand::RefreshPorts => self.refresh_ports(),
+            MidiCommand::ConnectInput(name) => {
+                // Close first: some backends cannot open the same port twice.
+                self.input = None;
+                match connect_input(&name, self.sink.clone()) {
+                    Ok(conn) => self.input = Some((conn, name)),
+                    Err(e) => self.sink.error(e),
                 }
-
-                send_connection_status(&tx_evt, &cur_in_name, &cur_out_name);
+                self.emit_status();
             }
-            MidiCommand::ConnectOutput(idx) => {
-                out_conn = None;
-                cur_out_name = None;
-
-                match MidiOutput::new("virus-midi-out") {
-                    Ok(midi_out) => {
-                        let ports = midi_out.ports();
-                        if let Some(port) = ports.get(idx) {
-                            let port_name = midi_out.port_name(port).unwrap_or_else(|_| "Unknown Output".into());
-                            match midi_out.connect(port, "virus-output-port") {
-                                Ok(conn) => {
-                                    out_conn = Some(conn);
-                                    cur_out_name = Some(port_name);
-                                }
-                                Err(e) => {
-                                    let _ = tx_evt.send(MidiEvent::Error(format!("Output connect error: {}", e)));
-                                }
-                            }
-                        } else {
-                            let _ = tx_evt.send(MidiEvent::Error("Invalid output port index".into()));
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx_evt.send(MidiEvent::Error(format!("MidiOutput init error: {}", e)));
-                    }
+            MidiCommand::ConnectOutput(name) => {
+                self.output = None;
+                match connect_output(&name) {
+                    Ok(conn) => self.output = Some((conn, name)),
+                    Err(e) => self.sink.error(e),
                 }
-
-                send_connection_status(&tx_evt, &cur_in_name, &cur_out_name);
+                self.emit_status();
+            }
+            MidiCommand::DisconnectInput => {
+                self.input = None;
+                self.emit_status();
+            }
+            MidiCommand::DisconnectOutput => {
+                self.output = None;
+                self.emit_status();
             }
             MidiCommand::Disconnect => {
-                in_conn = None;
-                out_conn = None;
-                cur_in_name = None;
-                cur_out_name = None;
-                send_connection_status(&tx_evt, &cur_in_name, &cur_out_name);
+                self.input = None;
+                self.output = None;
+                self.emit_status();
             }
-            MidiCommand::SendParam { device_id, page, part, param, value } => {
-                if let Some(ref mut out) = out_conn {
-                    let msg = encode_param_change(device_id, page, part, param, value);
-                    let _ = out.send(&msg);
-                }
+            MidiCommand::Send(message) => {
+                self.send(&message);
             }
-            MidiCommand::SendPatchDump { device_id, bank, prog, mut patch } => {
-                if let Some(ref mut out) = out_conn {
-                    let raw = patch.to_bytes();
-                    let msg = encode_program_dump(device_id, bank, prog, &raw);
-                    let _ = out.send(&msg);
-                }
+            MidiCommand::SendBatch { messages, gap_ms } => {
+                self.batch.push(messages, Duration::from_millis(gap_ms));
             }
-            MidiCommand::RequestPatchDump { device_id, bank, prog } => {
-                if let Some(ref mut out) = out_conn {
-                    let msg = encode_dump_request(device_id, bank, prog);
-                    let _ = out.send(&msg);
-                }
-            }
-            MidiCommand::RequestBankDump { device_id, bank } => {
-                if let Some(ref mut out) = out_conn {
-                    let msg = encode_single_bank_request(device_id, bank);
-                    let _ = out.send(&msg);
-                }
-            }
-            MidiCommand::RequestTotalDump { device_id } => {
-                if let Some(ref mut out) = out_conn {
-                    let msg = encode_total_request(device_id);
-                    let _ = out.send(&msg);
-                }
-            }
-            MidiCommand::SendControlChange { channel, controller, value } => {
-                if let Some(ref mut out) = out_conn {
-                    let status = 0xB0 | (channel & 0x0F);
-                    let msg = [status, controller & 0x7F, value & 0x7F];
-                    let _ = out.send(&msg);
-                }
-            }
-            MidiCommand::SendPolyPressure { channel, note, pressure } => {
-                if let Some(ref mut out) = out_conn {
-                    let status = 0xA0 | (channel & 0x0F);
-                    let msg = [status, note & 0x7F, pressure & 0x7F];
-                    let _ = out.send(&msg);
-                }
-            }
-            MidiCommand::SendRawSysEx(raw) => {
-                if let Some(ref mut out) = out_conn {
-                    let _ = out.send(&raw);
-                }
+            MidiCommand::CancelBatch => {
+                self.batch.clear();
             }
         }
     }
-}
 
-fn handle_incoming_midi_bytes(
-    data: &[u8],
-    assembler_arc: &Arc<Mutex<SysExStreamAssembler>>,
-    tx: &Sender<MidiEvent>,
-) {
-    // 1. Check for standard 3-byte Channel messages (CC or PolyPressure)
-    if data.len() == 3 {
-        let status = data[0] & 0xF0;
-        if status == 0xB0 {
-            // Control Change (Page A parameter)
-            let param = data[1];
-            let value = data[2];
-            let _ = tx.send(MidiEvent::ParamReceived {
-                page: virus_syx::domain::Page::PageA,
-                part: 0x40,
-                param,
-                value,
-            });
-            return;
-        } else if status == 0xA0 {
-            // PolyPressure (Page B parameter)
-            let param = data[1];
-            let value = data[2];
-            let _ = tx.send(MidiEvent::ParamReceived {
-                page: virus_syx::domain::Page::PageB,
-                part: 0x40,
-                param,
-                value,
-            });
-            return;
-        }
-    }
-
-    // 2. Feed into SysEx stream assembler
-    if let Ok(mut asm) = assembler_arc.lock() {
-        let completed = asm.feed(data);
-        for frame in completed {
-            match parse_sysex(&frame) {
-                Ok(SysExMessage::SingleProgramDump { bank, prog, data, .. }) => {
-                    let patch = Patch::from_bytes(&data);
-                    let _ = tx.send(MidiEvent::PatchReceived {
-                        bank,
-                        prog,
-                        patch: Box::new(patch),
-                    });
-                }
-                Ok(SysExMessage::ParamChange { page, part, param, value, .. }) => {
-                    let _ = tx.send(MidiEvent::ParamReceived { page, part, param, value });
-                }
-                Ok(_) => {
-                    let _ = tx.send(MidiEvent::RawSysExReceived(frame));
-                }
-                Err(_) => {
-                    let _ = tx.send(MidiEvent::RawSysExReceived(frame));
-                }
+    /// Sends one message, reporting the outcome as `Sent` or `Error`. Returns success.
+    fn send(&mut self, message: &[u8]) -> bool {
+        let result = match self.output.as_mut() {
+            None => Err("Cannot send: no MIDI output connected".to_string()),
+            Some(_) if message.is_empty() => Err("Cannot send an empty MIDI message".to_string()),
+            Some((conn, name)) => conn
+                .send(message)
+                .map_err(|e| format!("Send to '{name}' failed: {e}")),
+        };
+        match result {
+            Ok(()) => {
+                self.sink.emit(MidiEvent::Sent {
+                    bytes: message.len(),
+                });
+                true
+            }
+            Err(e) => {
+                self.sink.error(e);
+                false
             }
         }
     }
+
+    fn refresh_ports(&self) {
+        match (list_input_ports(), list_output_ports()) {
+            (Ok(inputs), Ok(outputs)) => self
+                .sink
+                .emit(MidiEvent::PortListUpdated { inputs, outputs }),
+            (Err(e), _) | (_, Err(e)) => self.sink.error(format!("Port enumeration failed: {e}")),
+        }
+    }
+
+    fn emit_status(&self) {
+        self.sink.emit(MidiEvent::ConnectionStatus {
+            input: self.input.as_ref().map(|(_, n)| n.clone()),
+            output: self.output.as_ref().map(|(_, n)| n.clone()),
+        });
+    }
 }
 
-fn notify_port_list(tx: &Sender<MidiEvent>) {
-    let in_ports = list_input_ports().unwrap_or_default().into_iter().map(|p| p.name).collect();
-    let out_ports = list_output_ports().unwrap_or_default().into_iter().map(|p| p.name).collect();
-    let _ = tx.send(MidiEvent::PortListUpdated { inputs: in_ports, outputs: out_ports });
+fn connect_input(
+    name: &str,
+    sink: EventSink,
+) -> Result<MidiInputConnection<MidiInputParser>, String> {
+    let mut midi_in =
+        MidiInput::new("virus-midi-in").map_err(|e| format!("MIDI input init failed: {e}"))?;
+    // Clock and active sensing would only wake the callback for nothing; SysEx must pass.
+    midi_in.ignore(Ignore::TimeAndActiveSense);
+    let port = midi_in
+        .ports()
+        .into_iter()
+        .find(|p| midi_in.port_name(p).is_ok_and(|n| n == name))
+        .ok_or_else(|| format!("MIDI input port '{name}' not found"))?;
+    midi_in
+        .connect(
+            &port,
+            "virus-input",
+            move |_timestamp, data, parser: &mut MidiInputParser| {
+                for event in parser.feed(data) {
+                    sink.emit(event);
+                }
+            },
+            MidiInputParser::new(),
+        )
+        .map_err(|e| format!("Connecting input '{name}' failed: {e}"))
 }
 
-fn send_connection_status(
-    tx: &Sender<MidiEvent>,
-    cur_in: &Option<String>,
-    cur_out: &Option<String>,
-) {
-    let _ = tx.send(MidiEvent::ConnectionStatus {
-        input_connected: cur_in.is_some(),
-        input_name: cur_in.clone(),
-        output_connected: cur_out.is_some(),
-        output_name: cur_out.clone(),
-    });
+fn connect_output(name: &str) -> Result<MidiOutputConnection, String> {
+    let midi_out =
+        MidiOutput::new("virus-midi-out").map_err(|e| format!("MIDI output init failed: {e}"))?;
+    let port = midi_out
+        .ports()
+        .into_iter()
+        .find(|p| midi_out.port_name(p).is_ok_and(|n| n == name))
+        .ok_or_else(|| format!("MIDI output port '{name}' not found"))?;
+    midi_out
+        .connect(&port, "virus-output")
+        .map_err(|e| format!("Connecting output '{name}' failed: {e}"))
 }
